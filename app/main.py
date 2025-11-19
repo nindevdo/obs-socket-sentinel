@@ -77,6 +77,39 @@ current_chapter_file: Optional[Path] = None
 session_start_wall: Optional[float] = None  # time.time() when "start" was received
 CURRENT_SESSION_PROJECT: Optional[str] = None  # game key for current recording session
 
+# -----------------------------
+# RUN TRACKING STATE
+# -----------------------------
+# Which actions count as kills / deaths for run stats
+RUN_KILL_ACTIONS = {"kill", "headshot"}
+RUN_DEATH_ACTIONS = {"death", "downed"}
+
+# Per-project run counters + current run
+run_counters: Dict[str, int] = {}                     # project -> last run number
+current_run_by_project: Dict[str, Optional[int]] = {}  # project -> current run number or None
+
+# Per-project+run stats
+# key: (project, run_number)
+# value: {
+#   "kills": int,
+#   "deaths": int,
+#   "headshots": int,
+#   "events": int,
+#   "started_at": float,
+# }
+run_stats_by_project: Dict[tuple[str, int], Dict[str, Any]] = {}
+
+# Finished run history per project (for recap panel)
+# project -> [ { "run": int, "kills": int, "deaths": int, "headshots": int, "kd": float } ]
+run_history_by_project: Dict[str, List[Dict[str, Any]]] = {}
+
+# How long we show the run recap panel after a run ends
+RUN_PANEL_DURATION_SECONDS = 180  # 3 minutes
+run_panel_visible_until: Optional[float] = None
+
+# Maximum number of runs to keep in history per project
+MAX_RUN_HISTORY = 10
+
 # Discord meme/sound cache
 discord_messages_cache: List[dict] = []         # all messages from channel
 discord_game_caches: Dict[str, List[dict]] = {} # per-game filtered messages
@@ -919,23 +952,169 @@ async def append_chapter_line(action: str, project: Optional[str]) -> None:
 
 
 # -----------------------------
+# RUN HELPERS
+# -----------------------------
+async def start_run_for_project(project_key: str) -> int:
+    """
+    Start a new run for the given project.
+    Returns the run number.
+    """
+    global run_counters, current_run_by_project, run_stats_by_project
+
+    run_num = run_counters.get(project_key, 0) + 1
+    run_counters[project_key] = run_num
+    current_run_by_project[project_key] = run_num
+
+    run_stats_by_project[(project_key, run_num)] = {
+        "kills": 0,
+        "deaths": 0,
+        "headshots": 0,
+        "events": 0,
+        "started_at": time.time(),
+    }
+
+    logging.info(f"🏁 [run] Started run #{run_num} for project={project_key}")
+    return run_num
+
+
+def register_run_event(project_key: str, action_key: str) -> None:
+    """
+    Update run stats for a normal gameplay action (kill, death, etc.)
+    if a run is currently active.
+    """
+    run_num = current_run_by_project.get(project_key)
+    if not run_num:
+        return  # no active run
+
+    key = (project_key, run_num)
+    stats = run_stats_by_project.get(key)
+    if not stats:
+        # should not happen, but be safe
+        stats = {
+            "kills": 0,
+            "deaths": 0,
+            "headshots": 0,
+            "events": 0,
+            "started_at": time.time(),
+        }
+        run_stats_by_project[key] = stats
+
+    stats["events"] = stats.get("events", 0) + 1
+
+    ak = action_key.lower()
+    if ak in RUN_KILL_ACTIONS:
+        stats["kills"] = stats.get("kills", 0) + 1
+    if ak in RUN_DEATH_ACTIONS:
+        stats["deaths"] = stats.get("deaths", 0) + 1
+    if ak == "headshot":
+        stats["headshots"] = stats.get("headshots", 0) + 1
+
+
+async def end_run_for_project(project_key: str) -> None:
+    """
+    End the current run for a project, push its summary into history,
+    and mark the recap panel as visible for a while.
+    """
+    global run_panel_visible_until
+
+    run_num = current_run_by_project.get(project_key)
+    if not run_num:
+        logging.info(f"⚠️ [run] end_run_for_project called but no active run for {project_key}")
+        return
+
+    key = (project_key, run_num)
+    stats = run_stats_by_project.pop(key, None) or {
+        "kills": 0,
+        "deaths": 0,
+        "headshots": 0,
+        "events": 0,
+        "started_at": time.time(),
+    }
+
+    started_at = stats.get("started_at", time.time())
+    ended_at = time.time()
+    duration = max(0.0, ended_at - started_at)
+
+    kills = int(stats.get("kills", 0))
+    deaths = int(stats.get("deaths", 0))
+    headshots = int(stats.get("headshots", 0))
+
+    if deaths > 0:
+        kd = kills / deaths
+    else:
+        kd = float(kills) if kills > 0 else 0.0
+
+    summary = {
+        "run": run_num,
+        "project": project_key,
+        "kills": kills,
+        "deaths": deaths,
+        "headshots": headshots,
+        "kd": kd,
+        "duration": duration,
+    }
+
+    hist = run_history_by_project.setdefault(project_key, [])
+    hist.append(summary)
+    if len(hist) > MAX_RUN_HISTORY:
+        hist.pop(0)  # drop oldest
+
+    current_run_by_project[project_key] = None
+
+    # Keep the panel visible for a few minutes after this run ends
+    run_panel_visible_until = time.time() + RUN_PANEL_DURATION_SECONDS
+
+    logging.info(
+        f"🏁 [run] Ended run #{run_num} for project={project_key} "
+        f"(kills={kills}, deaths={deaths}, headshots={headshots}, kd={kd:.2f}, "
+        f"duration={duration:.1f}s)"
+    )
+
+    # Optional: also write a nice line to chapters
+    try:
+        await append_chapter_line(
+            f"Run {run_num} end (K={kills}, D={deaths}, HS={headshots})", project_key
+        )
+    except Exception:
+        # don't explode here if chapter write fails
+        logging.exception("[run] Failed to append run summary to chapter file")
+
+
+# -----------------------------
 # OVERLAY STATE
 # -----------------------------
 async def update_live_overlay(action: str, project_key: str) -> None:
     """
     Update the live overlay state (per project) exposed at /overlay.
     """
-    global overlay_clear_task, last_overlay_output, last_action, last_sound, last_meme_url, last_project
+    global overlay_clear_task, last_overlay_output, last_action, last_sound, last_meme_url, last_project, run_panel_visible_until
 
     async with state_lock:
         if action.lower() == "clear":
-            logging.info("🧹 [overlay] CLEAR action received; resetting counts.")
+            logging.info("🧹 [overlay] CLEAR action received; resetting counts and run stats.")
+
+            # Reset per-action overlay counts
             action_counts.clear()
+
+            # Reset all run-related state
+            run_counters.clear()
+            current_run_by_project.clear()
+            run_stats_by_project.clear()
+            run_history_by_project.clear()
+            run_panel_visible_until = None
+
+            # Clear overlay content & media
             last_overlay_output = ""
             last_action = ""
             last_sound = None
             last_meme_url = None
             last_project = ""
+
+            # Cancel any pending auto-clear timer
+            if overlay_clear_task and not overlay_clear_task.done():
+                overlay_clear_task.cancel()
+                overlay_clear_task = None
+
             return
 
         key = action.lower()
@@ -974,6 +1153,7 @@ async def update_live_overlay(action: str, project_key: str) -> None:
             f"project={project_key} action={last_action} sound={last_sound} meme={last_meme_url}"
         )
 
+        # reset / restart auto-clear timer
         if overlay_clear_task and not overlay_clear_task.done():
             overlay_clear_task.cancel()
 
@@ -1022,15 +1202,32 @@ async def handle_action(action: str, project: Optional[str]) -> None:
         project_key = DEFAULT_PROJECT_NAME
 
     logging.info(f"🎯 [handler] Received action={action} for project={project_key}")
-
     lower = action.lower()
 
-    # When a recording/stream starts, rotate to a new chapter file
+    # ---- Run control actions ----
+    if lower == "run_start":
+        # Start a new run for this project
+        run_num = await start_run_for_project(project_key)
+        try:
+            await append_chapter_line(f"Run {run_num} start", project_key)
+        except Exception:
+            logging.exception("[run] Failed to append run-start to chapter file")
+        return
+
+    if lower == "run_end":
+        # End current run (if any) and show recap panel
+        await end_run_for_project(project_key)
+        return
+
+    # ---- Recording start -> new chapter session ----
     if lower == "start":
         await start_new_chapter_session(project_key)
 
+    # ---- Normal actions (kills, deaths, etc.) ----
     if lower != "clear":
         await append_chapter_line(action, project_key)
+        # Update run stats if a run is in progress
+        register_run_event(project_key, lower)
 
     await update_live_overlay(action, project_key)
 
@@ -1126,7 +1323,7 @@ async def handle_http(reader: asyncio.StreamReader, writer: asyncio.StreamWriter
     """
     Simple HTTP server:
       - GET /             => serves the HTML template
-      - GET /overlay      => JSON with latest overlay text + action + sound + meme + project
+      - GET /overlay      => JSON with latest overlay text + action + sound + meme + project + runs
       - GET /config       => serves raw YAML config
       - GET /dsounds/<...> => serves cached Discord audio files
     """
@@ -1159,12 +1356,48 @@ async def handle_http(reader: asyncio.StreamReader, writer: asyncio.StreamWriter
                 sound = last_sound or ""
                 meme = last_meme_url or ""
                 project = last_project or ""
+
+                # ---- Build run summaries for the panel ----
+                runs_for_overlay: List[Dict[str, Any]] = []
+                now = time.time()
+                visible = (
+                    run_panel_visible_until is not None
+                    and now < run_panel_visible_until
+                )
+
+                if visible:
+                    # Prefer the last project seen; fall back to DEFAULT_PROJECT_NAME
+                    proj_key = project or DEFAULT_PROJECT_NAME
+                    if proj_key:
+                        hist = run_history_by_project.get(proj_key, [])
+                        n = len(hist)
+                        if n > 0:
+                            # Oldest at top, newest at bottom, with fading opacity
+                            for idx, summary in enumerate(hist):
+                                if n > 1:
+                                    # 0.25 (oldest) → 1.0 (newest)
+                                    opacity = 0.25 + 0.75 * (idx / (n - 1))
+                                else:
+                                    opacity = 1.0
+
+                                runs_for_overlay.append(
+                                    {
+                                        "run": summary.get("run"),
+                                        "kills": summary.get("kills", 0),
+                                        "deaths": summary.get("deaths", 0),
+                                        "headshots": summary.get("headshots", 0),
+                                        "kd": summary.get("kd", 0.0),
+                                        "opacity": round(float(opacity), 2),
+                                    }
+                                )
+
             body_obj = {
                 "text": text,
                 "action": action,
                 "sound": sound,
                 "meme": meme,
                 "project": project,
+                "runs": runs_for_overlay,
             }
             body_bytes = json.dumps(body_obj).encode("utf-8")
             headers = (

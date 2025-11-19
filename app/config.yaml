@@ -3,6 +3,8 @@ games:
   hunt_showdown:
     emoji: ["🤠"]
     actions:
+      run_start: "▶️"
+      run_end: "⏹️"
       alert: "🔔"
       ammo: "💣"
       assist: "🤝"
