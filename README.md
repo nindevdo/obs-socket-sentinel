@@ -11,3 +11,4 @@
 - add browser source into obs with the url of your url for socket-sentinel
   - resize to fit the window or whatever area you want to have it as it should resize for nearly any dimension
 
+
