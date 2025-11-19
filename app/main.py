@@ -85,7 +85,7 @@ RUN_KILL_ACTIONS = {"kill", "headshot"}
 RUN_DEATH_ACTIONS = {"death", "downed"}
 
 # Per-project run counters + current run
-run_counters: Dict[str, int] = {}                      # project -> last run number
+run_counters: Dict[str, int] = {}                     # project -> last run number
 current_run_by_project: Dict[str, Optional[int]] = {}  # project -> current run number or None
 
 # Per-project+run stats
@@ -1080,6 +1080,34 @@ async def end_run_for_project(project_key: str) -> None:
         logging.exception("[run] Failed to append run summary to chapter file")
 
 
+async def stop_all_runs() -> None:
+    """
+    End all active runs across all projects and post a generic summary overlay.
+    Each run still gets its normal per-project summary/history.
+    """
+    active_projects = [proj for proj, num in current_run_by_project.items() if num]
+    if not active_projects:
+        logging.info("[run] stop_all_runs called but no active runs.")
+        return
+
+    logging.info(f"[run] stop_all_runs ending runs for projects={active_projects}")
+    last_proj: Optional[str] = None
+
+    for proj in active_projects:
+        try:
+            await end_run_for_project(proj)
+            last_proj = proj
+        except Exception:
+            logging.exception(f"[run] Failed to end run for project={proj}")
+
+    # Show a generic overlay message after stopping everything
+    if last_proj:
+        try:
+            await update_live_overlay("Runs stopped", last_proj)
+        except Exception:
+            logging.exception("[run] Failed to update overlay after stop_all_runs")
+
+
 # -----------------------------
 # OVERLAY STATE
 # -----------------------------
@@ -1206,30 +1234,61 @@ async def handle_action(action: str, project: Optional[str]) -> None:
 
     # ---- Run control actions ----
     if lower == "run_start":
-        # Start a new run for this project
+        # If a run is already active for this project, end it first (split)
+        if current_run_by_project.get(project_key):
+            logging.info(f"[run] run_start received while run active; splitting run for {project_key}")
+            await end_run_for_project(project_key)
+
+        # Start next run
         run_num = await start_run_for_project(project_key)
         try:
             await append_chapter_line(f"Run {run_num} start", project_key)
         except Exception:
             logging.exception("[run] Failed to append run-start to chapter file")
 
-        # Also show a run start event in the overlay
+        # Show a run start event in the overlay
         await update_live_overlay(f"Run {run_num} start", project_key)
         return
 
     if lower == "run_end":
-        # Grab current run number (if any) before it gets cleared
+        # End the current run for this project ONCE and show a summary
         run_num = current_run_by_project.get(project_key)
 
-        # End current run (if any) and show recap panel
+        if not run_num:
+            # No active run → do nothing (prevents double-trigger)
+            logging.info(f"[run] run_end received for {project_key} but no active run; ignoring.")
+            return
+
+        # End the active run (this pushes it into history)
         await end_run_for_project(project_key)
 
-        # Show a run end event in the overlay
-        if run_num:
-            await update_live_overlay(f"Run {run_num} end", project_key)
-        else:
-            await update_live_overlay("Run end", project_key)
+        # Build a summary across *all* runs for this project
+        hist = run_history_by_project.get(project_key, [])
+        if hist:
+            total_kills = sum(r.get("kills", 0) for r in hist)
+            total_deaths = sum(r.get("deaths", 0) for r in hist)
+            total_headshots = sum(r.get("headshots", 0) for r in hist)
+            runs_count = len(hist)
 
+            if total_deaths > 0:
+                overall_kd = total_kills / total_deaths
+            else:
+                overall_kd = float(total_kills) if total_kills > 0 else 0.0
+
+            overlay_text = (
+                f"Runs {runs_count} | "
+                f"💀{total_kills}  ☠️{total_deaths}  🎯{total_headshots}  "
+                f"KD {overall_kd:.2f}"
+            )
+        else:
+            overlay_text = "No runs recorded"
+
+        await update_live_overlay(overlay_text, project_key)
+        return
+
+    if lower == "run_stop":
+        # New: end ALL active runs across all projects and post a summary message
+        await stop_all_runs()
         return
 
     # ---- Recording start -> new chapter session ----
@@ -1335,10 +1394,10 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
 async def handle_http(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
     """
     Simple HTTP server:
-      - GET /               => serves the HTML template
-      - GET /overlay        => JSON with latest overlay text + action + sound + meme + project + runs (+ active_run)
-      - GET /config         => serves raw YAML config
-      - GET /dsounds/<...>  => serves cached Discord audio files
+      - GET /             => serves the HTML template
+      - GET /overlay      => JSON with latest overlay text + action + sound + meme + project + runs
+      - GET /config       => serves raw YAML config
+      - GET /dsounds/<...> => serves cached Discord audio files
     """
     addr = writer.get_extra_info("peername")
     logging.debug(f"🌐 [http] Request from {addr}")
@@ -1370,87 +1429,72 @@ async def handle_http(reader: asyncio.StreamReader, writer: asyncio.StreamWriter
                 meme = last_meme_url or ""
                 project = last_project or ""
 
-                now = time.time()
+                # ---- Build run summaries for the panel ----
                 runs_for_overlay: List[Dict[str, Any]] = []
+                now = time.time()
 
-                # Decide which project to use for runs panel
+                # Decide which project the panel is for
                 proj_key = project or DEFAULT_PROJECT_NAME
 
-                # Figure out active run (if any)
-                active_run_num: Optional[int] = None
-                if proj_key is not None:
-                    active_run_val = current_run_by_project.get(proj_key)
-                    if active_run_val:
-                        active_run_num = active_run_val
+                if proj_key:
+                    active_run_num = current_run_by_project.get(proj_key)
+                    hist = run_history_by_project.get(proj_key, [])
 
-                # Run panel is visible if:
-                #  - there's an active run, OR
-                #  - we're inside the post-run visible window
-                visible = (
-                    (active_run_num is not None)
-                    or (
+                    # Panel is visible while a run is active OR
+                    # for some time after the last run ended.
+                    visible = bool(active_run_num) or (
                         run_panel_visible_until is not None
                         and now < run_panel_visible_until
                     )
-                )
 
-                if visible and proj_key:
-                    hist = run_history_by_project.get(proj_key, [])
-                    n = len(hist)
+                    if visible:
+                        n = len(hist)
 
-                    # 1) Finished runs (oldest at top, newest just before LIVE row)
-                    if n > 0:
-                        for idx, summary in enumerate(hist):
-                            if n > 1:
-                                # 0.25 (oldest) → 1.0 (newest)
-                                opacity = 0.25 + 0.75 * (idx / (n - 1))
+                        # Old runs (history)
+                        if n > 0:
+                            for idx, summary in enumerate(hist):
+                                if n > 1:
+                                    # 0.25 (oldest) → 1.0 (newest)
+                                    opacity = 0.25 + 0.75 * (idx / (n - 1))
+                                else:
+                                    opacity = 1.0
+
+                                runs_for_overlay.append(
+                                    {
+                                        "run": summary.get("run"),
+                                        "kills": summary.get("kills", 0),
+                                        "deaths": summary.get("deaths", 0),
+                                        "headshots": summary.get("headshots", 0),
+                                        "kd": summary.get("kd", 0.0),
+                                        "opacity": round(float(opacity), 2),
+                                        "active": False,
+                                    }
+                                )
+
+                        # Current run (active, glowing)
+                        if active_run_num:
+                            key = (proj_key, active_run_num)
+                            stats = run_stats_by_project.get(key, {}) or {}
+                            kills = int(stats.get("kills", 0))
+                            deaths = int(stats.get("deaths", 0))
+                            headshots = int(stats.get("headshots", 0))
+
+                            if deaths > 0:
+                                kd = kills / deaths
                             else:
-                                opacity = 1.0
+                                kd = float(kills) if kills > 0 else 0.0
 
                             runs_for_overlay.append(
                                 {
-                                    "run": summary.get("run"),
-                                    "kills": summary.get("kills", 0),
-                                    "deaths": summary.get("deaths", 0),
-                                    "headshots": summary.get("headshots", 0),
-                                    "kd": summary.get("kd", 0.0),
-                                    "opacity": round(float(opacity), 2),
-                                    "active": False,
+                                    "run": active_run_num,
+                                    "kills": kills,
+                                    "deaths": deaths,
+                                    "headshots": headshots,
+                                    "kd": kd,
+                                    "opacity": 1.0,
+                                    "active": True,  # <-- drives the glow CSS
                                 }
                             )
-
-                    # 2) Active run row (LIVE) with current stats, at the bottom
-                    if active_run_num is not None:
-                        stats = run_stats_by_project.get(
-                            (proj_key, active_run_num),
-                            {
-                                "kills": 0,
-                                "deaths": 0,
-                                "headshots": 0,
-                                "events": 0,
-                                "started_at": time.time(),
-                            },
-                        )
-                        kills = int(stats.get("kills", 0))
-                        deaths = int(stats.get("deaths", 0))
-                        headshots = int(stats.get("headshots", 0))
-
-                        if deaths > 0:
-                            kd_live = kills / deaths
-                        else:
-                            kd_live = float(kills) if kills > 0 else 0.0
-
-                        runs_for_overlay.append(
-                            {
-                                "run": active_run_num,
-                                "kills": kills,
-                                "deaths": deaths,
-                                "headshots": headshots,
-                                "kd": kd_live,
-                                "opacity": 1.0,
-                                "active": True,
-                            }
-                        )
 
             body_obj = {
                 "text": text,
@@ -1459,7 +1503,6 @@ async def handle_http(reader: asyncio.StreamReader, writer: asyncio.StreamWriter
                 "meme": meme,
                 "project": project,
                 "runs": runs_for_overlay,
-                "active_run": active_run_num,
             }
             body_bytes = json.dumps(body_obj).encode("utf-8")
             headers = (
