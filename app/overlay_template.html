@@ -28,7 +28,7 @@
     }
 
     /* ============================= */
-    /* COUNTER BOX (unchanged) */
+    /* COUNTER BOX                   */
     /* ============================= */
 
     .counter-box {
@@ -92,7 +92,7 @@
     }
 
     /* ============================= */
-    /* THEMES (unchanged) */
+    /* THEMES                        */
     /* ============================= */
 
     .counter-box.theme-kill,
@@ -324,7 +324,16 @@
       opacity: 0.8;
       margin-left: 0.4em;
     }
-        /* RUN START BANNER */
+
+    /* Active run row (live run) */
+    .run-row.active-run {
+      border-color: rgba(0, 255, 200, 0.9);
+      box-shadow:
+        0 0 24px rgba(0, 255, 200, 0.6),
+        0 0 38px rgba(0, 0, 0, 0.9);
+    }
+
+    /* RUN START BANNER */
     #run-banner {
       position: fixed;
       top: 6vh;
@@ -424,7 +433,9 @@
   <div id="marquee-top" class="marquee"></div>
   <div id="marquee-bottom" class="marquee"></div>
 
+  <!-- Run recap panel (oldest at top, newest at bottom) -->
   <div id="runs-panel"></div>
+  <!-- Run start banner -->
   <div id="run-banner"></div>
 
   <script>
@@ -774,12 +785,18 @@
         const row = document.createElement("div");
         row.className = "run-row";
 
+        if (run.active) {
+          row.classList.add("active-run");
+        }
+
         const opacity = typeof run.opacity === "number" ? run.opacity : 1.0;
         row.style.opacity = String(opacity);
 
         const labelSpan = document.createElement("span");
         labelSpan.className = "run-label";
-        labelSpan.textContent = `Run ${run.run}`;
+        labelSpan.textContent = run.active
+          ? `Run ${run.run} (LIVE)`
+          : `Run ${run.run}`;
 
         const statsSpan = document.createElement("span");
         const kills = run.kills ?? 0;
@@ -829,7 +846,6 @@
       void lastRow.offsetWidth; // force reflow to restart animation
       lastRow.classList.add("highlight");
     }
-
 
     /* ============================= */
     /* SOUND + MEME LOADING / PLAY   */
