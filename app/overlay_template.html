@@ -313,6 +313,9 @@
       color: #f5f5f5;
       white-space: nowrap;
       transform-origin: right center;
+      display: inline-flex;
+      align-items: baseline;
+      gap: 0.45em;
     }
 
     .run-row span.run-label {
@@ -325,12 +328,23 @@
       margin-left: 0.4em;
     }
 
-    /* Active run row (live run) */
+    /* Active run (LIVE) */
     .run-row.active-run {
-      border-color: rgba(0, 255, 200, 0.9);
       box-shadow:
-        0 0 24px rgba(0, 255, 200, 0.6),
-        0 0 38px rgba(0, 0, 0, 0.9);
+        0 0 32px rgba(0, 255, 200, 0.6),
+        0 0 58px rgba(0, 180, 255, 0.4);
+      border-color: rgba(0, 255, 200, 0.7);
+      transform: scale(1.03);
+    }
+
+    .run-row .run-live-pill {
+      font-size: 0.55em;
+      padding: 0.1em 0.6em;
+      border-radius: 999px;
+      background: rgba(255, 40, 80, 0.9);
+      color: #fff;
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
     }
 
     /* RUN START BANNER */
@@ -433,9 +447,8 @@
   <div id="marquee-top" class="marquee"></div>
   <div id="marquee-bottom" class="marquee"></div>
 
-  <!-- Run recap panel (oldest at top, newest at bottom) -->
+  <!-- runs -->
   <div id="runs-panel"></div>
-  <!-- Run start banner -->
   <div id="run-banner"></div>
 
   <script>
@@ -572,7 +585,6 @@
     /* ========= BURST WORD LOGIC ========= */
 
     function parseEventWord(text, action) {
-      // Try "💀 Kill x3" -> "KILL"
       if (text) {
         const parts = text.trim().split(/\s+/);
         if (parts.length >= 2) {
@@ -591,7 +603,6 @@
       el.className = "burst-word";
       el.textContent = word;
 
-      // Random screen position
       const x = 8 + Math.random() * 84; // vw
       const y = 8 + Math.random() * 68; // vh
 
@@ -627,10 +638,8 @@
           ? Math.min(Math.max(audio.currentTime / dur, 0), 1)
           : 0;
 
-        // base zoom path
         const baseScale = 0.3 + (3.2 - 0.3) * t;
 
-        // fade in/out
         let opacity;
         if (t < 0.12) {
           opacity = t / 0.12;
@@ -640,7 +649,6 @@
           opacity = 1;
         }
 
-        // Audio-reactive RMS (with fallback)
         let rms = 0.0;
         if (analyser && dataArray) {
           analyser.getByteTimeDomainData(dataArray);
@@ -649,9 +657,8 @@
             const v = dataArray[i] - 128;
             sum += v * v;
           }
-          rms = Math.sqrt(sum / dataArray.length) / 128; // 0..~1
+          rms = Math.sqrt(sum / dataArray.length) / 128;
         } else {
-          // fallback: gently fake some movement so bursts still fire sometimes
           rms = 0.15 + Math.random() * 0.15;
         }
 
@@ -661,7 +668,6 @@
         const angle = (Math.random() - 0.5) * (4 + rms * 10);
         const reactiveScale = baseScale * (1 + rms * 0.2);
 
-        // main state update
         mainState = {
           x: jitterX,
           y: jitterY,
@@ -670,7 +676,6 @@
           opacity: ended ? 0 : opacity,
         };
 
-        // final extreme zoom when ended
         if (ended) {
           mainState.scale = 3.2;
           mainState.x = 0;
@@ -681,10 +686,9 @@
 
         applyTransform(memeWrapper, mainState);
 
-        // Burst words: audio-reactive spawning
         if (!ended && wordBurstActive && wordBurstText) {
           const now = performance.now();
-          const loudEnough = rms > 0.12 || !analyser; // slightly softer threshold + fallback
+          const loudEnough = rms > 0.12 || !analyser;
           const inWindow = t > 0.05 && t < 0.95;
           const cooldownOk = now - lastBurstMs > 140;
 
@@ -785,18 +789,16 @@
         const row = document.createElement("div");
         row.className = "run-row";
 
+        const opacity = typeof run.opacity === "number" ? run.opacity : 1.0;
+        row.style.opacity = String(opacity);
+
         if (run.active) {
           row.classList.add("active-run");
         }
 
-        const opacity = typeof run.opacity === "number" ? run.opacity : 1.0;
-        row.style.opacity = String(opacity);
-
         const labelSpan = document.createElement("span");
         labelSpan.className = "run-label";
-        labelSpan.textContent = run.active
-          ? `Run ${run.run} (LIVE)`
-          : `Run ${run.run}`;
+        labelSpan.textContent = `Run ${run.run}`;
 
         const statsSpan = document.createElement("span");
         const kills = run.kills ?? 0;
@@ -816,6 +818,13 @@
           row.appendChild(kdSpan);
         }
 
+        if (run.active) {
+          const livePill = document.createElement("span");
+          livePill.className = "run-live-pill";
+          livePill.textContent = "LIVE";
+          row.appendChild(livePill);
+        }
+
         runsPanel.appendChild(row);
       }
     }
@@ -825,7 +834,6 @@
 
       runBanner.textContent = label || "RUN START";
       runBanner.classList.remove("show");
-      // retrigger animation
       void runBanner.offsetWidth;
       runBanner.classList.add("show");
 
@@ -834,7 +842,7 @@
       }
       runBannerTimeoutId = setTimeout(() => {
         runBanner.classList.remove("show");
-      }, 1000); // match animation duration
+      }, 1000);
     }
 
     function highlightLatestRunRow() {
@@ -843,7 +851,7 @@
       const lastRow = rows[rows.length - 1];
 
       lastRow.classList.remove("highlight");
-      void lastRow.offsetWidth; // force reflow to restart animation
+      void lastRow.offsetWidth;
       lastRow.classList.add("highlight");
     }
 
@@ -861,7 +869,6 @@
 
       const myMemeId = ++activeMemeId;
 
-      // Stop previous audio + marquee
       if (currentAudio) {
         currentAudio.pause();
         currentAudio = null;
@@ -873,7 +880,6 @@
       clearMarquee();
       resetStates();
 
-      // set up burst word text for this event
       wordBurstText = parseEventWord(lastText, lastAction);
       wordBurstActive = false;
       lastBurstMs = 0;
@@ -884,7 +890,6 @@
       preloader.onload = () => {
         if (myMemeId !== activeMemeId) return;
 
-        // recreate <img> node to force GIF animation restart
         const newMain = new Image();
         newMain.id = "meme-img";
         newMain.alt = "meme";
@@ -913,11 +918,9 @@
             }
           });
 
-          // enable bursts once we know we have an audio element
           wordBurstActive = !!wordBurstText;
         }
 
-        // show meme immediately
         mainState.opacity = 1;
         applyTransform(memeWrapper, mainState);
 
@@ -927,7 +930,6 @@
             ctx.resume().catch(() => {});
           }
 
-          // KEY: start animation only after play() succeeds.
           const playPromise = audio.play();
           if (playPromise && typeof playPromise.then === "function") {
             playPromise
@@ -940,7 +942,6 @@
                 console.warn("Audio play failed, using fake driver:", err);
                 if (myMemeId !== activeMemeId) return;
                 currentAudio = null;
-                // Fallback: behave like no-audio case
                 const fake = { duration: 1.3, currentTime: 0, paused: false, ended: false };
                 const start = performance.now();
                 if (lastText) {
@@ -972,7 +973,6 @@
                 rafId = requestAnimationFrame(fakeStep);
               });
           } else {
-            // Older browsers: just start animation immediately
             animateMeme(myMemeId, audio);
           }
 
@@ -988,7 +988,6 @@
             }
           });
         } else {
-          // No audio: fake 1s run + short marquee + bursts
           const fake = { duration: 1, currentTime: 0, paused: false, ended: false };
           const start = performance.now();
 
@@ -1049,16 +1048,11 @@
         const meme = data.meme || "";
         const runs = Array.isArray(data.runs) ? data.runs : [];
 
-        // Capture previous run history length for end animation
         const prevRunsLen = lastRunsSnapshot.length;
 
-        // Always update runs panel (even if main overlay text didn't change)
         renderRuns(runs);
-
-        // Keep a shallow copy so we can compare lengths on next poll
         lastRunsSnapshot = runs.slice();
 
-        // Detect run start / end events from the action string
         const isRunStartEvent =
           action && action.includes("run") && action.includes("start");
         const isRunEndEvent =
@@ -1070,9 +1064,7 @@
           sound !== lastSound ||
           meme !== lastMeme;
 
-        // Trigger run-specific animations even if overlay text itself didn't change much
         if (isRunStartEvent) {
-          // Use overlay text if present, otherwise generic
           const label = text || "RUN START";
           showRunBanner(label);
         }

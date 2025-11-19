@@ -85,7 +85,7 @@ RUN_KILL_ACTIONS = {"kill", "headshot"}
 RUN_DEATH_ACTIONS = {"death", "downed"}
 
 # Per-project run counters + current run
-run_counters: Dict[str, int] = {}                     # project -> last run number
+run_counters: Dict[str, int] = {}                      # project -> last run number
 current_run_by_project: Dict[str, Optional[int]] = {}  # project -> current run number or None
 
 # Per-project+run stats
@@ -1212,11 +1212,24 @@ async def handle_action(action: str, project: Optional[str]) -> None:
             await append_chapter_line(f"Run {run_num} start", project_key)
         except Exception:
             logging.exception("[run] Failed to append run-start to chapter file")
+
+        # Also show a run start event in the overlay
+        await update_live_overlay(f"Run {run_num} start", project_key)
         return
 
     if lower == "run_end":
+        # Grab current run number (if any) before it gets cleared
+        run_num = current_run_by_project.get(project_key)
+
         # End current run (if any) and show recap panel
         await end_run_for_project(project_key)
+
+        # Show a run end event in the overlay
+        if run_num:
+            await update_live_overlay(f"Run {run_num} end", project_key)
+        else:
+            await update_live_overlay("Run end", project_key)
+
         return
 
     # ---- Recording start -> new chapter session ----
@@ -1322,10 +1335,10 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
 async def handle_http(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
     """
     Simple HTTP server:
-      - GET /             => serves the HTML template
-      - GET /overlay      => JSON with latest overlay text + action + sound + meme + project + runs
-      - GET /config       => serves raw YAML config
-      - GET /dsounds/<...> => serves cached Discord audio files
+      - GET /               => serves the HTML template
+      - GET /overlay        => JSON with latest overlay text + action + sound + meme + project + runs (+ active_run)
+      - GET /config         => serves raw YAML config
+      - GET /dsounds/<...>  => serves cached Discord audio files
     """
     addr = writer.get_extra_info("peername")
     logging.debug(f"🌐 [http] Request from {addr}")
@@ -1357,39 +1370,87 @@ async def handle_http(reader: asyncio.StreamReader, writer: asyncio.StreamWriter
                 meme = last_meme_url or ""
                 project = last_project or ""
 
-                # ---- Build run summaries for the panel ----
-                runs_for_overlay: List[Dict[str, Any]] = []
                 now = time.time()
+                runs_for_overlay: List[Dict[str, Any]] = []
+
+                # Decide which project to use for runs panel
+                proj_key = project or DEFAULT_PROJECT_NAME
+
+                # Figure out active run (if any)
+                active_run_num: Optional[int] = None
+                if proj_key is not None:
+                    active_run_val = current_run_by_project.get(proj_key)
+                    if active_run_val:
+                        active_run_num = active_run_val
+
+                # Run panel is visible if:
+                #  - there's an active run, OR
+                #  - we're inside the post-run visible window
                 visible = (
-                    run_panel_visible_until is not None
-                    and now < run_panel_visible_until
+                    (active_run_num is not None)
+                    or (
+                        run_panel_visible_until is not None
+                        and now < run_panel_visible_until
+                    )
                 )
 
-                if visible:
-                    # Prefer the last project seen; fall back to DEFAULT_PROJECT_NAME
-                    proj_key = project or DEFAULT_PROJECT_NAME
-                    if proj_key:
-                        hist = run_history_by_project.get(proj_key, [])
-                        n = len(hist)
-                        if n > 0:
-                            # Oldest at top, newest at bottom, with fading opacity
-                            for idx, summary in enumerate(hist):
-                                if n > 1:
-                                    # 0.25 (oldest) → 1.0 (newest)
-                                    opacity = 0.25 + 0.75 * (idx / (n - 1))
-                                else:
-                                    opacity = 1.0
+                if visible and proj_key:
+                    hist = run_history_by_project.get(proj_key, [])
+                    n = len(hist)
 
-                                runs_for_overlay.append(
-                                    {
-                                        "run": summary.get("run"),
-                                        "kills": summary.get("kills", 0),
-                                        "deaths": summary.get("deaths", 0),
-                                        "headshots": summary.get("headshots", 0),
-                                        "kd": summary.get("kd", 0.0),
-                                        "opacity": round(float(opacity), 2),
-                                    }
-                                )
+                    # 1) Finished runs (oldest at top, newest just before LIVE row)
+                    if n > 0:
+                        for idx, summary in enumerate(hist):
+                            if n > 1:
+                                # 0.25 (oldest) → 1.0 (newest)
+                                opacity = 0.25 + 0.75 * (idx / (n - 1))
+                            else:
+                                opacity = 1.0
+
+                            runs_for_overlay.append(
+                                {
+                                    "run": summary.get("run"),
+                                    "kills": summary.get("kills", 0),
+                                    "deaths": summary.get("deaths", 0),
+                                    "headshots": summary.get("headshots", 0),
+                                    "kd": summary.get("kd", 0.0),
+                                    "opacity": round(float(opacity), 2),
+                                    "active": False,
+                                }
+                            )
+
+                    # 2) Active run row (LIVE) with current stats, at the bottom
+                    if active_run_num is not None:
+                        stats = run_stats_by_project.get(
+                            (proj_key, active_run_num),
+                            {
+                                "kills": 0,
+                                "deaths": 0,
+                                "headshots": 0,
+                                "events": 0,
+                                "started_at": time.time(),
+                            },
+                        )
+                        kills = int(stats.get("kills", 0))
+                        deaths = int(stats.get("deaths", 0))
+                        headshots = int(stats.get("headshots", 0))
+
+                        if deaths > 0:
+                            kd_live = kills / deaths
+                        else:
+                            kd_live = float(kills) if kills > 0 else 0.0
+
+                        runs_for_overlay.append(
+                            {
+                                "run": active_run_num,
+                                "kills": kills,
+                                "deaths": deaths,
+                                "headshots": headshots,
+                                "kd": kd_live,
+                                "opacity": 1.0,
+                                "active": True,
+                            }
+                        )
 
             body_obj = {
                 "text": text,
@@ -1398,6 +1459,7 @@ async def handle_http(reader: asyncio.StreamReader, writer: asyncio.StreamWriter
                 "meme": meme,
                 "project": project,
                 "runs": runs_for_overlay,
+                "active_run": active_run_num,
             }
             body_bytes = json.dumps(body_obj).encode("utf-8")
             headers = (
