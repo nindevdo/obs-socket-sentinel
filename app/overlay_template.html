@@ -298,20 +298,21 @@
       align-items: flex-end;
       gap: 0.25rem;
       pointer-events: none;
-      z-index: 5000;
+      z-index: 12000; /* above memes & marquees */
       max-height: 80vh;
       overflow: hidden;
     }
 
     .run-row {
       font-family: "ProggyClean Nerd Font", "Noto Color Emoji", sans-serif;
-      font-size: 4.5rem;               /* was 0.9rem → ~5x larger */
-      padding: 0.6rem 1.6rem;          /* slightly bigger padding to match size */
+      font-size: 4.5rem;          /* ~5x original */
+      padding: 0.6rem 1.6rem;
       border-radius: 0.8rem;
       background: rgba(10, 10, 16, 0.85);
       border: 1px solid rgba(255, 255, 255, 0.08);
       color: #f5f5f5;
       white-space: nowrap;
+      transform-origin: right center;
     }
 
     .run-row span.run-label {
@@ -323,6 +324,87 @@
       opacity: 0.8;
       margin-left: 0.4em;
     }
+        /* RUN START BANNER */
+    #run-banner {
+      position: fixed;
+      top: 6vh;
+      right: 4vw;
+      font-family: "ProggyClean Nerd Font", "Noto Color Emoji", sans-serif;
+      font-size: 4rem;
+      padding: 0.6rem 1.6rem;
+      border-radius: 1rem;
+      background: radial-gradient(circle at top left,
+        rgba(90, 190, 255, 0.35),
+        rgba(8, 12, 20, 0.96));
+      border: 1px solid rgba(255, 255, 255, 0.2);
+      color: #f5f5f5;
+      text-shadow:
+        0 0 10px rgba(0,0,0,0.9),
+        0 0 18px rgba(0,0,0,1);
+      opacity: 0;
+      transform: translateY(-20px) scale(0.9);
+      pointer-events: none;
+      z-index: 13000;
+    }
+
+    #run-banner.show {
+      animation: runBannerIn 0.9s ease-out forwards;
+    }
+
+    @keyframes runBannerIn {
+      0% {
+        opacity: 0;
+        transform: translateY(-30px) scale(0.6);
+      }
+      30% {
+        opacity: 1;
+        transform: translateY(0) scale(1.05);
+      }
+      60% {
+        opacity: 1;
+        transform: translateY(0) scale(1.0);
+      }
+      100% {
+        opacity: 0;
+        transform: translateY(-10px) scale(0.9);
+      }
+    }
+
+    /* RUN END HIGHLIGHT ON LATEST ROW */
+    .run-row.highlight {
+      animation: runRowHighlight 1.1s ease-out forwards;
+      box-shadow:
+        0 0 24px rgba(255, 255, 255, 0.65),
+        0 0 46px rgba(0, 255, 200, 0.4);
+    }
+
+    @keyframes runRowHighlight {
+      0% {
+        transform: scale(1.0);
+        box-shadow:
+          0 0 8px rgba(255, 255, 255, 0.1),
+          0 0 18px rgba(0, 0, 0, 0.8);
+      }
+      35% {
+        transform: scale(1.07);
+        box-shadow:
+          0 0 26px rgba(255, 255, 255, 0.8),
+          0 0 46px rgba(0, 255, 200, 0.55);
+      }
+      70% {
+        transform: scale(1.03);
+        box-shadow:
+          0 0 18px rgba(255, 255, 255, 0.4),
+          0 0 32px rgba(0, 255, 200, 0.3);
+      }
+      100% {
+        transform: scale(1.0);
+        box-shadow:
+          0 0 10px rgba(255, 255, 255, 0.15),
+          0 0 20px rgba(0, 0, 0, 0.8);
+      }
+    }
+
   </style>
 </head>
 
@@ -342,8 +424,8 @@
   <div id="marquee-top" class="marquee"></div>
   <div id="marquee-bottom" class="marquee"></div>
 
-  <!-- Run recap panel (oldest at top, newest at bottom) -->
   <div id="runs-panel"></div>
+  <div id="run-banner"></div>
 
   <script>
     const POLL_INTERVAL_MS = 500;
@@ -358,11 +440,16 @@
     const marqueeBottom = document.getElementById("marquee-bottom");
 
     const runsPanel = document.getElementById("runs-panel");
+    const runBanner = document.getElementById("run-banner");
 
     let lastText = null;
     let lastAction = null;
     let lastSound = null;
     let lastMeme = null;
+
+    // For run start/end detection
+    let lastRunsSnapshot = [];
+    let runBannerTimeoutId = null;
 
     let currentAudio = null;
     let activeMemeId = 0;
@@ -698,7 +785,7 @@
         const kills = run.kills ?? 0;
         const deaths = run.deaths ?? 0;
         const hs = run.headshots ?? 0;
-        statsSpan.textContent = `K:${kills} D:${deaths} HS:${hs}`;
+        statsSpan.textContent = `💀${kills}  ☠️${deaths}  🎯${hs}`;
 
         const kdSpan = document.createElement("span");
         kdSpan.className = "run-kd";
@@ -715,6 +802,34 @@
         runsPanel.appendChild(row);
       }
     }
+
+    function showRunBanner(label) {
+      if (!runBanner) return;
+
+      runBanner.textContent = label || "RUN START";
+      runBanner.classList.remove("show");
+      // retrigger animation
+      void runBanner.offsetWidth;
+      runBanner.classList.add("show");
+
+      if (runBannerTimeoutId) {
+        clearTimeout(runBannerTimeoutId);
+      }
+      runBannerTimeoutId = setTimeout(() => {
+        runBanner.classList.remove("show");
+      }, 1000); // match animation duration
+    }
+
+    function highlightLatestRunRow() {
+      const rows = runsPanel.querySelectorAll(".run-row");
+      if (!rows.length) return;
+      const lastRow = rows[rows.length - 1];
+
+      lastRow.classList.remove("highlight");
+      void lastRow.offsetWidth; // force reflow to restart animation
+      lastRow.classList.add("highlight");
+    }
+
 
     /* ============================= */
     /* SOUND + MEME LOADING / PLAY   */
@@ -918,14 +1033,37 @@
         const meme = data.meme || "";
         const runs = Array.isArray(data.runs) ? data.runs : [];
 
+        // Capture previous run history length for end animation
+        const prevRunsLen = lastRunsSnapshot.length;
+
         // Always update runs panel (even if main overlay text didn't change)
         renderRuns(runs);
+
+        // Keep a shallow copy so we can compare lengths on next poll
+        lastRunsSnapshot = runs.slice();
+
+        // Detect run start / end events from the action string
+        const isRunStartEvent =
+          action && action.includes("run") && action.includes("start");
+        const isRunEndEvent =
+          action && action.includes("run") && action.includes("end");
 
         const changed =
           text !== lastText ||
           action !== lastAction ||
           sound !== lastSound ||
           meme !== lastMeme;
+
+        // Trigger run-specific animations even if overlay text itself didn't change much
+        if (isRunStartEvent) {
+          // Use overlay text if present, otherwise generic
+          const label = text || "RUN START";
+          showRunBanner(label);
+        }
+
+        if (isRunEndEvent && runs.length > prevRunsLen) {
+          highlightLatestRunRow();
+        }
 
         if (!changed) return;
 
