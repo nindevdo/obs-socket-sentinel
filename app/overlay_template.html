@@ -291,18 +291,18 @@
 
     #runs-panel {
       position: fixed;
-      top: 10vh;
-      right: 2vw;
+      top: 12.5vh;          /* space from top */
+      right: 2vw;           /* space from right */
       display: flex;
       flex-direction: column;
       align-items: flex-end;
-      gap: 2.5rem;              /* a bit more spacing between runs */
+      gap: 1.2rem;          /* vertical spacing between rows */
       pointer-events: none;
-      z-index: 12000;            /* above memes & marquees */
-      max-height: 25vh;
-      overflow: visible;         /* don't clip glow / shadows */
+      z-index: 12000;       /* above memes & marquees */
+      max-height: 75vh;     /* about 75% of screen height */
+      overflow: visible;    /* don't clip glow / shadows */
       transform-origin: top right;
-      transform: scaleY(0);      /* folded up by default */
+      transform: scaleY(0); /* folded up by default */
       opacity: 0;
       transition:
         transform 0.35s cubic-bezier(0.22, 1, 0.36, 1),
@@ -310,14 +310,14 @@
     }
 
     #runs-panel.visible {
-      transform: scaleY(1);      /* folded down */
+      transform: scaleY(1); /* folded down */
       opacity: 1;
     }
 
     .run-row {
       font-family: "ProggyClean Nerd Font", "Noto Color Emoji", sans-serif;
-      font-size: 4.5rem;
-      padding: 0.6rem 1.6rem;
+      font-size: 3.0rem;        /* slightly smaller so 8–10 rows fit */
+      padding: 0.4rem 1.4rem;   /* tighter padding */
       border-radius: 0.8rem;
       background: rgba(10, 10, 16, 0.85);
       border: 1px solid rgba(255, 255, 255, 0.08);
@@ -1000,7 +1000,7 @@
         renderRuns(runs);
         lastRunsSnapshot = runs.slice();
 
-        // NEW: tie runs panel visibility to overlay text + having runs
+        // tie runs panel visibility to overlay text + having runs
         const hasRuns = runs && runs.length > 0;
         if (text && hasRuns) {
           runsPanel.classList.add("visible");    // fold down
@@ -1008,8 +1008,6 @@
           runsPanel.classList.remove("visible"); // fold up
         }
 
-        const isRunStartEvent =
-          action && action.includes("run") && action.includes("start");
         const isRunEndEvent =
           action && action.includes("run") && action.includes("end");
 
@@ -1018,7 +1016,6 @@
           action !== lastAction ||
           sound !== lastSound ||
           meme !== lastMeme;
-
 
         if (isRunEndEvent && runs.length > prevRunsLen) {
           highlightLatestRunRow();
