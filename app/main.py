@@ -12,6 +12,7 @@ from typing import Dict, List, Any, Optional
 
 import aiohttp  # make sure this is installed in the container
 import yaml     # pip install pyyaml
+import hashlib  # for stable cache filenames
 
 # -----------------------------
 # CONFIG / GLOBALS
@@ -22,7 +23,7 @@ OVERLAY_DISPLAY_SECONDS = 7
 overlay_clear_task: Optional[asyncio.Task] = None
 
 # Global references for overlay media
-last_sound: Optional[str] = None        # URL string for sound (Discord)
+last_sound: Optional[str] = None        # URL string for sound (Discord cached)
 last_meme_url: Optional[str] = None     # URL string for meme image/gif (Discord)
 
 # Where we consider the "recordings/markers" root
@@ -50,6 +51,11 @@ DISCORD_MESSAGES_LIMIT = int(os.getenv("DISCORD_MESSAGES_LIMIT", "100"))
 
 # YAML config path (required)
 CONFIG_PATH = Path(os.getenv("SENTINEL_CONFIG", "/app/config.yaml"))
+
+# Discord sound file cache (ephemeral)
+DISCORD_SOUND_CACHE_DIR = Path(
+    os.getenv("DISCORD_SOUND_CACHE_DIR", "/tmp/discord_sounds")
+)
 
 # Loaded from YAML
 GAMES_CONFIG: Dict[str, Dict[str, Any]] = {}
@@ -567,12 +573,65 @@ async def fetch_random_discord_meme(action_key: str, project: Optional[str]) -> 
 
 
 # -----------------------------
+# DISCORD SOUND CACHE HELPERS
+# -----------------------------
+async def cache_discord_audio(url: str) -> Optional[str]:
+    """
+    Download a Discord audio URL into an ephemeral cache directory and return
+    a local HTTP path like /dsounds/<hashed>.ext that the overlay can play.
+
+    - Files are stored under DISCORD_SOUND_CACHE_DIR
+    - Names are based on SHA256(url) + original extension
+    """
+    if not url:
+        return None
+
+    DISCORD_SOUND_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
+    # Strip query params, derive extension from URL if possible
+    base_part = url.split("?", 1)[0]
+    base_name = os.path.basename(base_part)
+    _, ext = os.path.splitext(base_name)
+    if not ext:
+        ext = ".ogg"  # sane default
+
+    # Stable name based on URL hash
+    h = hashlib.sha256(url.encode("utf-8")).hexdigest()[:32]
+    fname = f"{h}{ext}"
+    fs_path = DISCORD_SOUND_CACHE_DIR / fname
+
+    # If already cached, just reuse
+    if fs_path.exists():
+        logging.debug(f"🔊 [discord] Using cached audio for {url} -> {fs_path}")
+        return f"/dsounds/{fname}"
+
+    # Download and cache
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, timeout=15) as resp:
+                if resp.status != 200:
+                    text = await resp.text()
+                    logging.warning(
+                        f"❗ [discord] Failed to download audio {url}: "
+                        f"status={resp.status}, body={text[:200]!r}"
+                    )
+                    return None
+                data = await resp.read()
+        fs_path.write_bytes(data)
+        logging.info(f"💾 [discord] Cached audio {url} -> {fs_path}")
+        return f"/dsounds/{fname}"
+    except Exception as e:
+        logging.error(f"❗ [discord] Error caching audio {url}: {e}", exc_info=True)
+        return None
+
+
+# -----------------------------
 # DISCORD SOUND SELECTION (Discord-only SFX)
 # -----------------------------
 async def fetch_random_discord_sound(action_key: str, project: Optional[str]) -> Optional[str]:
     """
     Choose a random sound (audio URL) for the given action from the cached
-    Discord messages.
+    Discord messages, then download & cache it locally and return a /dsounds/ URL.
 
     Requirements for a message to qualify:
       - It must have a reaction that matches the *action emoji* for this action
@@ -720,26 +779,50 @@ async def fetch_random_discord_sound(action_key: str, project: Optional[str]) ->
         )
         return None
 
-    # Weighted random choice from cached candidates
+    # Weighted random choice from cached candidates, then cache locally
     items = list(weighted_candidates.items())
     total_weight = sum(w for _, w in items)
     r = random.uniform(0, total_weight)
     upto = 0.0
+
     for url, w in items:
         upto += w
         if r <= upto:
             logging.info(
-                f"🔊 [discord] Selected cached sound URL for action={action_key} "
+                f"🔊 [discord] Selected cached sound URL candidate for action={action_key} "
                 f"(project={project}): {url} (weight={w}, total={total_weight})"
             )
-            return url
+            local_url = await cache_discord_audio(url)
+            if local_url:
+                logging.info(
+                    f"🔊 [discord] Using local cached sound URL: {local_url} "
+                    f"for remote {url}"
+                )
+                return local_url
+            else:
+                logging.warning(
+                    f"❗ [discord] Failed to cache audio for {url}; trying another candidate."
+                )
 
+    # Fallback (should almost never happen)
     chosen = random.choice(list(weighted_candidates.keys()))
     logging.info(
-        f"🔊 [discord] Fallback selected cached sound URL for action={action_key} "
+        f"🔊 [discord] Fallback selected sound candidate for action={action_key} "
         f"(project={project}): {chosen}"
     )
-    return chosen
+    local_url = await cache_discord_audio(chosen)
+    if local_url:
+        logging.info(
+            f"🔊 [discord] Using fallback local cached sound URL: {local_url} "
+            f"for remote {chosen}"
+        )
+        return local_url
+
+    logging.error(
+        f"❗ [discord] Failed to cache any audio for action={action_key} "
+        f"(project={project}); returning None."
+    )
+    return None
 
 
 # -----------------------------
@@ -748,11 +831,13 @@ async def fetch_random_discord_sound(action_key: str, project: Optional[str]) ->
 def ensure_paths() -> None:
     WATCH_DIR.mkdir(parents=True, exist_ok=True)
     CHAPTER_DIR.mkdir(parents=True, exist_ok=True)
+    DISCORD_SOUND_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
     logging.info(f"📁 WATCH_DIR      = {WATCH_DIR.resolve()}")
     logging.info(f"📁 CHAPTER_DIR    = {CHAPTER_DIR.resolve()}")
     logging.info(f"📝 TEMPLATE_FILE  = {TEMPLATE_FILE.resolve()}")
     logging.info(f"🎮 DEFAULT_PROJECT_NAME = {DEFAULT_PROJECT_NAME}")
+    logging.info(f"🎧 DISCORD_SOUND_CACHE_DIR = {DISCORD_SOUND_CACHE_DIR.resolve()}")
 
 
 def format_chapter_time(seconds: float) -> str:
@@ -824,7 +909,7 @@ async def append_chapter_line(action: str, project: Optional[str]) -> None:
 
     logging.info(f"📝 [chapter] Writing line: {line.strip()} -> {current_chapter_file}")
     try:
-        with current_chapter_file.open("a", encoding="utf-8", newline="}") as f:
+        with current_chapter_file.open("a", encoding="utf-8", newline="") as f:
             f.write(line)
     except Exception as e:
         logging.error(
@@ -874,7 +959,7 @@ async def update_live_overlay(action: str, project_key: str) -> None:
         last_action = key
         last_project = project_key
 
-        # --- SOUNDS: Discord-only, global per action ---
+        # --- SOUNDS: Discord-only, cached locally ---
         last_sound = await fetch_random_discord_sound(key, project=project_key)
 
         # --- MEMES: project-scoped as before ---
@@ -1043,6 +1128,7 @@ async def handle_http(reader: asyncio.StreamReader, writer: asyncio.StreamWriter
       - GET /             => serves the HTML template
       - GET /overlay      => JSON with latest overlay text + action + sound + meme + project
       - GET /config       => serves raw YAML config
+      - GET /dsounds/<...> => serves cached Discord audio files
     """
     addr = writer.get_extra_info("peername")
     logging.debug(f"🌐 [http] Request from {addr}")
@@ -1103,6 +1189,49 @@ async def handle_http(reader: asyncio.StreamReader, writer: asyncio.StreamWriter
             headers = (
                 "HTTP/1.1 200 OK\r\n"
                 "Content-Type: text/yaml; charset=utf-8\r\n"
+                f"Content-Length: {len(body_bytes)}\r\n"
+                "Connection: close\r\n"
+                "\r\n"
+            )
+            writer.write(headers.encode("ascii") + body_bytes)
+            await writer.drain()
+
+        elif path.startswith("/dsounds/"):
+            # Static served cached Discord audio
+            rel = path[len("/dsounds/"):].lstrip("/")
+            fs_path = (DISCORD_SOUND_CACHE_DIR / rel).resolve()
+
+            # Security: ensure it's inside DISCORD_SOUND_CACHE_DIR
+            try:
+                fs_path.relative_to(DISCORD_SOUND_CACHE_DIR.resolve())
+            except ValueError:
+                logging.warning(f"🚫 [http] Attempted path escape for dsounds: {fs_path}")
+                resp = b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                writer.write(resp)
+                await writer.drain()
+                return
+
+            if not fs_path.exists() or not fs_path.is_file():
+                logging.warning(f"❓ [http] Cached sound not found: {fs_path}")
+                resp = b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                writer.write(resp)
+                await writer.drain()
+                return
+
+            try:
+                body_bytes = fs_path.read_bytes()
+                mime, _ = mimetypes.guess_type(fs_path.name)
+                mime = mime or "audio/ogg"
+            except Exception as e:
+                logging.error(f"❗ [http] Failed to read cached sound file {fs_path}: {e}", exc_info=True)
+                resp = b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                writer.write(resp)
+                await writer.drain()
+                return
+
+            headers = (
+                "HTTP/1.1 200 OK\r\n"
+                f"Content-Type: {mime}\r\n"
                 f"Content-Length: {len(body_bytes)}\r\n"
                 "Connection: close\r\n"
                 "\r\n"
