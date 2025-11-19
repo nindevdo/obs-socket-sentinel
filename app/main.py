@@ -85,7 +85,7 @@ RUN_KILL_ACTIONS = {"kill", "headshot"}
 RUN_DEATH_ACTIONS = {"death", "downed"}
 
 # Per-project run counters + current run
-run_counters: Dict[str, int] = {}                     # project -> last run number
+run_counters: Dict[str, int] = {}                      # project -> last run number
 current_run_by_project: Dict[str, Optional[int]] = {}  # project -> current run number or None
 
 # Per-project+run stats
@@ -107,8 +107,8 @@ run_history_by_project: Dict[str, List[Dict[str, Any]]] = {}
 RUN_PANEL_DURATION_SECONDS = 180  # 3 minutes
 run_panel_visible_until: Optional[float] = None
 
-# Maximum number of runs to keep in history per project
-MAX_RUN_HISTORY = 10
+# Max number of runs to *display* in the panel (backend-side visual cap)
+MAX_VISIBLE_RUNS = 10
 
 # Discord meme/sound cache
 discord_messages_cache: List[dict] = []         # all messages from channel
@@ -1054,10 +1054,9 @@ async def end_run_for_project(project_key: str) -> None:
         "duration": duration,
     }
 
+    # 🔵 No backend cap: keep full history; frontend decides what to show.
     hist = run_history_by_project.setdefault(project_key, [])
     hist.append(summary)
-    if len(hist) > MAX_RUN_HISTORY:
-        hist.pop(0)  # drop oldest
 
     current_run_by_project[project_key] = None
 
@@ -1438,7 +1437,7 @@ async def handle_http(reader: asyncio.StreamReader, writer: asyncio.StreamWriter
 
                 if proj_key:
                     active_run_num = current_run_by_project.get(proj_key)
-                    hist = run_history_by_project.get(proj_key, [])
+                    full_hist = run_history_by_project.get(proj_key, [])
 
                     # Panel is visible while a run is active OR
                     # for some time after the last run ended.
@@ -1447,29 +1446,34 @@ async def handle_http(reader: asyncio.StreamReader, writer: asyncio.StreamWriter
                         and now < run_panel_visible_until
                     )
 
-                    if visible:
+                    if visible and full_hist:
+                        # Only send the last MAX_VISIBLE_RUNS runs to the frontend
+                        if MAX_VISIBLE_RUNS > 0:
+                            hist = full_hist[-MAX_VISIBLE_RUNS:]
+                        else:
+                            hist = full_hist
+
                         n = len(hist)
 
                         # Old runs (history)
-                        if n > 0:
-                            for idx, summary in enumerate(hist):
-                                if n > 1:
-                                    # 0.25 (oldest) → 1.0 (newest)
-                                    opacity = 0.25 + 0.75 * (idx / (n - 1))
-                                else:
-                                    opacity = 1.0
+                        for idx, summary in enumerate(hist):
+                            if n > 1:
+                                # 0.25 (oldest) → 1.0 (newest), based on *visible* slice
+                                opacity = 0.25 + 0.75 * (idx / (n - 1))
+                            else:
+                                opacity = 1.0
 
-                                runs_for_overlay.append(
-                                    {
-                                        "run": summary.get("run"),
-                                        "kills": summary.get("kills", 0),
-                                        "deaths": summary.get("deaths", 0),
-                                        "headshots": summary.get("headshots", 0),
-                                        "kd": summary.get("kd", 0.0),
-                                        "opacity": round(float(opacity), 2),
-                                        "active": False,
-                                    }
-                                )
+                            runs_for_overlay.append(
+                                {
+                                    "run": summary.get("run"),
+                                    "kills": summary.get("kills", 0),
+                                    "deaths": summary.get("deaths", 0),
+                                    "headshots": summary.get("headshots", 0),
+                                    "kd": summary.get("kd", 0.0),
+                                    "opacity": round(float(opacity), 2),
+                                    "active": False,
+                                }
+                            )
 
                         # Current run (active, glowing)
                         if active_run_num:
