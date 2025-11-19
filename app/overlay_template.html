@@ -1,0 +1,871 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Socket Sentinel Overlay</title>
+
+  <style>
+    @font-face {
+      font-family: "ProggyClean Nerd Font";
+      src: local("ProggyClean Nerd Font"), local("ProggyClean Nerd Font Mono");
+      font-style: normal;
+      font-weight: normal;
+    }
+
+    html, body {
+      margin: 0;
+      padding: 0;
+      background: rgba(0,0,0,0);
+      overflow: hidden;
+      font-family: "ProggyClean Nerd Font", "Noto Color Emoji", sans-serif;
+    }
+
+    #overlay-root {
+      position: fixed;
+      bottom: 4vh;
+      right: 3vw;
+      pointer-events: none;
+    }
+
+    /* ============================= */
+    /* COUNTER BOX (unchanged) */
+    /* ============================= */
+
+    .counter-box {
+      display: inline-flex;
+      flex-direction: row;
+      align-items: center;
+
+      padding: 0.7rem 1.1rem;
+      border-radius: 1rem;
+
+      background: rgba(20, 20, 28, 0.9);
+      border: 0.08rem solid rgba(255,255,255,0.1);
+      box-shadow:
+        0 0.8rem 2.4rem rgba(0,0,0,0.55),
+        0 0 0.8rem rgba(0,255,220,0.15);
+
+      font-size: clamp(1.3rem, 2.3vw, 2.4rem);
+      line-height: 1.0;
+      gap: 0.4em;
+      color: #fff;
+
+      transform: translateX(180%);
+      opacity: 0;
+      transition:
+        transform 0.35s cubic-bezier(0.22, 1, 0.36, 1),
+        opacity 0.25s ease-out;
+    }
+
+    .counter-box.visible {
+      transform: translateX(0%);
+      opacity: 1;
+    }
+
+    .counter-text {
+      font-family: "ProggyClean Nerd Font", "Noto Color Emoji", sans-serif;
+      white-space: nowrap;
+      letter-spacing: 0.04em;
+      padding-top: 0.15em;
+    }
+
+    .counter-box.flash {
+      animation: flashGlow 0.45s ease-out;
+    }
+
+    @keyframes flashGlow {
+      0% {
+        box-shadow:
+          0 0.8rem 2.4rem rgba(0,0,0,0.55),
+          0 0 0.8rem rgba(0,255,220,0.15);
+      }
+      40% {
+        box-shadow:
+          0 1.4rem 3.2rem rgba(0,0,0,0.7),
+          0 0 1.4rem rgba(255,255,255,0.65);
+      }
+      100% {
+        box-shadow:
+          0 0.8rem 2.4rem rgba(0,0,0,0.55),
+          0 0 0.8rem rgba(0,255,220,0.15);
+      }
+    }
+
+    /* ============================= */
+    /* THEMES (unchanged) */
+    /* ============================= */
+
+    .counter-box.theme-kill,
+    .counter-box.theme-headshot {
+      background: radial-gradient(circle at top left,
+        rgba(255, 80, 80, 0.25),
+        rgba(20,20,28,0.95));
+    }
+
+    .counter-box.theme-death,
+    .counter-box.theme-downed {
+      background: radial-gradient(circle at top left,
+        rgba(180, 0, 0, 0.3),
+        rgba(10,10,16,0.95));
+    }
+
+    .counter-box.theme-revive {
+      background: radial-gradient(circle at top left,
+        rgba(60, 200, 120, 0.35),
+        rgba(12,18,16,0.95));
+    }
+
+    .counter-box.theme-funny {
+      background: radial-gradient(circle at top left,
+        rgba(255, 200, 80, 0.4),
+        rgba(30, 22, 10, 0.95));
+    }
+
+    .counter-box.theme-banish {
+      background: radial-gradient(circle at top left,
+        rgba(190, 60, 255, 0.45),
+        rgba(18, 10, 26, 0.96));
+    }
+
+    .counter-box.theme-extraction {
+      background: radial-gradient(circle at top left,
+        rgba(90, 190, 255, 0.4),
+        rgba(8, 18, 26, 0.96));
+    }
+
+    /* ============================= */
+    /* MEME (audio-driven)           */
+    /* ============================= */
+
+    .meme-layer {
+      position: fixed;
+      left: 50%;
+      top: 50%;
+      transform: translate(-50%, -50%) scale(0.3) rotate(0deg);
+      transform-origin: center center;
+      opacity: 0;
+      pointer-events: none;
+      z-index: 9999;
+    }
+
+    #meme-wrapper {
+      z-index: 9999;
+    }
+
+    #meme-img {
+      width: 80vw;
+      max-height: 80vh;
+      border-radius: 1rem;
+      object-fit: contain;
+      box-shadow: none;
+    }
+
+    /* ============================= */
+    /* EMOJI MARQUEE (top & bottom)  */
+    /* ============================= */
+
+    .marquee {
+      position: fixed;
+      left: 0;
+      width: 100vw;
+      font-size: 3rem;
+      white-space: nowrap;
+      pointer-events: none;
+      z-index: 11000; /* in front of meme */
+      opacity: 0;
+      text-align: center;
+      padding: 100px;
+    }
+
+    #marquee-top {
+      top: 0;
+    }
+
+    #marquee-bottom {
+      bottom: 0;
+    }
+
+    .marquee-inner {
+      display: inline-block;
+    }
+
+    .marquee.active {
+      opacity: 1;
+    }
+
+    @keyframes marqueeTopFlow {
+      0% {
+        transform: translateX(-110vw);
+        opacity: 0;
+      }
+      20% {
+        transform: translateX(-10vw);
+        opacity: 1;
+      }
+      70% {
+        transform: translateX(10vw);
+        opacity: 1;
+      }
+      100% {
+        transform: translateX(110vw);
+        opacity: 0;
+      }
+    }
+
+    @keyframes marqueeBottomFlow {
+      0% {
+        transform: translateX(110vw);
+        opacity: 0;
+      }
+      20% {
+        transform: translateX(10vw);
+        opacity: 1;
+      }
+      70% {
+        transform: translateX(-10vw);
+        opacity: 1;
+      }
+      100% {
+        transform: translateX(-110vw);
+        opacity: 0;
+      }
+    }
+
+    .marquee.active .marquee-inner-top {
+      animation: marqueeTopFlow var(--marquee-duration, 4s)
+        cubic-bezier(0.22, 1, 0.36, 1) forwards;
+    }
+
+    .marquee.active .marquee-inner-bottom {
+      animation: marqueeBottomFlow var(--marquee-duration, 4s)
+        cubic-bezier(0.22, 1, 0.36, 1) forwards;
+    }
+
+    /* ============================= */
+    /* BURST WORDS (event text)      */
+    /* ============================= */
+
+    .burst-word {
+      position: fixed;
+      left: 50%;
+      top: 50%;
+      transform: translate(-50%, -50%) scale(0.1);
+      transform-origin: center center;
+      pointer-events: none;
+      z-index: 10900; /* above meme, below marquee */
+      font-family: "ProggyClean Nerd Font", sans-serif;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      color: #fff;
+      text-shadow:
+        0 0 12px rgba(0,0,0,0.8),
+        0 0 22px rgba(0,0,0,1),
+        0 0 36px rgba(0,0,0,1);
+      opacity: 0;
+      animation: burstZoomFade 0.7s ease-out forwards;
+      mix-blend-mode: screen;
+    }
+
+    @keyframes burstZoomFade {
+      0% {
+        opacity: 0;
+        transform: translate(-50%, -50%) scale(0.1);
+      }
+      10% {
+        opacity: 1;
+        transform: translate(-50%, -50%) scale(0.9);
+      }
+      50% {
+        opacity: 1;
+        transform: translate(-50%, -50%) scale(1.7);
+      }
+      100% {
+        opacity: 0;
+        transform: translate(-50%, -50%) scale(3.0);
+      }
+    }
+  </style>
+</head>
+
+<body>
+  <div id="overlay-root">
+    <div class="counter-box" id="counter-box">
+      <span class="counter-text" id="counter-text"></span>
+    </div>
+  </div>
+
+  <!-- main meme -->
+  <div id="meme-wrapper" class="meme-layer">
+    <img id="meme-img" src="" alt="meme">
+  </div>
+
+  <!-- emoji marquees -->
+  <div id="marquee-top" class="marquee"></div>
+  <div id="marquee-bottom" class="marquee"></div>
+
+  <script>
+    const POLL_INTERVAL_MS = 500;
+
+    const boxEl = document.getElementById("counter-box");
+    const textEl = document.getElementById("counter-text");
+
+    const memeWrapper = document.getElementById("meme-wrapper");
+    let memeImg = document.getElementById("meme-img");
+
+    const marqueeTop = document.getElementById("marquee-top");
+    const marqueeBottom = document.getElementById("marquee-bottom");
+
+    let lastText = null;
+    let lastAction = null;
+    let lastSound = null;
+    let lastMeme = null;
+
+    let currentAudio = null;
+    let activeMemeId = 0;
+
+    // Web Audio nodes
+    let audioCtx = null;
+    let analyser = null;
+    let dataArray = null;
+    let rafId = null;
+
+    // meme state
+    const baseState = {
+      x: 0,
+      y: 0,
+      scale: 0.3,
+      angle: 0,
+      opacity: 0,
+    };
+    let mainState = { ...baseState };
+
+    // burst word state
+    let wordBurstActive = false;
+    let wordBurstText = "";
+    let lastBurstMs = 0;
+
+    const themeMap = {
+      kill: "theme-kill",
+      headshot: "theme-headshot",
+      death: "theme-death",
+      downed: "theme-downed",
+      revive: "theme-revive",
+      funny: "theme-funny",
+      banish: "theme-banish",
+      extraction: "theme-extraction",
+    };
+
+    const allThemes = Object.values(themeMap);
+
+    function applyTheme(action) {
+      allThemes.forEach(cls => boxEl.classList.remove(cls));
+      const key = action || "";
+      if (themeMap[key]) boxEl.classList.add(themeMap[key]);
+    }
+
+    function triggerFlash() {
+      boxEl.classList.remove("flash");
+      void boxEl.offsetWidth;
+      boxEl.classList.add("flash");
+    }
+
+    function resetStates() {
+      mainState = { ...baseState };
+      applyTransform(memeWrapper, mainState);
+    }
+
+    function clearMeme() {
+      if (rafId) {
+        cancelAnimationFrame(rafId);
+        rafId = null;
+      }
+      memeImg.src = "";
+      resetStates();
+      wordBurstActive = false;
+      wordBurstText = "";
+    }
+
+    function withCacheBuster(url) {
+      if (!url) return url;
+      const sep = url.includes("?") ? "&" : "?";
+      return `${url}${sep}cb=${Date.now()}`;
+    }
+
+    function ensureAudioContext() {
+      if (!audioCtx) {
+        const Ctx = window.AudioContext || window.webkitAudioContext;
+        if (!Ctx) return null;
+        audioCtx = new Ctx();
+      }
+      return audioCtx;
+    }
+
+    function setupAnalyserForAudio(audio) {
+      const ctx = ensureAudioContext();
+      if (!ctx) return;
+
+      const source = ctx.createMediaElementSource(audio);
+      analyser = ctx.createAnalyser();
+      analyser.fftSize = 512;
+
+      const bufferLength = analyser.frequencyBinCount;
+      dataArray = new Uint8Array(bufferLength);
+
+      source.connect(analyser);
+      analyser.connect(ctx.destination);
+    }
+
+    function applyTransform(el, state) {
+      el.style.opacity = String(state.opacity);
+      el.style.transform =
+        `translate(calc(-50% + ${state.x.toFixed(1)}px), ` +
+        `calc(-50% + ${state.y.toFixed(1)}px)) ` +
+        `scale(${state.scale.toFixed(3)}) rotate(${state.angle.toFixed(2)}deg)`;
+    }
+
+    function lerp(a, b, t) {
+      return a + (b - a) * t;
+    }
+
+    /* ========= BURST WORD LOGIC ========= */
+
+    function parseEventWord(text, action) {
+      // Try "💀 Kill x3" -> "KILL"
+      if (text) {
+        const parts = text.trim().split(/\s+/);
+        if (parts.length >= 2) {
+          const candidate = parts[1].replace(/x\d+$/i, "");
+          if (candidate) return candidate.toUpperCase();
+        }
+      }
+      if (action) return action.toUpperCase();
+      return "";
+    }
+
+    function spawnBurstWord(word) {
+      if (!word) return;
+
+      const el = document.createElement("div");
+      el.className = "burst-word";
+      el.textContent = word;
+
+      // Random screen position
+      const x = 8 + Math.random() * 84; // vw
+      const y = 8 + Math.random() * 68; // vh
+
+      const fontSize = 2.0 + Math.random() * 4.0; // rem
+      const dur = 0.55 + Math.random() * 0.45;    // 0.55–1.0s
+
+      el.style.left = x + "vw";
+      el.style.top = y + "vh";
+      el.style.fontSize = fontSize + "rem";
+      el.style.animationDuration = dur + "s";
+
+      document.body.appendChild(el);
+      el.addEventListener("animationend", () => {
+        el.remove();
+      });
+    }
+
+    function animateMeme(myMemeId, audio) {
+      if (rafId) {
+        cancelAnimationFrame(rafId);
+        rafId = null;
+      }
+
+      function step() {
+        if (myMemeId !== activeMemeId) {
+          return;
+        }
+
+        const ended = !audio || audio.ended || audio.paused;
+
+        const dur = (audio && audio.duration) || 1;
+        const t = audio
+          ? Math.min(Math.max(audio.currentTime / dur, 0), 1)
+          : 0;
+
+        // base zoom path
+        const baseScale = 0.3 + (3.2 - 0.3) * t;
+
+        // fade in/out
+        let opacity;
+        if (t < 0.12) {
+          opacity = t / 0.12;
+        } else if (t > 0.85) {
+          opacity = Math.max(0, (1 - t) / 0.15);
+        } else {
+          opacity = 1;
+        }
+
+        // Audio-reactive RMS (with fallback)
+        let rms = 0.0;
+        if (analyser && dataArray) {
+          analyser.getByteTimeDomainData(dataArray);
+          let sum = 0;
+          for (let i = 0; i < dataArray.length; i++) {
+            const v = dataArray[i] - 128;
+            sum += v * v;
+          }
+          rms = Math.sqrt(sum / dataArray.length) / 128; // 0..~1
+        } else {
+          // fallback: gently fake some movement so bursts still fire sometimes
+          rms = 0.15 + Math.random() * 0.15;
+        }
+
+        const shakeStrength = 4 + rms * 10;
+        const jitterX = (Math.random() - 0.5) * shakeStrength;
+        const jitterY = (Math.random() - 0.5) * shakeStrength;
+        const angle = (Math.random() - 0.5) * (4 + rms * 10);
+        const reactiveScale = baseScale * (1 + rms * 0.2);
+
+        // main state update
+        mainState = {
+          x: jitterX,
+          y: jitterY,
+          scale: reactiveScale,
+          angle: angle,
+          opacity: ended ? 0 : opacity,
+        };
+
+        // final extreme zoom when ended
+        if (ended) {
+          mainState.scale = 3.2;
+          mainState.x = 0;
+          mainState.y = 0;
+          mainState.angle = 0;
+          wordBurstActive = false;
+        }
+
+        applyTransform(memeWrapper, mainState);
+
+        // Burst words: audio-reactive spawning
+        if (!ended && wordBurstActive && wordBurstText) {
+          const now = performance.now();
+          const loudEnough = rms > 0.12 || !analyser; // slightly softer threshold + fallback
+          const inWindow = t > 0.05 && t < 0.95;
+          const cooldownOk = now - lastBurstMs > 140;
+
+          if (loudEnough && inWindow && cooldownOk) {
+            spawnBurstWord(wordBurstText);
+            lastBurstMs = now;
+          }
+        }
+
+        if (!ended) {
+          rafId = requestAnimationFrame(step);
+        }
+      }
+
+      rafId = requestAnimationFrame(step);
+    }
+
+    /* ============================= */
+    /* MARQUEE HELPERS               */
+    /* ============================= */
+
+    function clearMarquee() {
+      marqueeTop.classList.remove("active");
+      marqueeBottom.classList.remove("active");
+      marqueeTop.innerHTML = "";
+      marqueeBottom.innerHTML = "";
+    }
+
+    function parseEmojiAndCount(text) {
+      if (!text) return { emoji: "", count: 0 };
+
+      const parts = text.trim().split(/\s+/);
+      const emoji = parts[0] || "";
+
+      const match = text.match(/x\s*(\d+)/i);
+      let count = match ? parseInt(match[1], 10) : 1;
+      if (!Number.isFinite(count) || count < 1) count = 1;
+
+      return { emoji, count };
+    }
+
+    function startMarqueeFromText(text, durationSec) {
+      if (!text) {
+        clearMarquee();
+        return;
+      }
+
+      const { emoji, count } = parseEmojiAndCount(text);
+      if (!emoji || count <= 0) {
+        clearMarquee();
+        return;
+      }
+
+      const strip = Array(count).fill(emoji).join(" ");
+
+      marqueeTop.innerHTML = "";
+      marqueeBottom.innerHTML = "";
+
+      const topInner = document.createElement("div");
+      topInner.className = "marquee-inner marquee-inner-top";
+      topInner.textContent = strip;
+
+      const bottomInner = document.createElement("div");
+      bottomInner.className = "marquee-inner marquee-inner-bottom";
+      bottomInner.textContent = strip;
+
+      marqueeTop.appendChild(topInner);
+      marqueeBottom.appendChild(bottomInner);
+
+      const dur = (isFinite(durationSec) && durationSec > 0.2)
+        ? durationSec
+        : 4;
+
+      marqueeTop.style.setProperty("--marquee-duration", `${dur}s`);
+      marqueeBottom.style.setProperty("--marquee-duration", `${dur}s`);
+
+      marqueeTop.classList.remove("active");
+      marqueeBottom.classList.remove("active");
+      void marqueeTop.offsetWidth;
+      void marqueeBottom.offsetWidth;
+
+      marqueeTop.classList.add("active");
+      marqueeBottom.classList.add("active");
+    }
+
+    /* ============================= */
+    /* SOUND + MEME LOADING / PLAY   */
+    /* ============================= */
+
+    function playSoundAndAnimate(soundUrl, memeUrl) {
+      if (!memeUrl) {
+        clearMeme();
+        clearMarquee();
+        wordBurstActive = false;
+        return;
+      }
+
+      const myMemeId = ++activeMemeId;
+
+      // Stop previous audio + marquee
+      if (currentAudio) {
+        currentAudio.pause();
+        currentAudio = null;
+      }
+      if (rafId) {
+        cancelAnimationFrame(rafId);
+        rafId = null;
+      }
+      clearMarquee();
+      resetStates();
+
+      // set up burst word text for this event
+      wordBurstText = parseEventWord(lastText, lastAction);
+      wordBurstActive = false;
+      lastBurstMs = 0;
+
+      const bustUrl = withCacheBuster(memeUrl);
+      const preloader = new Image();
+
+      preloader.onload = () => {
+        if (myMemeId !== activeMemeId) return;
+
+        // recreate <img> node to force GIF animation restart
+        const newMain = new Image();
+        newMain.id = "meme-img";
+        newMain.alt = "meme";
+        newMain.src = bustUrl;
+        newMain.style.width = "80vw";
+        newMain.style.maxHeight = "80vh";
+        newMain.style.borderRadius = "1rem";
+        newMain.style.objectFit = "contain";
+        newMain.style.boxShadow = "none";
+
+        memeWrapper.replaceChild(newMain, memeImg);
+        memeImg = newMain;
+
+        let audio = null;
+        if (soundUrl) {
+          audio = new Audio(soundUrl);
+          audio.volume = 0.7;
+          currentAudio = audio;
+          setupAnalyserForAudio(audio);
+
+          audio.addEventListener("loadedmetadata", () => {
+            const total = audio.duration || 1;
+            const marqueeDuration = total + 0.25;
+            if (lastText) {
+              startMarqueeFromText(lastText, marqueeDuration);
+            }
+          });
+
+          // enable bursts once we know we have an audio element
+          wordBurstActive = !!wordBurstText;
+        }
+
+        // show meme immediately
+        mainState.opacity = 1;
+        applyTransform(memeWrapper, mainState);
+
+        if (audio) {
+          const ctx = ensureAudioContext();
+          if (ctx && ctx.state === "suspended") {
+            ctx.resume().catch(() => {});
+          }
+
+          // KEY: start animation only after play() succeeds.
+          const playPromise = audio.play();
+          if (playPromise && typeof playPromise.then === "function") {
+            playPromise
+              .then(() => {
+                if (myMemeId === activeMemeId) {
+                  animateMeme(myMemeId, audio);
+                }
+              })
+              .catch(err => {
+                console.warn("Audio play failed, using fake driver:", err);
+                if (myMemeId !== activeMemeId) return;
+                currentAudio = null;
+                // Fallback: behave like no-audio case
+                const fake = { duration: 1.3, currentTime: 0, paused: false, ended: false };
+                const start = performance.now();
+                if (lastText) {
+                  startMarqueeFromText(lastText, 1.35);
+                }
+                wordBurstActive = !!wordBurstText;
+
+                function fakeStep(now) {
+                  const elapsed = (now - start) / 1000;
+                  fake.currentTime = elapsed;
+                  if (elapsed >= fake.duration) {
+                    fake.paused = true;
+                    fake.ended = true;
+                  }
+                  animateMeme(myMemeId, fake);
+                  if (!fake.ended) {
+                    rafId = requestAnimationFrame(fakeStep);
+                  } else {
+                    wordBurstActive = false;
+                    setTimeout(() => {
+                      if (myMemeId === activeMemeId) {
+                        clearMeme();
+                        clearMarquee();
+                      }
+                    }, 250);
+                  }
+                }
+
+                rafId = requestAnimationFrame(fakeStep);
+              });
+          } else {
+            // Older browsers: just start animation immediately
+            animateMeme(myMemeId, audio);
+          }
+
+          audio.addEventListener("ended", () => {
+            if (myMemeId === activeMemeId) {
+              wordBurstActive = false;
+              setTimeout(() => {
+                if (myMemeId === activeMemeId) {
+                  clearMeme();
+                  clearMarquee();
+                }
+              }, 250);
+            }
+          });
+        } else {
+          // No audio: fake 1s run + short marquee + bursts
+          const fake = { duration: 1, currentTime: 0, paused: false, ended: false };
+          const start = performance.now();
+
+          if (lastText) {
+            startMarqueeFromText(lastText, 1.25);
+          }
+          wordBurstActive = !!wordBurstText;
+
+          function fakeStep(now) {
+            const elapsed = (now - start) / 1000;
+            fake.currentTime = elapsed;
+            if (elapsed >= 1) {
+              fake.paused = true;
+              fake.ended = true;
+            }
+            animateMeme(myMemeId, fake);
+            if (!fake.ended) {
+              rafId = requestAnimationFrame(fakeStep);
+            } else {
+              wordBurstActive = false;
+              setTimeout(() => {
+                if (myMemeId === activeMemeId) {
+                  clearMeme();
+                  clearMarquee();
+                }
+              }, 250);
+            }
+          }
+
+          rafId = requestAnimationFrame(fakeStep);
+        }
+      };
+
+      preloader.onerror = () => {
+        if (myMemeId === activeMemeId) {
+          clearMeme();
+          clearMarquee();
+          wordBurstActive = false;
+        }
+      };
+
+      preloader.src = bustUrl;
+    }
+
+    /* ============================= */
+    /* POLL BACKEND /overlay         */
+    /* ============================= */
+
+    async function pollOverlay() {
+      try {
+        const res = await fetch("/overlay", { cache: "no-store" });
+        if (!res.ok) return;
+
+        const data = await res.json();
+        const text = data.text || "";
+        const action = (data.action || "").toLowerCase();
+        const sound = data.sound || "";
+        const meme = data.meme || "";
+
+        const changed =
+          text !== lastText ||
+          action !== lastAction ||
+          sound !== lastSound ||
+          meme !== lastMeme;
+
+        if (!changed) return;
+
+        lastText = text;
+        lastAction = action;
+        lastSound = sound;
+        lastMeme = meme;
+
+        if (!text) {
+          boxEl.classList.remove("visible");
+          boxEl.classList.remove("flash");
+          textEl.textContent = "";
+          return;
+        }
+
+        textEl.textContent = text;
+        applyTheme(action);
+
+        boxEl.classList.add("visible");
+        triggerFlash();
+
+        if (meme) {
+          playSoundAndAnimate(sound, meme);
+        }
+      } catch (err) {
+        console.error("Overlay poll error:", err);
+      }
+    }
+
+    pollOverlay();
+    setInterval(pollOverlay, POLL_INTERVAL_MS);
+  </script>
+</body>
+</html>
+

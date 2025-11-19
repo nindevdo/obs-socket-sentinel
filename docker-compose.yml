@@ -1,0 +1,24 @@
+services:
+  obs-socket-sentinel:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    working_dir: /app
+    restart: always
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      - CHAPTER_FILE=/markers/chapters.txt
+      - DISCORD_BOT_TOKEN=${DISCORD_BOT_TOKEN}
+      - DISCORD_CHANNEL_ID=${DISCORD_CHANNEL_ID}
+      - HTTP_HOST=0.0.0.0
+      - HTTP_PORT=8088
+      - LISTEN_PORT=5678
+      - TEMPLATE_FILE=/app/overlay_template.html
+      - WATCH_DIR=/markers
+    volumes:
+      - ./_data/markers:/markers:rw
+    ports:
+      - "5678:5678"
+      - "8088:8088"
+

@@ -1,0 +1,43 @@
+project_name: hunt_showdown
+games:
+  hunt_showdown:
+    emoji: ["🤠"]
+    actions:
+      alert: "🔔"
+      ammo: "💣"
+      assist: "🤝"
+      banish: "👹"
+      bleed: "🩸"
+      clear: "🧹"
+      death: "☠️"
+      downed: "🤬"
+      extract: "⛵"
+      fire: "🔥"
+      funny: "😂"
+      headshot: "🤯"
+      heal: "🩹"
+      kill: "💀"
+      melee: "🗡️"
+      noise: "📢"
+      poison: "☠️"
+      reload: "🔄"
+      revive: "❤️"
+      shootout: "🔫"
+      snipe: "🎯"
+      stealth: "🕵️"
+      traded: "🔄"
+      trap: "🪤"
+  enshrouded:
+    emoji: ["🧙", "🪄"]
+    actions:
+      clear: "🧹"
+      kill: "💀"
+      magic: "🧝"
+      revive: "✨"
+      teleport: "🌀"
+  chivalry2:
+    emoji: ["🤺"]
+    actions:
+      clear: "🧹"
+      death: "🩸"
+      kill: "☠️"
