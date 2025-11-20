@@ -43,3 +43,11 @@ games:
       clear: "🧹"
       death: "🩸"
       kill: "☠️"
+  fortnite:
+    emoji: ["🍆"]
+    actions:
+      clear: "🧹"
+      death: "☠️"
+      kill: "💀"
+      run_end: "⏹️"
+      run_start: "▶️"
