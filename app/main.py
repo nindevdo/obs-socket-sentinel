@@ -13,6 +13,7 @@ from typing import Dict, List, Any, Optional
 import aiohttp  # make sure this is installed in the container
 import yaml     # pip install pyyaml
 import hashlib  # for stable cache filenames
+import re       # for YouTube detection
 
 # -----------------------------
 # CONFIG / GLOBALS
@@ -25,6 +26,8 @@ overlay_clear_task: Optional[asyncio.Task] = None
 # Global references for overlay media
 last_sound: Optional[str] = None        # URL string for sound (Discord cached)
 last_meme_url: Optional[str] = None     # URL string for meme image/gif (Discord)
+last_video_url: Optional[str] = None    # URL string for video (YouTube/direct)
+last_video_duration: Optional[float] = None  # Seconds, if known
 
 # Where we consider the "recordings/markers" root
 WATCH_DIR = Path(os.getenv("WATCH_DIR", "/markers"))
@@ -114,6 +117,8 @@ MAX_VISIBLE_RUNS = 10
 discord_messages_cache: List[dict] = []         # all messages from channel
 discord_game_caches: Dict[str, List[dict]] = {} # per-game filtered messages
 discord_cache_lock = asyncio.Lock()             # to avoid concurrent rebuilds
+
+YOUTUBE_RE = re.compile(r"(youtube\.com|youtu\.be)", re.IGNORECASE)
 
 # -----------------------------
 # LOGGING
@@ -606,6 +611,256 @@ async def fetch_random_discord_meme(action_key: str, project: Optional[str]) -> 
 
 
 # -----------------------------
+# DISCORD VIDEO SELECTION
+# -----------------------------
+async def fetch_random_discord_video(action_key: str, project: Optional[str]) -> Optional[str]:
+    """
+    Choose a random *video* URL (YouTube or direct video file) for the given
+    action and project from the cached Discord messages.
+
+    Rules:
+      - Same project scoping as memes (GAME_EMOJI_MAP + project filtering).
+      - Same action-emoji matching as memes.
+      - A candidate is considered "video" if:
+          * attachment/content_type starts with video/
+          * filename or URL ends with a known video extension
+          * OR the URL looks like a YouTube link (youtube.com / youtu.be)
+    """
+    if not DISCORD_BOT_TOKEN or not DISCORD_CHANNEL_ID:
+        logging.debug("[discord] Missing bot token or channel id; skipping video fetch.")
+        return None
+
+    target_emoji = get_action_emoji(action_key, project)
+    if not target_emoji:
+        logging.debug(
+            f"[discord] No emoji mapping for action={action_key} under project={project}; "
+            f"skipping video fetch."
+        )
+        return None
+
+    normalized_target = normalize_emoji(target_emoji)
+
+    # Lazy-load cache on first use if needed
+    if not discord_messages_cache:
+        logging.info("[discord] Message cache empty; doing one-time refresh before video selection.")
+        await refresh_discord_messages_cache()
+
+    messages = _select_messages_for_project(project)
+    if not messages:
+        logging.info(
+            f"[discord] No messages available for project={project}; "
+            f"cannot select a video for action={action_key}."
+        )
+        return None
+
+    logging.info(
+        f"[discord] Selecting VIDEO from {len(messages)} cached messages for "
+        f"project={project}, action={action_key}, emoji={target_emoji!r}"
+    )
+
+    VIDEO_EXTS = (".mp4", ".webm", ".mov", ".m4v", ".avi", ".mkv")
+    weighted_candidates: Dict[str, float] = {}
+
+    def _looks_like_youtube(u: str) -> bool:
+        return bool(YOUTUBE_RE.search(u or ""))
+
+    def _add_candidate(url: str, weight: float):
+        if not url or weight <= 0:
+            return
+        url = url.strip()
+        prev = weighted_candidates.get(url, 0.0)
+        weighted_candidates[url] = prev + weight
+
+    for msg in messages:
+        msg_id = msg.get("id")
+        reactions = msg.get("reactions") or []
+
+        match_weight = 0
+
+        for r in reactions:
+            emoji_obj = r.get("emoji") or {}
+            name = emoji_obj.get("name") or ""
+            emoji_id = emoji_obj.get("id")
+            count = r.get("count") or 0
+
+            logging.debug(
+                f"[discord] (video) Reaction on {msg_id}: name={name!r}, id={emoji_id}, count={count}"
+            )
+
+            if count <= 0:
+                continue
+
+            matched = False
+            if emoji_id is None:
+                norm_name = normalize_emoji(name)
+                if norm_name == normalized_target:
+                    matched = True
+            else:
+                if name.lower() == action_key.lower():
+                    matched = True
+
+            if matched:
+                match_weight = max(match_weight, count)
+
+        if match_weight <= 0:
+            continue
+
+        logging.info(
+            f"[discord] Cached message {msg_id} has matching reaction for VIDEO action={action_key} "
+            f"with weight={match_weight}"
+        )
+
+        # --- Attachments ---
+        for att in msg.get("attachments", []):
+            url = (att.get("url") or "").strip()
+            fname = (att.get("filename") or "").lower()
+            ctype = (att.get("content_type") or "").lower()
+
+            logging.info(
+                f"[discord] (video) Attachment on {msg_id}: filename={fname}, "
+                f"content_type={ctype}, url={url}"
+            )
+
+            if not url:
+                continue
+
+            lower_url = url.lower()
+            if (
+                ctype.startswith("video/")
+                or fname.endswith(VIDEO_EXTS)
+                or any(ext in lower_url for ext in VIDEO_EXTS)
+            ):
+                _add_candidate(url, match_weight)
+
+        # --- Embeds ---
+        for emb in msg.get("embeds", []):
+            emb_url = (emb.get("url") or "").strip()
+            if emb_url:
+                lower_emb = emb_url.lower()
+                if (
+                    any(ext in lower_emb for ext in VIDEO_EXTS)
+                    or _looks_like_youtube(emb_url)
+                ):
+                    logging.info(f"[discord] (video) Embed url on {msg_id}: {emb_url}")
+                    _add_candidate(emb_url, match_weight)
+
+            video_obj = emb.get("video") or {}
+            v_url = (video_obj.get("url") or "").strip()
+            if v_url:
+                lower_v = v_url.lower()
+                if (
+                    any(ext in lower_v for ext in VIDEO_EXTS)
+                    or _looks_like_youtube(v_url)
+                ):
+                    logging.info(f"[discord] (video) Embed video on {msg_id}: {v_url}")
+                    _add_candidate(v_url, match_weight)
+
+        # --- Fallback: links in content ---
+        content = (msg.get("content") or "").strip()
+        if "http" in content:
+            parts = content.split()
+            for p in parts:
+                if not p.startswith("http"):
+                    continue
+                lower_p = p.lower()
+                if (
+                    any(ext in lower_p for ext in VIDEO_EXTS)
+                    or _looks_like_youtube(p)
+                ):
+                    logging.info(f"[discord] (video) Content video candidate on {msg_id}: {p}")
+                    _add_candidate(p, match_weight)
+                    break
+
+    if not weighted_candidates:
+        logging.info(
+            f"[discord] No VIDEO candidates found in cache for project={project} "
+            f"action={action_key} emoji={target_emoji!r}."
+        )
+        return None
+
+    items = list(weighted_candidates.items())
+    total_weight = sum(w for _, w in items)
+    r = random.uniform(0, total_weight)
+    upto = 0.0
+    for url, w in items:
+        upto += w
+        if r <= upto:
+            logging.info(
+                f"📺 [discord] Selected cached VIDEO URL for project={project} "
+                f"action={action_key}: {url} (weight={w}, total={total_weight})"
+            )
+            return url
+
+    chosen = random.choice(list(weighted_candidates.keys()))
+    logging.info(
+        f"📺 [discord] Fallback selected VIDEO URL for project={project} "
+        f"action={action_key}: {chosen}"
+    )
+    return chosen
+
+
+# -----------------------------
+# VIDEO DURATION HELPERS
+# -----------------------------
+async def get_video_duration_seconds(url: str) -> Optional[float]:
+    """
+    Best-effort attempt to get video duration in seconds.
+
+    - For YouTube links, uses yt_dlp (if installed) to fetch metadata.
+    - For other URLs we currently return None.
+
+    You can pip install yt_dlp in the container to make this work:
+        pip install yt_dlp
+    """
+    if not url:
+        return None
+
+    if not YOUTUBE_RE.search(url):
+        # For now we don't inspect arbitrary video URLs.
+        return None
+
+    try:
+        import yt_dlp  # type: ignore
+    except ImportError:
+        logging.warning(
+            "yt_dlp not installed; cannot fetch YouTube duration for %s. "
+            "Install it with 'pip install yt_dlp' to enable accurate durations.",
+            url,
+        )
+        return None
+
+    async def _run_yt_dlp(u: str) -> Optional[float]:
+        def _inner() -> Optional[float]:
+            ydl_opts = {
+                "quiet": True,
+                "skip_download": True,
+                "no_warnings": True,
+            }
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(u, download=False)
+                dur = info.get("duration")
+                if dur is None:
+                    return None
+                try:
+                    return float(dur)
+                except Exception:
+                    return None
+
+        return await asyncio.to_thread(_inner)
+
+    try:
+        duration = await _run_yt_dlp(url)
+        if duration is not None:
+            logging.info("⌛ [video] Fetched YouTube duration=%.2fs for %s", duration, url)
+        else:
+            logging.info("⌛ [video] No duration metadata found for %s", url)
+        return duration
+    except Exception as e:
+        logging.error(f"❗ [video] Error getting duration for {url}: {e}", exc_info=True)
+        return None
+
+
+# -----------------------------
 # DISCORD SOUND CACHE HELPERS
 # -----------------------------
 async def cache_discord_audio(url: str) -> Optional[str]:
@@ -856,6 +1111,60 @@ async def fetch_random_discord_sound(action_key: str, project: Optional[str]) ->
         f"(project={project}); returning None."
     )
     return None
+
+
+# -----------------------------
+# MEDIA COMBO PICKER
+# -----------------------------
+async def pick_media_for_action(
+    action_key: str,
+    project_key: str,
+) -> tuple[Optional[str], Optional[str], Optional[str], Optional[float]]:
+    """
+    Decide which media to use for a given action:
+
+      Mode A: GIF + Discord audio (meme + sound)
+      Mode B: Video (YouTube/direct) with its own audio
+
+    If both modes are available, choose between them with ~50/50 weighting.
+    Returns: (sound_url, meme_url, video_url, video_duration_seconds)
+    """
+    game_conf = GAMES_CONFIG.get(project_key, {})
+    actions_map = (game_conf.get("actions") or {})
+
+    sound_task = fetch_random_discord_sound(action_key, project=project_key)
+
+    if action_key in actions_map and action_key != "clear":
+        meme_task = fetch_random_discord_meme(action_key, project=project_key)
+    else:
+        async def _noop_meme():
+            return None
+        meme_task = _noop_meme()
+
+    video_task = fetch_random_discord_video(action_key, project=project_key)
+
+    sound, meme, video = await asyncio.gather(sound_task, meme_task, video_task)
+
+    has_gif_audio = bool(sound or meme)
+    has_video = bool(video)
+
+    video_duration: Optional[float] = None
+
+    if has_gif_audio and has_video:
+        # 50/50 between GIF+audio vs video
+        if random.random() < 0.5:
+            # VIDEO mode
+            video_duration = await get_video_duration_seconds(video)
+            return None, None, video, video_duration
+        else:
+            return sound, meme, None, None
+    elif has_video:
+        video_duration = await get_video_duration_seconds(video)
+        return None, None, video, video_duration
+    elif has_gif_audio:
+        return sound, meme, None, None
+    else:
+        return None, None, None, None
 
 
 # -----------------------------
@@ -1114,7 +1423,7 @@ async def update_live_overlay(action: str, project_key: str) -> None:
     """
     Update the live overlay state (per project) exposed at /overlay.
     """
-    global overlay_clear_task, last_overlay_output, last_action, last_sound, last_meme_url, last_project, run_panel_visible_until
+    global overlay_clear_task, last_overlay_output, last_action, last_sound, last_meme_url, last_video_url, last_video_duration, last_project, run_panel_visible_until
 
     async with state_lock:
         if action.lower() == "clear":
@@ -1135,6 +1444,8 @@ async def update_live_overlay(action: str, project_key: str) -> None:
             last_action = ""
             last_sound = None
             last_meme_url = None
+            last_video_url = None
+            last_video_duration = None
             last_project = ""
 
             # Cancel any pending auto-clear timer
@@ -1165,19 +1476,19 @@ async def update_live_overlay(action: str, project_key: str) -> None:
         last_action = key
         last_project = project_key
 
-        # --- SOUNDS: Discord-only, cached locally ---
-        last_sound = await fetch_random_discord_sound(key, project=project_key)
+        # --- MEDIA PICKER: choose between (GIF+audio) and (video) ---
+        sound_url, meme_url, video_url, video_duration = await pick_media_for_action(key, project_key)
 
-        # --- MEMES: project-scoped as before ---
-        if key in actions_map and key != "clear":
-            last_meme_url = await fetch_random_discord_meme(key, project=project_key)
-        else:
-            last_meme_url = None
+        last_sound = sound_url or ""
+        last_meme_url = meme_url or None
+        last_video_url = video_url or None
+        last_video_duration = video_duration
 
         codepoints = " ".join(f"U+{ord(ch):04X}" for ch in output)
         logging.info(
             f"🖨️ [overlay] New overlay text: {output} [{codepoints}] "
-            f"project={project_key} action={last_action} sound={last_sound} meme={last_meme_url}"
+            f"project={project_key} action={last_action} sound={last_sound} "
+            f"meme={last_meme_url} video={last_video_url} duration={last_video_duration}"
         )
 
         # reset / restart auto-clear timer
@@ -1191,7 +1502,8 @@ async def _auto_clear_overlay() -> None:
     """
     Clears overlay after a short delay.
     """
-    global last_overlay_output, last_action, last_sound, last_meme_url, last_project
+    global overlay_clear_task, last_overlay_output, last_action, last_sound, last_meme_url, last_video_url, last_video_duration, last_project
+
     try:
         await asyncio.sleep(OVERLAY_DISPLAY_SECONDS)
 
@@ -1200,6 +1512,8 @@ async def _auto_clear_overlay() -> None:
             last_action = ""
             last_sound = None
             last_meme_url = None
+            last_video_url = None
+            last_video_duration = None
             last_project = ""
         logging.info(f"🧽 [overlay] Auto-cleared after {OVERLAY_DISPLAY_SECONDS}s")
 
@@ -1426,6 +1740,8 @@ async def handle_http(reader: asyncio.StreamReader, writer: asyncio.StreamWriter
                 action = last_action or ""
                 sound = last_sound or ""
                 meme = last_meme_url or ""
+                video = last_video_url or ""
+                video_duration = last_video_duration if last_video_duration is not None else 0.0
                 project = last_project or ""
 
                 # ---- Build run summaries for the panel ----
@@ -1505,6 +1821,8 @@ async def handle_http(reader: asyncio.StreamReader, writer: asyncio.StreamWriter
                 "action": action,
                 "sound": sound,
                 "meme": meme,
+                "video": video,
+                "video_duration": video_duration,
                 "project": project,
                 "runs": runs_for_overlay,
             }

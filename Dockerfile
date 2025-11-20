@@ -13,7 +13,7 @@ COPY app/ /app/
 RUN mkdir -p /run/secrets
 
 # Install dependencies
-RUN pip install --no-cache-dir aiohttp watchdog obsws-python pyyaml
+RUN pip install --no-cache-dir aiohttp watchdog obsws-python pyyaml yt_dlp
 
 # Default command
 CMD ["python", "main.py"]
