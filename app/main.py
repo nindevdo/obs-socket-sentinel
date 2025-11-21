@@ -922,12 +922,12 @@ async def fetch_random_discord_sound(action_key: str, project: Optional[str]) ->
     Discord messages, then download & cache it locally and return a /dsounds/ URL.
 
     Requirements for a message to qualify:
+      - It must be associated with the target project/game (via GAME_EMOJI_MAP).
       - It must have a reaction that matches the *action emoji* for this action
         under the given project (using config.games[project].actions[action_key]).
       - It must contain at least one audio-ish attachment / embed / link.
 
-    NOTE: Unlike memes, this does NOT require a game emoji (GAME_EMOJI_MAP).
-          Sounds are global per-action and are only keyed by the action emoji.
+    NOTE: Now uses the same project filtering as memes (requires both game emoji and action emoji).
     """
     if not DISCORD_BOT_TOKEN or not DISCORD_CHANNEL_ID:
         logging.debug("[discord] Missing bot token or channel id; skipping sound fetch.")
@@ -949,13 +949,17 @@ async def fetch_random_discord_sound(action_key: str, project: Optional[str]) ->
         logging.info("[discord] Message cache empty; doing one-time refresh before sound selection.")
         await refresh_discord_messages_cache()
 
-    if not discord_messages_cache:
-        logging.info("[discord] Still no cached messages; cannot select sound.")
+    messages = _select_messages_for_project(project)
+    if not messages:
+        logging.info(
+            f"[discord] No messages available for project={project}; "
+            f"cannot select a sound for action={action_key}."
+        )
         return None
 
     logging.info(
-        f"[discord] Selecting sound from {len(discord_messages_cache)} cached messages for "
-        f"action={action_key}, emoji={target_emoji!r} (project={project})"
+        f"[discord] Selecting sound from {len(messages)} cached messages for "
+        f"project={project}, action={action_key}, emoji={target_emoji!r}"
     )
 
     # url -> cumulative weight
@@ -970,8 +974,8 @@ async def fetch_random_discord_sound(action_key: str, project: Optional[str]) ->
         prev = weighted_candidates.get(url, 0.0)
         weighted_candidates[url] = prev + weight
 
-    # We scan all messages, independent of GAME_EMOJI_MAP, and look for the action emoji.
-    for msg in discord_messages_cache:
+    # We scan messages filtered by project/game (via GAME_EMOJI_MAP) and look for the action emoji.
+    for msg in messages:
         msg_id = msg.get("id")
         reactions = msg.get("reactions") or []
 
