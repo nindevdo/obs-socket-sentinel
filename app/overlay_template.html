@@ -845,18 +845,45 @@
 
       // -------- VIDEO MODE (all videos are now cached locally as MP4) --------
       if (hasVideo) {
-        // All videos are now cached locally as MP4 files
-        const bustVideoUrl = withCacheBuster(videoUrl);
-        memeVideo.src = bustVideoUrl;
-        memeVideo.currentTime = 0;
-        memeVideo.muted = false;
-        memeVideo.autoplay = true;
-        memeVideo.playsInline = true;
-        memeVideo.style.display = "block";
+        console.log(`[video] Loading cached video: ${videoUrl}`);
+        
+        // Create fresh video element for reliable playback
+        const newVideo = document.createElement("video");
+        newVideo.id = "meme-video";
+        newVideo.style.width = "80vw";
+        newVideo.style.maxHeight = "80vh";
+        newVideo.style.borderRadius = "1rem";
+        newVideo.style.objectFit = "contain";
+        newVideo.style.boxShadow = "none";
+        newVideo.style.background = "transparent";
+        newVideo.style.border = "none";
+        newVideo.style.display = "block";
+        newVideo.muted = false;
+        newVideo.autoplay = false;  // Don't autoplay yet
+        newVideo.playsInline = true;
+        newVideo.preload = "auto";
+        
+        // Replace old video element
+        memeWrapper.replaceChild(newVideo, memeVideo);
+        memeVideo = newVideo;
         currentVideo = memeVideo;
 
-        memeVideo.addEventListener("loadedmetadata", () => {
+        // Set up loading timeout
+        let loadTimeout = setTimeout(() => {
+          if (myMemeId === activeMemeId) {
+            console.warn(`[video] Load timeout for ${videoUrl}`);
+            clearMeme();
+            clearMarquee();
+          }
+        }, 15000); // 15 second timeout
+
+        const loadedHandler = () => {
+          clearTimeout(loadTimeout);
+          if (myMemeId !== activeMemeId) return;
+          
           const total = memeVideo.duration || lastVideoDuration || 5;
+          console.log(`[video] Video loaded successfully: duration=${total}s`);
+          
           if (lastText) {
             startMarqueeFromText(lastText, total + 0.25);
           }
@@ -864,11 +891,28 @@
           wordBurstText = parseEventWord(lastText, lastAction);
           wordBurstActive = !!wordBurstText;
 
-          // Use the same animation system as memes
-          animateMeme(myMemeId, memeVideo);
-        }, { once: true });
+          // Start playing and animating
+          const playPromise = memeVideo.play();
+          if (playPromise && typeof playPromise.then === "function") {
+            playPromise
+              .then(() => {
+                console.log(`[video] Playing video successfully`);
+                animateMeme(myMemeId, memeVideo);
+              })
+              .catch(err => {
+                console.error(`[video] Play failed: ${err}`);
+                if (myMemeId === activeMemeId) {
+                  clearMeme();
+                  clearMarquee();
+                }
+              });
+          } else {
+            animateMeme(myMemeId, memeVideo);
+          }
+        };
 
-        memeVideo.addEventListener("ended", () => {
+        const endedHandler = () => {
+          console.log(`[video] Video ended`);
           if (myMemeId === activeMemeId) {
             wordBurstActive = false;
             setTimeout(() => {
@@ -878,19 +922,32 @@
               }
             }, 250);
           }
-        }, { once: true });
+        };
 
-        const playPromise = memeVideo.play();
-        if (playPromise && typeof playPromise.then === "function") {
-          playPromise.catch(err => {
-            console.warn("Video play failed:", err);
-          });
-        }
+        const errorHandler = (e) => {
+          clearTimeout(loadTimeout);
+          console.error(`[video] Video error:`, e);
+          if (myMemeId === activeMemeId) {
+            clearMeme();
+            clearMarquee();
+            wordBurstActive = false;
+          }
+        };
+
+        // Attach event listeners
+        memeVideo.addEventListener("loadedmetadata", loadedHandler, { once: true });
+        memeVideo.addEventListener("ended", endedHandler, { once: true });
+        memeVideo.addEventListener("error", errorHandler, { once: true });
+
+        // Load the video with cache buster
+        memeVideo.src = withCacheBuster(videoUrl);
+        memeVideo.load();
 
         return;
       }
 
       // -------- GIF + AUDIO MODE --------
+      console.log(`[media] Loading GIF+Audio mode - meme:${memeUrl} sound:${soundUrl}`);
 
       const bustUrl = withCacheBuster(memeUrl);
       const preloader = new Image();
@@ -914,16 +971,28 @@
 
         let audio = null;
         if (soundUrl) {
-          audio = new Audio(soundUrl);
+          console.log(`[audio] Loading cached audio: ${soundUrl}`);
+          audio = new Audio();
+          audio.src = withCacheBuster(soundUrl);
           audio.volume = 0.7;
+          audio.preload = "auto";
           currentAudio = audio;
           setupAnalyserForAudio(audio);
 
           audio.addEventListener("loadedmetadata", () => {
             const total = audio.duration || 1;
             const marqueeDuration = total + 0.25;
+            console.log(`[audio] Audio loaded: duration=${total}s`);
             if (lastText) {
               startMarqueeFromText(lastText, marqueeDuration);
+            }
+          });
+
+          audio.addEventListener("error", (e) => {
+            console.error(`[audio] Audio error:`, e);
+            if (myMemeId === activeMemeId) {
+              currentAudio = null;
+              // Continue with visual meme without audio
             }
           });
 
@@ -944,11 +1013,12 @@
             playPromise
               .then(() => {
                 if (myMemeId === activeMemeId) {
+                  console.log(`[audio] Audio playing successfully`);
                   animateMeme(myMemeId, audio);
                 }
               })
               .catch(err => {
-                console.warn("Audio play failed, using fake driver:", err);
+                console.warn(`[audio] Audio play failed, using fake driver:`, err);
                 if (myMemeId !== activeMemeId) return;
                 currentAudio = null;
                 const fake = { duration: 1.3, currentTime: 0, paused: false, ended: false };
@@ -987,6 +1057,7 @@
 
           audio.addEventListener("ended", () => {
             if (myMemeId === activeMemeId) {
+              console.log(`[audio] Audio ended`);
               wordBurstActive = false;
               setTimeout(() => {
                 if (myMemeId === activeMemeId) {
@@ -997,6 +1068,7 @@
             }
           });
         } else {
+          console.log(`[media] No audio, using fake timing for GIF`);
           const fake = { duration: 1, currentTime: 0, paused: false, ended: false };
           const start = performance.now();
 
@@ -1031,6 +1103,7 @@
       };
 
       preloader.onerror = () => {
+        console.error(`[media] Image preload failed for: ${bustUrl}`);
         if (myMemeId === activeMemeId) {
           clearMeme();
           clearMarquee();
@@ -1038,6 +1111,8 @@
         }
       };
 
+      // Start loading the image
+      console.log(`[media] Preloading image: ${bustUrl}`);
       preloader.src = bustUrl;
     }
 

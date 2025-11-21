@@ -18,6 +18,7 @@ services:
       - WATCH_DIR=/markers
     volumes:
       - ./_data/markers:/markers:rw
+      - ./_data/discord:/discord:rw
     ports:
       - "5678:5678"
       - "8088:8088"

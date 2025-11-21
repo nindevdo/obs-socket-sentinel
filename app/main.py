@@ -55,14 +55,14 @@ DISCORD_MESSAGES_LIMIT = int(os.getenv("DISCORD_MESSAGES_LIMIT", "100"))
 # YAML config path (required)
 CONFIG_PATH = Path(os.getenv("SENTINEL_CONFIG", "/app/config.yaml"))
 
-# Discord sound file cache (ephemeral)
+# Discord sound file cache (persistent)
 DISCORD_SOUND_CACHE_DIR = Path(
-    os.getenv("DISCORD_SOUND_CACHE_DIR", "/tmp/discord_sounds")
+    os.getenv("DISCORD_SOUND_CACHE_DIR", "/discord/discord_sounds")
 )
 
-# Discord video file cache (ephemeral)
+# Discord video file cache (persistent)
 DISCORD_VIDEO_CACHE_DIR = Path(
-    os.getenv("DISCORD_VIDEO_CACHE_DIR", "/tmp/discord_videos")
+    os.getenv("DISCORD_VIDEO_CACHE_DIR", "/discord/discord_videos")
 )
 
 # Loaded from YAML
@@ -264,6 +264,66 @@ def load_overlay_config() -> None:
 
 
 # -----------------------------
+# CACHE CLEANUP
+# -----------------------------
+async def cleanup_old_cache_files() -> None:
+    """
+    Periodically clean up old cached files to prevent disk space issues.
+    Also removes invalid video files (too short or corrupted).
+    """
+    try:
+        import time
+        cutoff_time = time.time() - (24 * 60 * 60)  # 24 hours ago
+        
+        for cache_dir in [DISCORD_SOUND_CACHE_DIR, DISCORD_VIDEO_CACHE_DIR]:
+            if not cache_dir.exists():
+                continue
+                
+            cleaned_count = 0
+            invalid_count = 0
+            
+            for file_path in cache_dir.glob("*"):
+                try:
+                    if not file_path.is_file():
+                        continue
+                        
+                    # Check age
+                    if file_path.stat().st_mtime < cutoff_time:
+                        file_path.unlink()
+                        cleaned_count += 1
+                        continue
+                        
+                    # For video files, also check if they're corrupted (not short)
+                    if cache_dir == DISCORD_VIDEO_CACHE_DIR and file_path.suffix == ".mp4":
+                        duration = await get_video_duration_from_file(str(file_path))
+                        if duration is None:  # Only remove if we can't read duration (corrupted)
+                            file_path.unlink()
+                            invalid_count += 1
+                            logging.info(f"🗑️ [cache] Removed corrupted video file: {file_path}")
+                        # Accept all videos with readable duration, even very short ones
+                            
+                except Exception as e:
+                    logging.warning(f"Failed to clean cache file {file_path}: {e}")
+                    
+            if cleaned_count > 0:
+                logging.info(f"🧹 [cache] Cleaned {cleaned_count} old files from {cache_dir}")
+            if invalid_count > 0:
+                logging.info(f"🗑️ [cache] Removed {invalid_count} invalid video files from {cache_dir}")
+                
+    except Exception as e:
+        logging.error(f"❗ [cache] Error during cache cleanup: {e}")
+
+
+async def cache_cleanup_task() -> None:
+    """
+    Background task that periodically cleans up old cache files.
+    """
+    while True:
+        await asyncio.sleep(60 * 60)  # Run every hour
+        await cleanup_old_cache_files()
+
+
+# -----------------------------
 # DISCORD CACHE BUILDING
 # -----------------------------
 def _build_game_caches_from_messages(messages: List[dict]) -> Dict[str, List[dict]]:
@@ -358,14 +418,161 @@ async def refresh_discord_messages_cache() -> None:
         discord_game_caches = _build_game_caches_from_messages(discord_messages_cache)
 
 
+async def warm_cache_all_media() -> None:
+    """
+    Pre-download ALL media files from Discord messages to local cache for fast playback.
+    This ensures no delays during live streaming - everything plays from local files.
+    """
+    if not discord_messages_cache:
+        logging.info("[warm_cache] No messages to warm cache from")
+        return
+        
+    logging.info(f"[warm_cache] Starting warm cache of all media from {len(discord_messages_cache)} messages")
+    
+    # Collect all media URLs from all messages
+    audio_urls = set()
+    video_urls = set()
+    
+    VIDEO_EXTS = (".mp4", ".webm", ".mov", ".m4v", ".avi", ".mkv")
+    AUDIO_EXTS = (".mp3", ".wav", ".ogg", ".flac", ".m4a", ".webm")
+    
+    for msg in discord_messages_cache:
+        # Process attachments
+        for att in msg.get("attachments", []):
+            url = (att.get("url") or "").strip()
+            if not url:
+                continue
+                
+            fname = (att.get("filename") or "").lower()
+            ctype = (att.get("content_type") or "").lower()
+            
+            # Check if it's audio
+            if (ctype.startswith("audio/") or 
+                fname.endswith(AUDIO_EXTS) or 
+                any(ext in url.lower() for ext in AUDIO_EXTS)):
+                audio_urls.add(url)
+                
+            # Check if it's video  
+            elif (ctype.startswith("video/") or 
+                  fname.endswith(VIDEO_EXTS) or 
+                  any(ext in url.lower() for ext in VIDEO_EXTS)):
+                video_urls.add(url)
+        
+        # Process embeds
+        for emb in msg.get("embeds", []):
+            emb_url = (emb.get("url") or "").strip()
+            
+            # Check for YouTube URLs
+            if emb_url and YOUTUBE_RE.search(emb_url):
+                video_urls.add(emb_url)
+            elif emb_url and any(ext in emb_url.lower() for ext in VIDEO_EXTS):
+                video_urls.add(emb_url)
+            elif emb_url and any(ext in emb_url.lower() for ext in AUDIO_EXTS):
+                audio_urls.add(emb_url)
+                
+            # Check embed video/audio objects
+            video_obj = emb.get("video") or {}
+            v_url = (video_obj.get("url") or "").strip()
+            if v_url:
+                if any(ext in v_url.lower() for ext in VIDEO_EXTS) or YOUTUBE_RE.search(v_url):
+                    video_urls.add(v_url)
+                    
+            audio_obj = emb.get("audio") or {}
+            a_url = (audio_obj.get("url") or "").strip()
+            if a_url and any(ext in a_url.lower() for ext in AUDIO_EXTS):
+                audio_urls.add(a_url)
+        
+        # Check content for direct links
+        content = (msg.get("content") or "").strip()
+        if "http" in content:
+            parts = content.split()
+            for part in parts:
+                if not part.startswith("http"):
+                    continue
+                    
+                lower_part = part.lower()
+                if any(ext in lower_part for ext in AUDIO_EXTS):
+                    audio_urls.add(part)
+                elif any(ext in lower_part for ext in VIDEO_EXTS) or YOUTUBE_RE.search(part):
+                    video_urls.add(part)
+    
+    logging.info(f"[warm_cache] Found {len(audio_urls)} unique audio URLs and {len(video_urls)} unique video URLs")
+    
+    # Pre-cache all audio files with better error handling
+    audio_cached = 0
+    audio_skipped = 0
+    audio_failed = 0
+    
+    for url in audio_urls:
+        try:
+            h = hashlib.sha256(url.encode("utf-8")).hexdigest()[:32]
+            base_part = url.split("?", 1)[0]
+            _, ext = os.path.splitext(os.path.basename(base_part))
+            if not ext:
+                ext = ".ogg"
+            fs_path = DISCORD_SOUND_CACHE_DIR / f"{h}{ext}"
+            
+            if fs_path.exists() and fs_path.stat().st_size > 0:
+                audio_skipped += 1
+                continue
+                
+            result = await cache_discord_audio(url)
+            if result:
+                audio_cached += 1
+            else:
+                audio_failed += 1
+                logging.warning(f"[warm_cache] Failed to cache audio: {url}")
+        except Exception as e:
+            audio_failed += 1
+            logging.error(f"[warm_cache] Error caching audio {url}: {e}")
+    
+    # Pre-cache all video files with better error handling
+    video_cached = 0
+    video_skipped = 0
+    video_failed = 0
+    
+    for url in video_urls:
+        try:
+            h = hashlib.sha256(url.encode("utf-8")).hexdigest()[:32]
+            fs_path = DISCORD_VIDEO_CACHE_DIR / f"{h}.mp4"
+            
+            if fs_path.exists() and fs_path.stat().st_size > 0:
+                # Validate existing cached video
+                duration = await get_video_duration_from_file(str(fs_path))
+                if duration is not None and duration > 0:  # Accept any positive duration
+                    video_skipped += 1
+                    continue
+                else:
+                    # Remove invalid cached video (corrupted, not short)
+                    try:
+                        fs_path.unlink()
+                        logging.info(f"🗑️ [warm_cache] Removed corrupted cached video: {fs_path}")
+                    except Exception:
+                        pass
+                
+            result, duration = await cache_discord_video(url)
+            if result and duration is not None:
+                video_cached += 1
+            else:
+                video_failed += 1
+                logging.warning(f"[warm_cache] Failed to cache video: {url}")
+        except Exception as e:
+            video_failed += 1
+            logging.error(f"[warm_cache] Error caching video {url}: {e}")
+    
+    logging.info(f"[warm_cache] Complete! Audio: {audio_cached} cached, {audio_skipped} skipped, {audio_failed} failed. Video: {video_cached} cached, {video_skipped} skipped, {video_failed} failed")
+
+
 async def discord_cache_refresher_task(interval_seconds: int = 600) -> None:
     """
-    Background task that periodically rebuilds the Discord message cache.
+    Background task that periodically rebuilds the Discord message cache and warm-caches all media.
     Default: every 600 seconds (10 minutes).
     """
     while True:
         try:
             await refresh_discord_messages_cache()
+            # After refreshing messages, warm cache all media
+            await warm_cache_all_media()
         except Exception as e:
             logging.error(f"[discord] Error in periodic cache refresh: {e}", exc_info=True)
         await asyncio.sleep(interval_seconds)
@@ -400,6 +607,321 @@ def _select_messages_for_project(project: Optional[str]) -> List[dict]:
         logging.info(f"[discord] No per-game cache for '{key}'; no memes will be selected.")
         return []
     return msgs
+
+
+# -----------------------------
+# CACHED MEDIA LOOKUP (NO DOWNLOADS)
+# -----------------------------
+async def get_cached_discord_sound(action_key: str, project: Optional[str]) -> Optional[str]:
+    """
+    Look up a random cached sound for the action/project, but don't download anything.
+    Only returns sounds that are already cached locally.
+    """
+    if not DISCORD_BOT_TOKEN or not DISCORD_CHANNEL_ID:
+        return None
+
+    target_emoji = get_action_emoji(action_key, project)
+    if not target_emoji:
+        return None
+
+    normalized_target = normalize_emoji(target_emoji)
+    messages = _select_messages_for_project(project)
+    if not messages:
+        return None
+
+    # Build list of candidate URLs (same logic as fetch_random_discord_sound)
+    weighted_candidates: Dict[str, float] = {}
+    AUDIO_EXTS = (".mp3", ".wav", ".ogg", ".flac", ".m4a", ".webm")
+
+    for msg in messages:
+        reactions = msg.get("reactions") or []
+        match_weight = 0
+
+        for r in reactions:
+            emoji_obj = r.get("emoji") or {}
+            name = emoji_obj.get("name") or ""
+            emoji_id = emoji_obj.get("id")
+            count = r.get("count") or 0
+
+            if count <= 0:
+                continue
+
+            matched = False
+            if emoji_id is None:
+                norm_name = normalize_emoji(name)
+                if norm_name == normalized_target:
+                    matched = True
+            else:
+                if name.lower() == action_key.lower():
+                    matched = True
+
+            if matched:
+                match_weight = max(match_weight, count)
+
+        if match_weight <= 0:
+            continue
+
+        # Check attachments
+        for att in msg.get("attachments", []):
+            url = (att.get("url") or "").strip()
+            fname = (att.get("filename") or "").lower()
+            ctype = (att.get("content_type") or "").lower()
+
+            if not url:
+                continue
+
+            if (ctype.startswith("audio/") or 
+                fname.endswith(AUDIO_EXTS) or 
+                any(ext in url.lower() for ext in AUDIO_EXTS)):
+                
+                # Check if this URL is already cached
+                h = hashlib.sha256(url.encode("utf-8")).hexdigest()[:32]
+                base_part = url.split("?", 1)[0]
+                _, ext = os.path.splitext(os.path.basename(base_part))
+                if not ext:
+                    ext = ".ogg"
+                fs_path = DISCORD_SOUND_CACHE_DIR / f"{h}{ext}"
+                
+                if fs_path.exists() and fs_path.stat().st_size > 0:
+                    prev = weighted_candidates.get(f"/dsounds/{h}{ext}", 0.0)
+                    weighted_candidates[f"/dsounds/{h}{ext}"] = prev + match_weight
+
+        # Check embeds and content (similar pattern)
+        for emb in msg.get("embeds", []):
+            emb_url = (emb.get("url") or "").strip()
+            if emb_url and any(ext in emb_url.lower() for ext in AUDIO_EXTS):
+                h = hashlib.sha256(emb_url.encode("utf-8")).hexdigest()[:32]
+                base_part = emb_url.split("?", 1)[0]
+                _, ext = os.path.splitext(os.path.basename(base_part))
+                if not ext:
+                    ext = ".ogg"
+                fs_path = DISCORD_SOUND_CACHE_DIR / f"{h}{ext}"
+                
+                if fs_path.exists() and fs_path.stat().st_size > 0:
+                    prev = weighted_candidates.get(f"/dsounds/{h}{ext}", 0.0)
+                    weighted_candidates[f"/dsounds/{h}{ext}"] = prev + match_weight
+
+    if not weighted_candidates:
+        return None
+
+    # Weighted random choice from cached candidates
+    items = list(weighted_candidates.items())
+    total_weight = sum(w for _, w in items)
+    r = random.uniform(0, total_weight)
+    upto = 0.0
+    for url, w in items:
+        upto += w
+        if r <= upto:
+            return url
+
+    return random.choice(list(weighted_candidates.keys()))
+
+
+async def get_cached_discord_meme(action_key: str, project: Optional[str]) -> Optional[str]:
+    """
+    Look up a random cached meme for the action/project, but don't download anything.
+    Returns the original URL since memes are served directly (not cached locally).
+    """
+    if not DISCORD_BOT_TOKEN or not DISCORD_CHANNEL_ID:
+        return None
+
+    target_emoji = get_action_emoji(action_key, project)
+    if not target_emoji:
+        return None
+
+    normalized_target = normalize_emoji(target_emoji)
+    messages = _select_messages_for_project(project)
+    if not messages:
+        return None
+
+    # Build list of candidate meme URLs (same logic as fetch_random_discord_meme)
+    weighted_candidates: Dict[str, float] = {}
+
+    for msg in messages:
+        reactions = msg.get("reactions") or []
+        match_weight = 0
+
+        for r in reactions:
+            emoji_obj = r.get("emoji") or {}
+            name = emoji_obj.get("name") or ""
+            emoji_id = emoji_obj.get("id")
+            count = r.get("count") or 0
+
+            if count <= 0:
+                continue
+
+            matched = False
+            if emoji_id is None:
+                norm_name = normalize_emoji(name)
+                if norm_name == normalized_target:
+                    matched = True
+            else:
+                if name.lower() == action_key.lower():
+                    matched = True
+
+            if matched:
+                match_weight = max(match_weight, count)
+
+        if match_weight <= 0:
+            continue
+
+        # Check attachments for images/gifs
+        for att in msg.get("attachments", []):
+            url = (att.get("url") or "").strip()
+            fname = (att.get("filename") or "").lower()
+            ctype = (att.get("content_type") or "").lower()
+
+            if not url:
+                continue
+
+            if (ctype.startswith("image/") or 
+                fname.endswith((".gif", ".webp", ".png", ".jpg", ".jpeg")) or 
+                any(ext in url.lower() for ext in [".gif", ".webp", ".png", ".jpg", ".jpeg"])):
+                url = _normalize_meme_url(url)
+                prev = weighted_candidates.get(url, 0.0)
+                weighted_candidates[url] = prev + match_weight
+
+        # Check embeds for images/gifs
+        for emb in msg.get("embeds", []):
+            emb_url = (emb.get("url") or "").strip()
+            img = emb.get("image") or {}
+            thumb = emb.get("thumbnail") or {}
+
+            for label, img_obj in (("image", img), ("thumb", thumb)):
+                u = (img_obj.get("url") or img_obj.get("proxy_url") or "").strip()
+                if u and any(ext in u.lower() for ext in [".gif", ".webp", ".png", ".jpg", ".jpeg"]):
+                    u = _normalize_meme_url(u)
+                    prev = weighted_candidates.get(u, 0.0)
+                    weighted_candidates[u] = prev + match_weight
+
+            if emb_url and ("tenor.com/view" in emb_url.lower() or 
+                           any(ext in emb_url.lower() for ext in [".gif", ".webp"])):
+                emb_url = _normalize_meme_url(emb_url)
+                prev = weighted_candidates.get(emb_url, 0.0)
+                weighted_candidates[emb_url] = prev + match_weight
+
+    if not weighted_candidates:
+        return None
+
+    # Weighted random choice
+    items = list(weighted_candidates.items())
+    total_weight = sum(w for _, w in items)
+    r = random.uniform(0, total_weight)
+    upto = 0.0
+    for url, w in items:
+        upto += w
+        if r <= upto:
+            return url
+
+    return random.choice(list(weighted_candidates.keys()))
+
+
+async def get_cached_discord_video(action_key: str, project: Optional[str]) -> tuple[Optional[str], Optional[float]]:
+    """
+    Look up a random cached video for the action/project, but don't download anything.
+    Only returns videos that are already cached locally AND have valid duration (>0.5s).
+    """
+    if not DISCORD_BOT_TOKEN or not DISCORD_CHANNEL_ID:
+        return None, None
+
+    target_emoji = get_action_emoji(action_key, project)
+    if not target_emoji:
+        return None, None
+
+    normalized_target = normalize_emoji(target_emoji)
+    messages = _select_messages_for_project(project)
+    if not messages:
+        return None, None
+
+    # Build list of candidate video URLs (same logic as fetch_random_discord_video)
+    weighted_candidates: Dict[str, tuple[float, float]] = {}  # url -> (weight, duration)
+    VIDEO_EXTS = (".mp4", ".webm", ".mov", ".m4v", ".avi", ".mkv")
+
+    for msg in messages:
+        reactions = msg.get("reactions") or []
+        match_weight = 0
+
+        for r in reactions:
+            emoji_obj = r.get("emoji") or {}
+            name = emoji_obj.get("name") or ""
+            emoji_id = emoji_obj.get("id")
+            count = r.get("count") or 0
+
+            if count <= 0:
+                continue
+
+            matched = False
+            if emoji_id is None:
+                norm_name = normalize_emoji(name)
+                if norm_name == normalized_target:
+                    matched = True
+            else:
+                if name.lower() == action_key.lower():
+                    matched = True
+
+            if matched:
+                match_weight = max(match_weight, count)
+
+        if match_weight <= 0:
+            continue
+
+        # Check attachments for videos
+        for att in msg.get("attachments", []):
+            url = (att.get("url") or "").strip()
+            fname = (att.get("filename") or "").lower()
+            ctype = (att.get("content_type") or "").lower()
+
+            if not url:
+                continue
+
+            if (ctype.startswith("video/") or 
+                fname.endswith(VIDEO_EXTS) or 
+                any(ext in url.lower() for ext in VIDEO_EXTS)):
+                
+                # Check if this video is already cached AND valid
+                h = hashlib.sha256(url.encode("utf-8")).hexdigest()[:32]
+                fs_path = DISCORD_VIDEO_CACHE_DIR / f"{h}.mp4"
+                
+                if fs_path.exists() and fs_path.stat().st_size > 0:
+                    duration = await get_video_duration_from_file(str(fs_path))
+                    if duration is not None and duration > 0:  # Accept any positive duration
+                        cache_url = f"/dvideos/{h}.mp4"
+                        prev_weight, _ = weighted_candidates.get(cache_url, (0.0, 0.0))
+                        weighted_candidates[cache_url] = (prev_weight + match_weight, duration)
+
+        # Check embeds for videos (including YouTube)
+        for emb in msg.get("embeds", []):
+            emb_url = (emb.get("url") or "").strip()
+            if emb_url and (any(ext in emb_url.lower() for ext in VIDEO_EXTS) or YOUTUBE_RE.search(emb_url)):
+                h = hashlib.sha256(emb_url.encode("utf-8")).hexdigest()[:32]
+                fs_path = DISCORD_VIDEO_CACHE_DIR / f"{h}.mp4"
+                
+                if fs_path.exists() and fs_path.stat().st_size > 0:
+                    duration = await get_video_duration_from_file(str(fs_path))
+                    if duration is not None and duration > 0:  # Accept any positive duration
+                        cache_url = f"/dvideos/{h}.mp4"
+                        prev_weight, _ = weighted_candidates.get(cache_url, (0.0, 0.0))
+                        weighted_candidates[cache_url] = (prev_weight + match_weight, duration)
+
+    if not weighted_candidates:
+        logging.info(f"[video] No valid cached videos found for action={action_key} project={project}")
+        return None, None
+
+    # Weighted random choice from cached candidates
+    items = list(weighted_candidates.items())
+    total_weight = sum(weight for _, (weight, _) in items)
+    r = random.uniform(0, total_weight)
+    upto = 0.0
+    for url, (weight, duration) in items:
+        upto += weight
+        if r <= upto:
+            logging.info(f"📺 [cache] Selected cached video for action={action_key}: {url} (duration={duration}s)")
+            return url, duration
+
+    # Fallback
+    chosen_url, (_, chosen_duration) = random.choice(items)
+    logging.info(f"📺 [cache] Fallback selected cached video for action={action_key}: {chosen_url} (duration={chosen_duration}s)")
+    return chosen_url, chosen_duration
 
 
 # -----------------------------
@@ -920,29 +1442,66 @@ async def cache_discord_audio(url: str) -> Optional[str]:
     fname = f"{h}{ext}"
     fs_path = DISCORD_SOUND_CACHE_DIR / fname
 
-    # If already cached, just reuse
-    if fs_path.exists():
-        logging.debug(f"🔊 [discord] Using cached audio for {url} -> {fs_path}")
+    # Check for existing valid cached file
+    if fs_path.exists() and fs_path.stat().st_size > 0:
+        logging.debug(f"🔊 [discord] Using cached audio for {url[:50]}... -> {fs_path}")
         return f"/dsounds/{fname}"
 
-    # Download and cache
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url, timeout=15) as resp:
-                if resp.status != 200:
-                    text = await resp.text()
-                    logging.warning(
-                        f"❗ [discord] Failed to download audio {url}: "
-                        f"status={resp.status}, body={text[:200]!r}"
-                    )
-                    return None
-                data = await resp.read()
-        fs_path.write_bytes(data)
-        logging.info(f"💾 [discord] Cached audio {url} -> {fs_path}")
-        return f"/dsounds/{fname}"
-    except Exception as e:
-        logging.error(f"❗ [discord] Error caching audio {url}: {e}", exc_info=True)
-        return None
+    # Download and cache with retry logic
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            if attempt > 0:
+                logging.info(f"🔄 [warm_cache] Retry {attempt}/{max_retries} for audio {url[:50]}...")
+                await asyncio.sleep(1 * attempt)  # Exponential backoff
+                
+            logging.info(f"🔊 [warm_cache] Downloading audio {url[:50]}... -> {fs_path}")
+            
+            async with aiohttp.ClientSession(
+                timeout=aiohttp.ClientTimeout(total=45),
+                connector=aiohttp.TCPConnector(limit=10)
+            ) as session:
+                async with session.get(url) as resp:
+                    if resp.status != 200:
+                        text = await resp.text()
+                        logging.warning(
+                            f"❗ [discord] Failed to download audio {url[:50]}...: "
+                            f"status={resp.status}, body={text[:200]!r}"
+                        )
+                        if resp.status in (404, 403, 410):  # Don't retry for these
+                            break
+                        continue
+                    
+                    # Read data in chunks to handle large files
+                    data = b""
+                    async for chunk in resp.content.iter_chunked(8192):
+                        data += chunk
+                        
+            # Only write if we have data
+            if len(data) > 0:
+                fs_path.write_bytes(data)
+                logging.info(f"💾 [warm_cache] Cached audio {url[:50]}... -> {fs_path} ({len(data)} bytes)")
+                return f"/dsounds/{fname}"
+            else:
+                logging.warning(f"❗ [discord] Empty audio data for {url[:50]}...")
+                continue
+                
+        except asyncio.TimeoutError:
+            logging.warning(f"⏱️ [discord] Timeout downloading audio {url[:50]}... (attempt {attempt + 1})")
+            continue
+        except Exception as e:
+            logging.error(f"❗ [discord] Error caching audio {url[:50]}... (attempt {attempt + 1}): {e}")
+            if attempt == max_retries - 1:  # Last attempt
+                logging.error(f"❗ [discord] Final failure caching audio {url[:50]}...", exc_info=True)
+            continue
+            
+    # Clean up partial file on failure
+    if fs_path.exists():
+        try:
+            fs_path.unlink()
+        except Exception:
+            pass
+    return None
 
 
 async def cache_discord_video(url: str) -> tuple[Optional[str], Optional[float]]:
@@ -953,6 +1512,7 @@ async def cache_discord_video(url: str) -> tuple[Optional[str], Optional[float]]
     - Files are stored under DISCORD_VIDEO_CACHE_DIR
     - Names are based on SHA256(url) + .mp4 extension
     - Uses yt-dlp for YouTube videos
+    - Filters out videos shorter than 0.5 seconds (static images)
     - Returns (local_path, duration_seconds)
     """
     if not url:
@@ -965,104 +1525,182 @@ async def cache_discord_video(url: str) -> tuple[Optional[str], Optional[float]]
     fname = f"{h}.mp4"
     fs_path = DISCORD_VIDEO_CACHE_DIR / fname
 
-    # If already cached, just reuse and get duration
-    if fs_path.exists():
-        logging.debug(f"📺 [discord] Using cached video for {url} -> {fs_path}")
+    # Check for existing valid cached file
+    if fs_path.exists() and fs_path.stat().st_size > 0:
+        logging.debug(f"📺 [discord] Using cached video for {url[:50]}... -> {fs_path}")
         # Try to get duration from existing file
         duration = await get_video_duration_from_file(str(fs_path))
-        return f"/dvideos/{fname}", duration
+        if duration is None:
+            # File is invalid (too short or corrupted), remove it
+            try:
+                fs_path.unlink()
+                logging.info(f"🗑️ [video] Removed invalid cached video: {fs_path}")
+            except Exception:
+                pass
+        else:
+            return f"/dvideos/{fname}", duration
 
     # Check if it's a YouTube video
     is_youtube = bool(YOUTUBE_RE.search(url))
     duration: Optional[float] = None
 
-    try:
-        if is_youtube:
-            # Use yt-dlp to download YouTube video
-            try:
-                import yt_dlp  # type: ignore
-            except ImportError:
-                logging.warning(
-                    f"yt_dlp not installed; cannot download YouTube video {url}. "
-                    f"Install it with 'pip install yt_dlp' to enable video caching."
-                )
-                return None, None
-
-            async def _download_youtube(u: str) -> Optional[float]:
-                def _inner() -> Optional[float]:
-                    ydl_opts = {
-                        "format": "mp4[height<=720]/best[height<=720]/best",
-                        "outtmpl": str(fs_path),
-                        "quiet": True,
-                        "no_warnings": True,
-                    }
-                    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                        info = ydl.extract_info(u, download=True)
-                        dur = info.get("duration")
-                        if dur is None:
-                            return None
-                        try:
-                            return float(dur)
-                        except Exception:
-                            return None
-
-                return await asyncio.to_thread(_inner)
-
-            duration = await _download_youtube(url)
-            if fs_path.exists():
-                logging.info(f"📹 [discord] Downloaded YouTube video {url} -> {fs_path} (duration={duration}s)")
-                return f"/dvideos/{fname}", duration
-            else:
-                logging.warning(f"❗ [discord] yt-dlp failed to download {url}")
-                return None, None
-
-        else:
-            # Direct video file - download it
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url, timeout=30) as resp:
-                    if resp.status != 200:
-                        text = await resp.text()
-                        logging.warning(
-                            f"❗ [discord] Failed to download video {url}: "
-                            f"status={resp.status}, body={text[:200]!r}"
-                        )
-                        return None, None
-                    data = await resp.read()
-            fs_path.write_bytes(data)
-            logging.info(f"💾 [discord] Cached video {url} -> {fs_path}")
+    # Retry logic for downloads
+    max_retries = 2 if is_youtube else 3
+    for attempt in range(max_retries):
+        try:
+            if attempt > 0:
+                logging.info(f"🔄 [warm_cache] Retry {attempt}/{max_retries} for video {url[:50]}...")
+                await asyncio.sleep(2 * attempt)  # Exponential backoff
+                
+            logging.info(f"📺 [warm_cache] Downloading video {url[:50]}... -> {fs_path}")
             
-            # Try to get duration from downloaded file
-            duration = await get_video_duration_from_file(str(fs_path))
-            return f"/dvideos/{fname}", duration
+            if is_youtube:
+                # Use yt-dlp to download YouTube video
+                try:
+                    import yt_dlp  # type: ignore
+                except ImportError:
+                    logging.warning(
+                        f"yt_dlp not installed; cannot download YouTube video {url[:50]}... "
+                        f"Install it with 'pip install yt_dlp' to enable video caching."
+                    )
+                    return None, None
 
-    except Exception as e:
-        logging.error(f"❗ [discord] Error caching video {url}: {e}", exc_info=True)
-        # Clean up partial download
-        if fs_path.exists():
-            try:
-                fs_path.unlink()
-            except Exception:
-                pass
-        return None, None
+                async def _download_youtube(u: str) -> Optional[float]:
+                    def _inner() -> Optional[float]:
+                        ydl_opts = {
+                            "format": "mp4[height<=720]/best[height<=720]/best",
+                            "outtmpl": str(fs_path),
+                            "quiet": True,
+                            "no_warnings": True,
+                            "writesubtitles": False,
+                            "writeautomaticsub": False,
+                            "writeinfojson": False,
+                            "writethumbnail": False,
+                            "socket_timeout": 30,
+                            "retries": 2,
+                        }
+                        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                            info = ydl.extract_info(u, download=True)
+                            dur = info.get("duration")
+                            if dur is None:
+                                return None
+                            try:
+                                duration = float(dur)
+                                # Accept any positive duration - Tenor GIFs are valid even if short
+                                if duration > 0:
+                                    logging.debug(f"[video] Valid YouTube video: {u[:50]}... ({duration}s)")
+                                    return duration
+                                else:
+                                    logging.info(f"[video] Skipping zero-duration YouTube video: {u[:50]}...")
+                                    return None
+                            except Exception:
+                                return None
+
+                    return await asyncio.to_thread(_inner)
+
+                duration = await _download_youtube(url)
+                if duration is not None and fs_path.exists() and fs_path.stat().st_size > 0:
+                    logging.info(f"📹 [warm_cache] Downloaded YouTube video {url[:50]}... -> {fs_path} (duration={duration}s, size={fs_path.stat().st_size} bytes)")
+                    return f"/dvideos/{fname}", duration
+                else:
+                    if attempt < max_retries - 1:
+                        continue
+                    logging.warning(f"❗ [discord] yt-dlp failed to download or video too short: {url[:50]}...")
+                    # Clean up failed download
+                    if fs_path.exists():
+                        try:
+                            fs_path.unlink()
+                        except Exception:
+                            pass
+                    return None, None
+
+            else:
+                # Direct video file - download it
+                async with aiohttp.ClientSession(
+                    timeout=aiohttp.ClientTimeout(total=90),
+                    connector=aiohttp.TCPConnector(limit=5)
+                ) as session:
+                    async with session.get(url) as resp:
+                        if resp.status != 200:
+                            text = await resp.text()
+                            logging.warning(
+                                f"❗ [discord] Failed to download video {url[:50]}...: "
+                                f"status={resp.status}, body={text[:200]!r}"
+                            )
+                            if resp.status in (404, 403, 410):  # Don't retry for these
+                                break
+                            continue
+                        
+                        # Read data in chunks to handle large files
+                        data = b""
+                        async for chunk in resp.content.iter_chunked(8192):
+                            data += chunk
+                            
+                # Only write if we have data
+                if len(data) > 0:
+                    fs_path.write_bytes(data)
+                    logging.info(f"💾 [warm_cache] Cached video {url[:50]}... -> {fs_path} ({len(data)} bytes)")
+                    
+                    # Try to get duration from downloaded file
+                    duration = await get_video_duration_from_file(str(fs_path))
+                    if duration is None:
+                        # File is invalid (too short or corrupted), remove it
+                        try:
+                            fs_path.unlink()
+                            logging.info(f"🗑️ [video] Removed invalid downloaded video: {fs_path}")
+                        except Exception:
+                            pass
+                        if attempt < max_retries - 1:
+                            continue
+                        return None, None
+                    return f"/dvideos/{fname}", duration
+                else:
+                    logging.warning(f"❗ [discord] Empty video data for {url[:50]}...")
+                    continue
+
+        except asyncio.TimeoutError:
+            logging.warning(f"⏱️ [discord] Timeout downloading video {url[:50]}... (attempt {attempt + 1})")
+            continue
+        except Exception as e:
+            logging.error(f"❗ [discord] Error caching video {url[:50]}... (attempt {attempt + 1}): {e}")
+            if attempt == max_retries - 1:  # Last attempt
+                logging.error(f"❗ [discord] Final failure caching video {url[:50]}...", exc_info=True)
+            continue
+
+    # Clean up partial download on final failure
+    if fs_path.exists():
+        try:
+            fs_path.unlink()
+            logging.debug(f"🧹 [discord] Cleaned up partial video file {fs_path}")
+        except Exception:
+            pass
+    return None, None
 
 
 async def get_video_duration_from_file(file_path: str) -> Optional[float]:
     """
     Get duration from a local video file using ffprobe or similar.
-    Fallback to yt-dlp if available.
+    Returns None if the file is corrupted or unreadable, but accepts short durations for GIFs.
     """
     try:
         # Try ffprobe first (more reliable for local files)
         import subprocess
         result = subprocess.run([
-            'ffprobe', '-v', 'quiet', '-show_entries', 'format=duration',
-            '-of', 'default=noprint_wrappers=1:nokey=1', file_path
+             'ffprobe', '-v', 'quiet', '-show_entries', 'format=duration',
+             '-of', 'default=noprint_wrappers=1:nokey=1', file_path
         ], capture_output=True, text=True, timeout=10)
         
         if result.returncode == 0:
             duration_str = result.stdout.strip()
             if duration_str:
-                return float(duration_str)
+                duration = float(duration_str)
+                # Accept any positive duration - GIFs can be very short (0.1s+)
+                if duration > 0:
+                    logging.debug(f"[video] Valid video duration: {file_path} ({duration}s)")
+                    return duration
+                else:
+                    logging.warning(f"[video] Zero duration video: {file_path}")
+                    return None
     except Exception:
         pass
 
@@ -1083,7 +1721,14 @@ async def get_video_duration_from_file(file_path: str) -> Optional[float]:
                     if dur is None:
                         return None
                     try:
-                        return float(dur)
+                        duration = float(dur)
+                        # Accept any positive duration - GIFs can be very short
+                        if duration > 0:
+                            logging.debug(f"[video] Valid video duration (yt-dlp): {path} ({duration}s)")
+                            return duration
+                        else:
+                            logging.warning(f"[video] Zero duration video (yt-dlp): {path}")
+                            return None
                     except Exception:
                         return None
             return await asyncio.to_thread(_inner)
@@ -1092,8 +1737,8 @@ async def get_video_duration_from_file(file_path: str) -> Optional[float]:
     except Exception:
         pass
 
-    # Default fallback
-    logging.warning(f"❗ [video] Could not determine duration for {file_path}")
+    # If we can't determine duration, assume it's corrupted
+    logging.warning(f"❗ [video] Could not determine duration for {file_path} - may be corrupted")
     return None
 
 
@@ -1309,29 +1954,47 @@ async def pick_media_for_action(
     project_key: str,
 ) -> tuple[Optional[str], Optional[str], Optional[str], Optional[float]]:
     """
-    Decide which media to use for a given action:
+    Decide which media to use for a given action - ONLY FROM LOCAL CACHE.
 
       Mode A: GIF + Discord audio (meme + sound)
       Mode B: Video (YouTube/direct) with its own audio
 
     If both modes are available, choose between them with ~50/50 weighting.
     Returns: (sound_url, meme_url, video_url, video_duration_seconds)
+    
+    NOTE: This function now only looks up pre-cached media, it doesn't download anything.
     """
     game_conf = GAMES_CONFIG.get(project_key, {})
     actions_map = (game_conf.get("actions") or {})
 
-    sound_task = fetch_random_discord_sound(action_key, project=project_key)
-
+    # Get cached media URLs (these should already be downloaded)
     if action_key in actions_map and action_key != "clear":
-        meme_task = fetch_random_discord_meme(action_key, project=project_key)
+        try:
+            # Look up cached media without downloading
+            sound_task = get_cached_discord_sound(action_key, project=project_key)
+            meme_task = get_cached_discord_meme(action_key, project=project_key) 
+            video_task = get_cached_discord_video(action_key, project=project_key)
+            
+            sound, meme, video_result = await asyncio.gather(
+                sound_task, meme_task, video_task, return_exceptions=True
+            )
+            
+            # Handle exceptions in individual tasks
+            if isinstance(sound, Exception):
+                logging.warning(f"Sound lookup failed: {sound}")
+                sound = None
+            if isinstance(meme, Exception):
+                logging.warning(f"Meme lookup failed: {meme}")
+                meme = None
+            if isinstance(video_result, Exception):
+                logging.warning(f"Video lookup failed: {video_result}")
+                video_result = None, None
+                
+        except Exception as e:
+            logging.error(f"Media lookup error: {e}")
+            sound, meme, video_result = None, None, (None, None)
     else:
-        async def _noop_meme():
-            return None
-        meme_task = _noop_meme()
-
-    video_task = fetch_random_discord_video(action_key, project=project_key)
-
-    sound, meme, video_result = await asyncio.gather(sound_task, meme_task, video_task)
+        sound, meme, video_result = None, None, (None, None)
     
     # Unpack video result (now returns tuple)
     video, video_duration = video_result if video_result else (None, None)
@@ -1339,19 +2002,24 @@ async def pick_media_for_action(
     has_gif_audio = bool(sound or meme)
     has_video = bool(video)
 
+    logging.info(f"[media] Action={action_key}, has_gif_audio={has_gif_audio}, has_video={has_video}")
+
     if has_gif_audio and has_video:
         # 50/50 between GIF+audio vs video
         if random.random() < 0.5:
-            # VIDEO mode - duration already known from cache
+            logging.info(f"[media] Choosing VIDEO mode for {action_key}")
             return None, None, video, video_duration
         else:
+            logging.info(f"[media] Choosing GIF+AUDIO mode for {action_key}")
             return sound, meme, None, None
     elif has_video:
-        # VIDEO mode - duration already known from cache
+        logging.info(f"[media] Only VIDEO available for {action_key}")
         return None, None, video, video_duration
     elif has_gif_audio:
+        logging.info(f"[media] Only GIF+AUDIO available for {action_key}")
         return sound, meme, None, None
     else:
+        logging.info(f"[media] No cached media available for {action_key}")
         return None, None, None, None
 
 
@@ -2181,8 +2849,13 @@ async def main() -> None:
     if DISCORD_BOT_TOKEN and DISCORD_CHANNEL_ID:
         logging.info("[discord] Bot token + channel id present; building initial meme/sound cache...")
         await refresh_discord_messages_cache()
-        # Start periodic background refresh (every 10 minutes)
+        # Warm cache ALL media files on startup for instant playback
+        logging.info("[warm_cache] Starting initial warm cache of all media...")
+        await warm_cache_all_media()
+        # Start periodic background refresh (every 10 minutes) which includes warm caching
         asyncio.create_task(discord_cache_refresher_task(interval_seconds=600))
+        # Start cache cleanup task
+        asyncio.create_task(cache_cleanup_task())
     else:
         logging.info("[discord] Bot token or channel id missing; meme/sound cache disabled.")
 
