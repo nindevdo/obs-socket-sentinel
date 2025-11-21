@@ -868,24 +868,41 @@
         memeVideo = newVideo;
         currentVideo = memeVideo;
 
-        // Set up loading timeout
+        // Set up loading timeout - longer for videos
         let loadTimeout = setTimeout(() => {
           if (myMemeId === activeMemeId) {
             console.warn(`[video] Load timeout for ${videoUrl}`);
             clearMeme();
             clearMarquee();
           }
-        }, 15000); // 15 second timeout
+        }, 20000); // 20 second timeout for video loading
 
         const loadedHandler = () => {
           clearTimeout(loadTimeout);
           if (myMemeId !== activeMemeId) return;
           
-          const total = memeVideo.duration || lastVideoDuration || 5;
-          console.log(`[video] Video loaded successfully: duration=${total}s`);
+          // Use the actual video duration - no artificial limits
+          const videoDuration = memeVideo.duration || lastVideoDuration || 10;
+          console.log(`[video] Video loaded successfully: duration=${videoDuration}s`);
+          
+          // Check if this is a Tenor video (short GIF-style)
+          const isTenorVideo = videoUrl.includes('tenor.com') || videoUrl.includes('/dvideos/');
+          
+          // For Tenor videos, use audio duration if available, otherwise video duration
+          // For YouTube/other videos, always use the full video duration
+          let playbackDuration = videoDuration;
+          
+          if (isTenorVideo && soundUrl && currentAudio && currentAudio.duration) {
+            // Tenor + audio: use audio length to sync
+            playbackDuration = currentAudio.duration;
+            console.log(`[video] Tenor video with audio - using audio duration: ${playbackDuration}s`);
+          } else {
+            // YouTube or non-Tenor: use full video duration
+            console.log(`[video] Using full video duration: ${playbackDuration}s`);
+          }
           
           if (lastText) {
-            startMarqueeFromText(lastText, total + 0.25);
+            startMarqueeFromText(lastText, playbackDuration + 0.5);
           }
 
           wordBurstText = parseEventWord(lastText, lastAction);
@@ -896,7 +913,7 @@
           if (playPromise && typeof playPromise.then === "function") {
             playPromise
               .then(() => {
-                console.log(`[video] Playing video successfully`);
+                console.log(`[video] Playing video successfully for ${playbackDuration}s`);
                 animateMeme(myMemeId, memeVideo);
               })
               .catch(err => {
@@ -912,7 +929,7 @@
         };
 
         const endedHandler = () => {
-          console.log(`[video] Video ended`);
+          console.log(`[video] Video ended naturally`);
           if (myMemeId === activeMemeId) {
             wordBurstActive = false;
             setTimeout(() => {
@@ -920,7 +937,7 @@
                 clearMeme();
                 clearMarquee();
               }
-            }, 250);
+            }, 500); // Small delay after video ends
           }
         };
 

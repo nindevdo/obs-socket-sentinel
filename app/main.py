@@ -429,12 +429,25 @@ async def warm_cache_all_media() -> None:
         
     logging.info(f"[warm_cache] Starting warm cache of all media from {len(discord_messages_cache)} messages")
     
-    # Collect all media URLs from all messages
+    # Collect all media URLs from all messages with deduplication
     audio_urls = set()
     video_urls = set()
     
     VIDEO_EXTS = (".mp4", ".webm", ".mov", ".m4v", ".avi", ".mkv")
     AUDIO_EXTS = (".mp3", ".wav", ".ogg", ".flac", ".m4a", ".webm")
+    
+    def normalize_url(url: str) -> str:
+        """Normalize URL by removing query parameters that don't affect content"""
+        import urllib.parse
+        parsed = urllib.parse.urlparse(url)
+        # For most URLs, just use the base URL without query params
+        if "tenor.com" in url or "youtube.com" in url or "youtu.be" in url:
+            return f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
+        # For Discord CDN, keep the URL as-is since query params matter for auth
+        elif "discord" in parsed.netloc:
+            return url
+        else:
+            return f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
     
     for msg in discord_messages_cache:
         # Process attachments
@@ -450,13 +463,13 @@ async def warm_cache_all_media() -> None:
             if (ctype.startswith("audio/") or 
                 fname.endswith(AUDIO_EXTS) or 
                 any(ext in url.lower() for ext in AUDIO_EXTS)):
-                audio_urls.add(url)
+                audio_urls.add(url)  # Keep Discord URLs as-is for auth
                 
             # Check if it's video  
             elif (ctype.startswith("video/") or 
                   fname.endswith(VIDEO_EXTS) or 
                   any(ext in url.lower() for ext in VIDEO_EXTS)):
-                video_urls.add(url)
+                video_urls.add(url)  # Keep Discord URLs as-is for auth
         
         # Process embeds
         for emb in msg.get("embeds", []):
@@ -464,23 +477,23 @@ async def warm_cache_all_media() -> None:
             
             # Check for YouTube URLs
             if emb_url and YOUTUBE_RE.search(emb_url):
-                video_urls.add(emb_url)
+                video_urls.add(normalize_url(emb_url))  # Normalize YouTube URLs
             elif emb_url and any(ext in emb_url.lower() for ext in VIDEO_EXTS):
-                video_urls.add(emb_url)
+                video_urls.add(normalize_url(emb_url))  # Normalize other video URLs
             elif emb_url and any(ext in emb_url.lower() for ext in AUDIO_EXTS):
-                audio_urls.add(emb_url)
+                audio_urls.add(normalize_url(emb_url))  # Normalize other audio URLs
                 
             # Check embed video/audio objects
             video_obj = emb.get("video") or {}
             v_url = (video_obj.get("url") or "").strip()
             if v_url:
                 if any(ext in v_url.lower() for ext in VIDEO_EXTS) or YOUTUBE_RE.search(v_url):
-                    video_urls.add(v_url)
+                    video_urls.add(normalize_url(v_url))
                     
             audio_obj = emb.get("audio") or {}
             a_url = (audio_obj.get("url") or "").strip()
             if a_url and any(ext in a_url.lower() for ext in AUDIO_EXTS):
-                audio_urls.add(a_url)
+                audio_urls.add(normalize_url(a_url))
         
         # Check content for direct links
         content = (msg.get("content") or "").strip()
@@ -492,9 +505,9 @@ async def warm_cache_all_media() -> None:
                     
                 lower_part = part.lower()
                 if any(ext in lower_part for ext in AUDIO_EXTS):
-                    audio_urls.add(part)
+                    audio_urls.add(normalize_url(part))
                 elif any(ext in lower_part for ext in VIDEO_EXTS) or YOUTUBE_RE.search(part):
-                    video_urls.add(part)
+                    video_urls.add(normalize_url(part))
     
     logging.info(f"[warm_cache] Found {len(audio_urls)} unique audio URLs and {len(video_urls)} unique video URLs")
     
@@ -2358,12 +2371,20 @@ async def update_live_overlay(action: str, project_key: str) -> None:
 
 async def _auto_clear_overlay() -> None:
     """
-    Clears overlay after a short delay.
+    Clears overlay after a delay - uses video duration if available, otherwise default 7s.
     """
     global overlay_clear_task, last_overlay_output, last_action, last_sound, last_meme_url, last_video_url, last_video_duration, last_project
 
     try:
-        await asyncio.sleep(OVERLAY_DISPLAY_SECONDS)
+        # Use video duration + buffer if we have a video, otherwise default timer
+        if last_video_url and last_video_duration and last_video_duration > 0:
+            clear_delay = last_video_duration + 1.0  # Add 1 second buffer
+            logging.info(f"⏱️ [overlay] Auto-clear scheduled after video duration: {clear_delay}s")
+        else:
+            clear_delay = OVERLAY_DISPLAY_SECONDS  # Default 7s for GIF+audio
+            logging.info(f"⏱️ [overlay] Auto-clear scheduled after default delay: {clear_delay}s")
+            
+        await asyncio.sleep(clear_delay)
 
         async with state_lock:
             last_overlay_output = ""
@@ -2373,7 +2394,7 @@ async def _auto_clear_overlay() -> None:
             last_video_url = None
             last_video_duration = None
             last_project = ""
-        logging.info(f"🧽 [overlay] Auto-cleared after {OVERLAY_DISPLAY_SECONDS}s")
+        logging.info(f"🧽 [overlay] Auto-cleared after {clear_delay}s")
 
     except asyncio.CancelledError:
         logging.debug("⏳ [overlay] Auto-clear cancelled (new action received)")
