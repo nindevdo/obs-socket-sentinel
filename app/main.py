@@ -60,6 +60,11 @@ DISCORD_SOUND_CACHE_DIR = Path(
     os.getenv("DISCORD_SOUND_CACHE_DIR", "/tmp/discord_sounds")
 )
 
+# Discord video file cache (ephemeral)
+DISCORD_VIDEO_CACHE_DIR = Path(
+    os.getenv("DISCORD_VIDEO_CACHE_DIR", "/tmp/discord_videos")
+)
+
 # Loaded from YAML
 GAMES_CONFIG: Dict[str, Dict[str, Any]] = {}
 GAME_EMOJI_MAP: Dict[str, set] = {}
@@ -613,14 +618,17 @@ async def fetch_random_discord_meme(action_key: str, project: Optional[str]) -> 
 # -----------------------------
 # DISCORD VIDEO SELECTION
 # -----------------------------
-async def fetch_random_discord_video(action_key: str, project: Optional[str]) -> Optional[str]:
+async def fetch_random_discord_video(action_key: str, project: Optional[str]) -> tuple[Optional[str], Optional[float]]:
     """
     Choose a random *video* URL (YouTube or direct video file) for the given
-    action and project from the cached Discord messages.
+    action and project from the cached Discord messages, download/cache it locally,
+    and return (local_url, duration_seconds).
 
-    Rules:
-      - Same project scoping as memes (GAME_EMOJI_MAP + project filtering).
-      - Same action-emoji matching as memes.
+    Requirements for a message to qualify:
+      - It must be associated with the target project/game (via GAME_EMOJI_MAP).
+      - It must have a reaction that matches the *action emoji* for this action
+        under the given project (using config.games[project].actions[action_key]).
+      - It must contain at least one video-ish attachment / embed / link.
       - A candidate is considered "video" if:
           * attachment/content_type starts with video/
           * filename or URL ends with a known video extension
@@ -628,7 +636,7 @@ async def fetch_random_discord_video(action_key: str, project: Optional[str]) ->
     """
     if not DISCORD_BOT_TOKEN or not DISCORD_CHANNEL_ID:
         logging.debug("[discord] Missing bot token or channel id; skipping video fetch.")
-        return None
+        return None, None
 
     target_emoji = get_action_emoji(action_key, project)
     if not target_emoji:
@@ -636,7 +644,7 @@ async def fetch_random_discord_video(action_key: str, project: Optional[str]) ->
             f"[discord] No emoji mapping for action={action_key} under project={project}; "
             f"skipping video fetch."
         )
-        return None
+        return None, None
 
     normalized_target = normalize_emoji(target_emoji)
 
@@ -651,7 +659,7 @@ async def fetch_random_discord_video(action_key: str, project: Optional[str]) ->
             f"[discord] No messages available for project={project}; "
             f"cannot select a video for action={action_key}."
         )
-        return None
+        return None, None
 
     logging.info(
         f"[discord] Selecting VIDEO from {len(messages)} cached messages for "
@@ -776,7 +784,7 @@ async def fetch_random_discord_video(action_key: str, project: Optional[str]) ->
             f"[discord] No VIDEO candidates found in cache for project={project} "
             f"action={action_key} emoji={target_emoji!r}."
         )
-        return None
+        return None, None
 
     items = list(weighted_candidates.items())
     total_weight = sum(w for _, w in items)
@@ -786,17 +794,41 @@ async def fetch_random_discord_video(action_key: str, project: Optional[str]) ->
         upto += w
         if r <= upto:
             logging.info(
-                f"📺 [discord] Selected cached VIDEO URL for project={project} "
+                f"📺 [discord] Selected cached VIDEO URL candidate for project={project} "
                 f"action={action_key}: {url} (weight={w}, total={total_weight})"
             )
-            return url
+            # Cache the video before returning
+            local_url, duration = await cache_discord_video(url)
+            if local_url:
+                logging.info(
+                    f"📺 [discord] Using local cached video URL: {local_url} "
+                    f"for remote {url} (duration={duration}s)"
+                )
+                return local_url, duration
+            else:
+                logging.warning(
+                    f"❗ [discord] Failed to cache video {url}; trying another candidate."
+                )
 
     chosen = random.choice(list(weighted_candidates.keys()))
     logging.info(
-        f"📺 [discord] Fallback selected VIDEO URL for project={project} "
+        f"📺 [discord] Fallback selected VIDEO URL candidate for project={project} "
         f"action={action_key}: {chosen}"
     )
-    return chosen
+    # Cache the fallback video
+    local_url, duration = await cache_discord_video(chosen)
+    if local_url:
+        logging.info(
+            f"📺 [discord] Using fallback local cached video URL: {local_url} "
+            f"for remote {chosen} (duration={duration}s)"
+        )
+        return local_url, duration
+
+    logging.error(
+        f"❗ [discord] Failed to cache any video for action={action_key} "
+        f"(project={project}); returning None."
+    )
+    return None, None
 
 
 # -----------------------------
@@ -911,6 +943,158 @@ async def cache_discord_audio(url: str) -> Optional[str]:
     except Exception as e:
         logging.error(f"❗ [discord] Error caching audio {url}: {e}", exc_info=True)
         return None
+
+
+async def cache_discord_video(url: str) -> tuple[Optional[str], Optional[float]]:
+    """
+    Download a video URL (YouTube or direct) into an ephemeral cache directory and return
+    a local HTTP path like /dvideos/<hashed>.mp4 that the overlay can play, plus duration.
+
+    - Files are stored under DISCORD_VIDEO_CACHE_DIR
+    - Names are based on SHA256(url) + .mp4 extension
+    - Uses yt-dlp for YouTube videos
+    - Returns (local_path, duration_seconds)
+    """
+    if not url:
+        return None, None
+
+    DISCORD_VIDEO_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
+    # Stable name based on URL hash
+    h = hashlib.sha256(url.encode("utf-8")).hexdigest()[:32]
+    fname = f"{h}.mp4"
+    fs_path = DISCORD_VIDEO_CACHE_DIR / fname
+
+    # If already cached, just reuse and get duration
+    if fs_path.exists():
+        logging.debug(f"📺 [discord] Using cached video for {url} -> {fs_path}")
+        # Try to get duration from existing file
+        duration = await get_video_duration_from_file(str(fs_path))
+        return f"/dvideos/{fname}", duration
+
+    # Check if it's a YouTube video
+    is_youtube = bool(YOUTUBE_RE.search(url))
+    duration: Optional[float] = None
+
+    try:
+        if is_youtube:
+            # Use yt-dlp to download YouTube video
+            try:
+                import yt_dlp  # type: ignore
+            except ImportError:
+                logging.warning(
+                    f"yt_dlp not installed; cannot download YouTube video {url}. "
+                    f"Install it with 'pip install yt_dlp' to enable video caching."
+                )
+                return None, None
+
+            async def _download_youtube(u: str) -> Optional[float]:
+                def _inner() -> Optional[float]:
+                    ydl_opts = {
+                        "format": "mp4[height<=720]/best[height<=720]/best",
+                        "outtmpl": str(fs_path),
+                        "quiet": True,
+                        "no_warnings": True,
+                    }
+                    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                        info = ydl.extract_info(u, download=True)
+                        dur = info.get("duration")
+                        if dur is None:
+                            return None
+                        try:
+                            return float(dur)
+                        except Exception:
+                            return None
+
+                return await asyncio.to_thread(_inner)
+
+            duration = await _download_youtube(url)
+            if fs_path.exists():
+                logging.info(f"📹 [discord] Downloaded YouTube video {url} -> {fs_path} (duration={duration}s)")
+                return f"/dvideos/{fname}", duration
+            else:
+                logging.warning(f"❗ [discord] yt-dlp failed to download {url}")
+                return None, None
+
+        else:
+            # Direct video file - download it
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, timeout=30) as resp:
+                    if resp.status != 200:
+                        text = await resp.text()
+                        logging.warning(
+                            f"❗ [discord] Failed to download video {url}: "
+                            f"status={resp.status}, body={text[:200]!r}"
+                        )
+                        return None, None
+                    data = await resp.read()
+            fs_path.write_bytes(data)
+            logging.info(f"💾 [discord] Cached video {url} -> {fs_path}")
+            
+            # Try to get duration from downloaded file
+            duration = await get_video_duration_from_file(str(fs_path))
+            return f"/dvideos/{fname}", duration
+
+    except Exception as e:
+        logging.error(f"❗ [discord] Error caching video {url}: {e}", exc_info=True)
+        # Clean up partial download
+        if fs_path.exists():
+            try:
+                fs_path.unlink()
+            except Exception:
+                pass
+        return None, None
+
+
+async def get_video_duration_from_file(file_path: str) -> Optional[float]:
+    """
+    Get duration from a local video file using ffprobe or similar.
+    Fallback to yt-dlp if available.
+    """
+    try:
+        # Try ffprobe first (more reliable for local files)
+        import subprocess
+        result = subprocess.run([
+            'ffprobe', '-v', 'quiet', '-show_entries', 'format=duration',
+            '-of', 'default=noprint_wrappers=1:nokey=1', file_path
+        ], capture_output=True, text=True, timeout=10)
+        
+        if result.returncode == 0:
+            duration_str = result.stdout.strip()
+            if duration_str:
+                return float(duration_str)
+    except Exception:
+        pass
+
+    # Fallback: try yt-dlp on local file
+    try:
+        import yt_dlp  # type: ignore
+        
+        async def _get_duration_yt_dlp(path: str) -> Optional[float]:
+            def _inner() -> Optional[float]:
+                ydl_opts = {
+                    "quiet": True,
+                    "skip_download": True,
+                    "no_warnings": True,
+                }
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    info = ydl.extract_info(f"file://{path}", download=False)
+                    dur = info.get("duration")
+                    if dur is None:
+                        return None
+                    try:
+                        return float(dur)
+                    except Exception:
+                        return None
+            return await asyncio.to_thread(_inner)
+        
+        return await _get_duration_yt_dlp(file_path)
+    except Exception:
+        pass
+
+    # Default fallback
+    logging.warning(f"❗ [video] Could not determine duration for {file_path}")
+    return None
 
 
 # -----------------------------
@@ -1147,23 +1331,23 @@ async def pick_media_for_action(
 
     video_task = fetch_random_discord_video(action_key, project=project_key)
 
-    sound, meme, video = await asyncio.gather(sound_task, meme_task, video_task)
+    sound, meme, video_result = await asyncio.gather(sound_task, meme_task, video_task)
+    
+    # Unpack video result (now returns tuple)
+    video, video_duration = video_result if video_result else (None, None)
 
     has_gif_audio = bool(sound or meme)
     has_video = bool(video)
 
-    video_duration: Optional[float] = None
-
     if has_gif_audio and has_video:
         # 50/50 between GIF+audio vs video
         if random.random() < 0.5:
-            # VIDEO mode
-            video_duration = await get_video_duration_seconds(video)
+            # VIDEO mode - duration already known from cache
             return None, None, video, video_duration
         else:
             return sound, meme, None, None
     elif has_video:
-        video_duration = await get_video_duration_seconds(video)
+        # VIDEO mode - duration already known from cache
         return None, None, video, video_duration
     elif has_gif_audio:
         return sound, meme, None, None
@@ -1178,12 +1362,14 @@ def ensure_paths() -> None:
     WATCH_DIR.mkdir(parents=True, exist_ok=True)
     CHAPTER_DIR.mkdir(parents=True, exist_ok=True)
     DISCORD_SOUND_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    DISCORD_VIDEO_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
     logging.info(f"📁 WATCH_DIR      = {WATCH_DIR.resolve()}")
     logging.info(f"📁 CHAPTER_DIR    = {CHAPTER_DIR.resolve()}")
     logging.info(f"📝 TEMPLATE_FILE  = {TEMPLATE_FILE.resolve()}")
     logging.info(f"🎮 DEFAULT_PROJECT_NAME = {DEFAULT_PROJECT_NAME}")
     logging.info(f"🎧 DISCORD_SOUND_CACHE_DIR = {DISCORD_SOUND_CACHE_DIR.resolve()}")
+    logging.info(f"📹 DISCORD_VIDEO_CACHE_DIR = {DISCORD_VIDEO_CACHE_DIR.resolve()}")
 
 
 def format_chapter_time(seconds: float) -> str:
@@ -1715,6 +1901,7 @@ async def handle_http(reader: asyncio.StreamReader, writer: asyncio.StreamWriter
       - GET /overlay      => JSON with latest overlay text + action + sound + meme + project + runs
       - GET /config       => serves raw YAML config
       - GET /dsounds/<...> => serves cached Discord audio files
+      - GET /dvideos/<...> => serves cached Discord video files
     """
     addr = writer.get_extra_info("peername")
     logging.debug(f"🌐 [http] Request from {addr}")
@@ -1888,6 +2075,49 @@ async def handle_http(reader: asyncio.StreamReader, writer: asyncio.StreamWriter
                 mime = mime or "audio/ogg"
             except Exception as e:
                 logging.error(f"❗ [http] Failed to read cached sound file {fs_path}: {e}", exc_info=True)
+                resp = b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                writer.write(resp)
+                await writer.drain()
+                return
+
+            headers = (
+                "HTTP/1.1 200 OK\r\n"
+                f"Content-Type: {mime}\r\n"
+                f"Content-Length: {len(body_bytes)}\r\n"
+                "Connection: close\r\n"
+                "\r\n"
+            )
+            writer.write(headers.encode("ascii") + body_bytes)
+            await writer.drain()
+
+        elif path.startswith("/dvideos/"):
+            # Static served cached Discord videos
+            rel = path[len("/dvideos/"):].lstrip("/")
+            fs_path = (DISCORD_VIDEO_CACHE_DIR / rel).resolve()
+
+            # Security: ensure it's inside DISCORD_VIDEO_CACHE_DIR
+            try:
+                fs_path.relative_to(DISCORD_VIDEO_CACHE_DIR.resolve())
+            except ValueError:
+                logging.warning(f"🚫 [http] Attempted path escape for dvideos: {fs_path}")
+                resp = b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                writer.write(resp)
+                await writer.drain()
+                return
+
+            if not fs_path.exists() or not fs_path.is_file():
+                logging.warning(f"❓ [http] Cached video not found: {fs_path}")
+                resp = b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                writer.write(resp)
+                await writer.drain()
+                return
+
+            try:
+                body_bytes = fs_path.read_bytes()
+                mime, _ = mimetypes.guess_type(fs_path.name)
+                mime = mime or "video/mp4"
+            except Exception as e:
+                logging.error(f"❗ [http] Failed to read cached video file {fs_path}: {e}", exc_info=True)
                 resp = b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
                 writer.write(resp)
                 await writer.drain()

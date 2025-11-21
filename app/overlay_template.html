@@ -805,34 +805,6 @@
       lastRow.classList.add("highlight");
     }
 
-    function toYouTubeEmbed(url) {
-      try {
-        const u = new URL(url);
-        if (u.hostname.includes("youtu.be")) {
-          const id = u.pathname.split("/").filter(Boolean)[0];
-          if (id) {
-            return `https://www.youtube.com/embed/${id}?autoplay=1&controls=0&rel=0`;
-          }
-        }
-        if (u.hostname.includes("youtube.com")) {
-          const vId = u.searchParams.get("v");
-          if (vId) {
-            return `https://www.youtube.com/embed/${vId}?autoplay=1&controls=0&rel=0`;
-          }
-          if (u.pathname.startsWith("/shorts/")) {
-            const parts = u.pathname.split("/");
-            const id = parts[2] || "";
-            if (id) {
-              return `https://www.youtube.com/embed/${id}?autoplay=1&controls=0&rel=0`;
-            }
-          }
-        }
-      } catch (e) {
-        // ignore
-      }
-      return url;
-    }
-
     function playSoundAndAnimate(soundUrl, memeUrl, videoUrl) {
       const hasVideo = !!videoUrl;
       const hasMeme = !!memeUrl;
@@ -871,40 +843,9 @@
       wordBurstActive = false;
       lastBurstMs = 0;
 
-      // -------- VIDEO MODE (direct video or YouTube) --------
+      // -------- VIDEO MODE (all videos are now cached locally as MP4) --------
       if (hasVideo) {
-        const isYouTube = /youtube\.com|youtu\.be/.test(videoUrl);
-        mainState.opacity = 1;
-        applyTransform(memeWrapper, mainState);
-
-        // YOUTUBE: use iframe audio only, duration from backend
-        if (isYouTube) {
-          const embed = toYouTubeEmbed(videoUrl);
-          memeYouTube.src = embed;
-          memeYouTube.style.display = "block";
-
-          const dur = (lastVideoDuration && lastVideoDuration > 0)
-            ? lastVideoDuration
-            : 8;
-
-          if (lastText) {
-            startMarqueeFromText(lastText, dur + 0.25);
-          }
-
-          // No burst words driven by audio here
-          wordBurstActive = false;
-
-          setTimeout(() => {
-            if (myMemeId === activeMemeId) {
-              clearMeme();
-              clearMarquee();
-            }
-          }, (dur + 0.3) * 1000);
-
-          return;
-        }
-
-        // DIRECT VIDEO (e.g. mp4 from Discord)
+        // All videos are now cached locally as MP4 files
         const bustVideoUrl = withCacheBuster(videoUrl);
         memeVideo.src = bustVideoUrl;
         memeVideo.currentTime = 0;
@@ -920,23 +861,22 @@
             startMarqueeFromText(lastText, total + 0.25);
           }
 
-          // keep wrapper visible while video plays
-          mainState.opacity = 1;
-          applyTransform(memeWrapper, mainState);
+          wordBurstText = parseEventWord(lastText, lastAction);
+          wordBurstActive = !!wordBurstText;
 
-          // clear after duration as a safety
-          setTimeout(() => {
-            if (myMemeId === activeMemeId) {
-              clearMeme();
-              clearMarquee();
-            }
-          }, (total + 0.3) * 1000);
+          // Use the same animation system as memes
+          animateMeme(myMemeId, memeVideo);
         }, { once: true });
 
         memeVideo.addEventListener("ended", () => {
           if (myMemeId === activeMemeId) {
-            clearMeme();
-            clearMarquee();
+            wordBurstActive = false;
+            setTimeout(() => {
+              if (myMemeId === activeMemeId) {
+                clearMeme();
+                clearMarquee();
+              }
+            }, 250);
           }
         }, { once: true });
 
