@@ -903,25 +903,26 @@ async def get_cached_discord_meme(action_key: str, project: Optional[str]) -> Op
     return chosen
 
 
-async def get_cached_discord_video(action_key: str, project: Optional[str]) -> tuple[Optional[str], Optional[float]]:
+async def get_cached_discord_video(action_key: str, project: Optional[str]) -> tuple[Optional[str], Optional[float], Optional[str]]:
     """
     Look up a random cached video for the action/project, but don't download anything.
-    Only returns videos that are already cached locally AND have valid duration (>0.5s).
+    Only returns videos that are already cached locally AND have valid duration.
+    Returns: (cached_url, duration, original_source_url)
     """
     if not DISCORD_BOT_TOKEN or not DISCORD_CHANNEL_ID:
-        return None, None
+        return None, None, None
 
     target_emoji = get_action_emoji(action_key, project)
     if not target_emoji:
-        return None, None
+        return None, None, None
 
     normalized_target = normalize_emoji(target_emoji)
     messages = _select_messages_for_project(project)
     if not messages:
-        return None, None
+        return None, None, None
 
     # Build list of candidate video URLs (same logic as fetch_random_discord_video)
-    weighted_candidates: Dict[str, tuple[float, float]] = {}  # url -> (weight, duration)
+    weighted_candidates: Dict[str, tuple[float, float, str]] = {}  # cache_url -> (weight, duration, original_url)
     VIDEO_EXTS = (".mp4", ".webm", ".mov", ".m4v", ".avi", ".mkv")
 
     for msg in messages:
@@ -973,8 +974,8 @@ async def get_cached_discord_video(action_key: str, project: Optional[str]) -> t
                     duration = await get_video_duration_from_file(str(fs_path))
                     if duration is not None and duration > 0:  # Accept any positive duration
                         cache_url = f"/dvideos/{h}.mp4"
-                        prev_weight, _ = weighted_candidates.get(cache_url, (0.0, 0.0))
-                        weighted_candidates[cache_url] = (prev_weight + match_weight, duration)
+                        prev_weight, _, _ = weighted_candidates.get(cache_url, (0.0, 0.0, url))
+                        weighted_candidates[cache_url] = (prev_weight + match_weight, duration, url)
 
         # Check embeds for videos (including YouTube)
         for emb in msg.get("embeds", []):
@@ -987,38 +988,38 @@ async def get_cached_discord_video(action_key: str, project: Optional[str]) -> t
                     duration = await get_video_duration_from_file(str(fs_path))
                     if duration is not None and duration > 0:  # Accept any positive duration
                         cache_url = f"/dvideos/{h}.mp4"
-                        prev_weight, _ = weighted_candidates.get(cache_url, (0.0, 0.0))
-                        weighted_candidates[cache_url] = (prev_weight + match_weight, duration)
+                        prev_weight, _, _ = weighted_candidates.get(cache_url, (0.0, 0.0, emb_url))
+                        weighted_candidates[cache_url] = (prev_weight + match_weight, duration, emb_url)
 
     if not weighted_candidates:
         logging.info(f"[video] No valid cached videos found for action={action_key} project={project}")
-        return None, None
+        return None, None, None
 
     # Apply anti-repetition weighting to avoid playing same videos repeatedly
     # Convert tuple format to simple format for anti-repetition processing
-    simple_candidates = {url: weight for url, (weight, _) in weighted_candidates.items()}
+    simple_candidates = {url: weight for url, (weight, _, _) in weighted_candidates.items()}
     simple_candidates = apply_anti_repetition_weighting(simple_candidates, action_key)
     # Convert back to tuple format
-    adjusted_candidates = {url: (simple_candidates[url], weighted_candidates[url][1]) for url in simple_candidates}
+    adjusted_candidates = {url: (simple_candidates[url], weighted_candidates[url][1], weighted_candidates[url][2]) for url in simple_candidates}
 
     # Weighted random choice from cached candidates
     items = list(adjusted_candidates.items())
-    total_weight = sum(weight for _, (weight, _) in items)
+    total_weight = sum(weight for _, (weight, _, _) in items)
     r = random.uniform(0, total_weight)
     upto = 0.0
-    for url, (weight, duration) in items:
+    for url, (weight, duration, original_url) in items:
         upto += weight
         if r <= upto:
             logging.info(f"📺 [cache] Selected cached video for action={action_key}: {url} (duration={duration}s)")
             # Track this selection to avoid repetition
             track_played_media(url, action_key)
-            return url, duration
+            return url, duration, original_url
 
     # Fallback
-    chosen_url, (_, chosen_duration) = random.choice(items)
+    chosen_url, (_, chosen_duration, chosen_original) = random.choice(items)
     logging.info(f"📺 [cache] Fallback selected cached video for action={action_key}: {chosen_url} (duration={chosen_duration}s)")
     track_played_media(chosen_url, action_key)
-    return chosen_url, chosen_duration
+    return chosen_url, chosen_duration, chosen_original
 
 
 # -----------------------------
@@ -2092,38 +2093,94 @@ async def pick_media_for_action(
                 meme = None
             if isinstance(video_result, Exception):
                 logging.warning(f"Video lookup failed: {video_result}")
-                video_result = None, None
+                video_result = None, None, None
                 
         except Exception as e:
             logging.error(f"Media lookup error: {e}")
-            sound, meme, video_result = None, None, (None, None)
+            sound, meme, video_result = None, None, (None, None, None)
     else:
-        sound, meme, video_result = None, None, (None, None)
+        sound, meme, video_result = None, None, (None, None, None)
     
-    # Unpack video result (now returns tuple)
-    video, video_duration = video_result if video_result else (None, None)
+    # Unpack video result (now returns 3-tuple with original source URL)
+    video, video_duration, original_video_url = video_result if video_result else (None, None, None)
+
+    # Determine if video is a Tenor (silent GIF) or YouTube (has audio)
+    # Now we can use the original source URL to properly detect the type
+    is_tenor_video = False
+    is_youtube_video = False
+    
+    if video and original_video_url:
+        # Check if original URL is from YouTube
+        if YOUTUBE_RE.search(original_video_url):
+            is_youtube_video = True
+            logging.info(f"[media] Detected YouTube video: {original_video_url} -> {video}")
+        else:
+            # Everything else (Tenor, Discord attachments, etc.) is treated as silent video
+            is_tenor_video = True
+            logging.info(f"[media] Detected Tenor/attachment video: {original_video_url} -> {video}")
+    
 
     has_gif_audio = bool(sound or meme)
-    has_video = bool(video)
+    has_tenor_video = bool(is_tenor_video)
+    has_youtube_video = bool(is_youtube_video)
 
-    logging.info(f"[media] Action={action_key}, has_gif_audio={has_gif_audio}, has_video={has_video}")
+    logging.info(f"[media] Action={action_key}, has_gif_audio={has_gif_audio}, has_tenor={has_tenor_video}, has_youtube={has_youtube_video}")
 
-    if has_gif_audio and has_video:
-        # 50/50 between GIF+audio vs video
-        if random.random() < 0.5:
-            logging.info(f"[media] Choosing VIDEO mode for {action_key}")
-            return None, None, video, video_duration
-        else:
-            logging.info(f"[media] Choosing GIF+AUDIO mode for {action_key}")
-            return sound, meme, None, None
-    elif has_video:
-        logging.info(f"[media] Only VIDEO available for {action_key}")
-        return None, None, video, video_duration
-    elif has_gif_audio:
-        logging.info(f"[media] Only GIF+AUDIO available for {action_key}")
-        return sound, meme, None, None
+    # Media selection logic:
+    # 1. YouTube videos always play alone (with their own audio)
+    # 2. Tenor videos can be paired with Discord audio or GIF memes
+    # 3. GIF memes can be paired with Discord audio
+    
+    available_modes = []
+    
+    if has_youtube_video:
+        available_modes.append("youtube")
+    
+    if has_tenor_video and sound:
+        available_modes.append("tenor_with_audio") 
+    elif has_tenor_video:
+        available_modes.append("tenor_silent")
+        
+    if has_gif_audio and not has_tenor_video:  # Only if no tenor video to compete
+        available_modes.append("gif_audio")
+
+    if not available_modes:
+        logging.info(f"[media] No compatible media combinations available for {action_key}")
+        return None, None, None, None
+
+    # Choose mode with some weighting preferences
+    if len(available_modes) == 1:
+        chosen_mode = available_modes[0]
     else:
-        logging.info(f"[media] No cached media available for {action_key}")
+        # Prefer modes with both video and audio
+        weights = []
+        for mode in available_modes:
+            if mode == "tenor_with_audio":
+                weights.append(3)  # Highest preference
+            elif mode == "youtube":
+                weights.append(2)  # Second preference
+            elif mode == "gif_audio":
+                weights.append(1)  # Third preference
+            else:  # tenor_silent
+                weights.append(1)  # Lowest preference
+                
+        chosen_mode = random.choices(available_modes, weights=weights)[0]
+
+    # Return appropriate media based on chosen mode
+    if chosen_mode == "youtube":
+        logging.info(f"[media] Choosing YOUTUBE mode for {action_key}")
+        return None, None, video, video_duration
+    elif chosen_mode == "tenor_with_audio":
+        logging.info(f"[media] Choosing TENOR+AUDIO mode for {action_key}")
+        return sound, None, video, video_duration  # Tenor video with Discord audio
+    elif chosen_mode == "tenor_silent":
+        logging.info(f"[media] Choosing TENOR (silent) mode for {action_key}")
+        return None, meme, video, video_duration  # Tenor video with optional meme overlay
+    elif chosen_mode == "gif_audio":
+        logging.info(f"[media] Choosing GIF+AUDIO mode for {action_key}")
+        return sound, meme, None, None  # Traditional GIF + audio
+    else:
+        logging.info(f"[media] No media available for {action_key}")
         return None, None, None, None
 
 

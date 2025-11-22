@@ -885,30 +885,48 @@
           const videoDuration = memeVideo.duration || lastVideoDuration || 10;
           console.log(`[video] Video loaded successfully: duration=${videoDuration}s`);
           
-          // Check if this is a Tenor video (short GIF-style)
-          const isTenorVideo = videoUrl.includes('tenor.com') || videoUrl.includes('/dvideos/');
+          // Check if this is a Tenor video (short GIF-style) vs YouTube/full video
+          // The backend now properly detects the source and sends appropriate audio pairing
+          // We can detect the type from whether external audio is provided
+          const hasExternalAudio = !!soundUrl && soundUrl.trim() !== '';
+          const isTenorVideo = hasExternalAudio;  // If Discord audio is sent, it's a Tenor video
+          const isYouTubeVideo = !hasExternalAudio && hasVideo; // If no external audio, it's YouTube
           
-          // For Tenor videos, use audio duration if available, otherwise video duration
-          // For YouTube/other videos, always use the full video duration
+          console.log(`[video] Video classification: hasExternalAudio=${hasExternalAudio}, isTenor=${isTenorVideo}, isYouTube=${isYouTubeVideo}`);
+          
           let playbackDuration = videoDuration;
           let shouldLoop = false;
+          let useExternalAudio = false;
           
           if (isTenorVideo && soundUrl && currentAudio && currentAudio.duration) {
-            // Tenor + audio: use audio length to sync and loop the video
+            // Tenor + Discord audio: use audio length to sync and loop the video
             playbackDuration = currentAudio.duration;
             shouldLoop = true;
-            console.log(`[video] Tenor video with audio - using audio duration: ${playbackDuration}s, looping enabled`);
-          } else {
-            // YouTube or non-Tenor: use full video duration, no looping
-            console.log(`[video] Using full video duration: ${playbackDuration}s`);
+            useExternalAudio = true;
+            console.log(`[video] Tenor video with Discord audio - using audio duration: ${playbackDuration}s, looping enabled`);
+          } else if (isTenorVideo) {
+            // Tenor without audio: use video duration, but still loop for visual effect
+            shouldLoop = false; // Don't loop if no audio to sync to
+            console.log(`[video] Tenor video without audio - using video duration: ${playbackDuration}s`);
+          } else if (isYouTubeVideo) {
+            // YouTube/full video: use video's own audio, ignore any external audio
+            playbackDuration = videoDuration;
+            shouldLoop = false;
+            useExternalAudio = false;
+            console.log(`[video] YouTube/full video - using video's own audio, duration: ${playbackDuration}s`);
+            
+            // Mute any external audio for YouTube videos
+            if (currentAudio) {
+              console.log(`[video] Muting external audio for YouTube video`);
+              currentAudio.pause();
+              currentAudio = null;
+            }
           }
           
-          // Enable looping for Tenor videos when audio is longer
+          // Enable looping only for Tenor videos that need to sync with audio
+          memeVideo.loop = shouldLoop;
           if (shouldLoop) {
-            memeVideo.loop = true;
             console.log(`[video] Enabled looping for Tenor video`);
-          } else {
-            memeVideo.loop = false;
           }
           
           if (lastText) {
@@ -926,11 +944,11 @@
                 console.log(`[video] Playing video successfully for ${playbackDuration}s`);
                 animateMeme(myMemeId, memeVideo);
                 
-                // For looping videos with audio, stop the video when audio ends
-                if (shouldLoop && currentAudio) {
+                // For Tenor videos with Discord audio, stop the video when audio ends
+                if (shouldLoop && useExternalAudio && currentAudio) {
                   currentAudio.addEventListener('ended', () => {
                     if (myMemeId === activeMemeId) {
-                      console.log(`[video] Audio ended, stopping looped Tenor video`);
+                      console.log(`[video] Discord audio ended, stopping looped Tenor video`);
                       memeVideo.pause();
                       memeVideo.loop = false;
                       // Trigger ended handler
