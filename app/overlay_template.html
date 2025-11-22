@@ -805,7 +805,7 @@
       lastRow.classList.add("highlight");
     }
 
-    function playSoundAndAnimate(soundUrl, memeUrl, videoUrl) {
+    function playSoundAndAnimate(soundUrl, memeUrl, videoUrl, audioDuration = 0) {
       const hasVideo = !!videoUrl;
       const hasMeme = !!memeUrl;
 
@@ -898,15 +898,15 @@
           let shouldLoop = false;
           let useExternalAudio = false;
           
-          if (isTenorVideo && soundUrl && currentAudio && currentAudio.duration) {
-            // Tenor + Discord audio: use audio length to sync and loop the video
-            playbackDuration = currentAudio.duration;
+          if (isTenorVideo && soundUrl && audioDuration > 0) {
+            // Tenor + Discord audio: use backend-calculated audio duration for reliable sync
+            playbackDuration = audioDuration;
             shouldLoop = true;
             useExternalAudio = true;
-            console.log(`[video] Tenor video with Discord audio - using audio duration: ${playbackDuration}s, looping enabled`);
+            console.log(`[video] Tenor video with Discord audio - using backend audio duration: ${playbackDuration}s, looping enabled`);
           } else if (isTenorVideo) {
-            // Tenor without audio: use video duration, but still loop for visual effect
-            shouldLoop = false; // Don't loop if no audio to sync to
+            // Tenor without audio: use video duration, don't loop
+            shouldLoop = false;
             console.log(`[video] Tenor video without audio - using video duration: ${playbackDuration}s`);
           } else if (isYouTubeVideo) {
             // YouTube/full video: use video's own audio, ignore any external audio
@@ -1043,9 +1043,10 @@
           setupAnalyserForAudio(audio);
 
           audio.addEventListener("loadedmetadata", () => {
-            const total = audio.duration || 1;
+            // Use backend-calculated duration if available, otherwise fallback to browser detection
+            const total = audioDuration > 0 ? audioDuration : (audio.duration || 1);
             const marqueeDuration = total + 0.25;
-            console.log(`[audio] Audio loaded: duration=${total}s`);
+            console.log(`[audio] Audio loaded: duration=${total}s (backend: ${audioDuration}s, browser: ${audio.duration}s)`);
             if (lastText) {
               startMarqueeFromText(lastText, marqueeDuration);
             }
@@ -1084,10 +1085,13 @@
                 console.warn(`[audio] Audio play failed, using fake driver:`, err);
                 if (myMemeId !== activeMemeId) return;
                 currentAudio = null;
-                const fake = { duration: 1.3, currentTime: 0, paused: false, ended: false };
+                
+                // Use backend-calculated duration if available, otherwise fallback
+                const fallbackDuration = audioDuration > 0 ? audioDuration : 1.3;
+                const fake = { duration: fallbackDuration, currentTime: 0, paused: false, ended: false };
                 const start = performance.now();
                 if (lastText) {
-                  startMarqueeFromText(lastText, 1.35);
+                  startMarqueeFromText(lastText, fallbackDuration + 0.05);
                 }
                 wordBurstActive = !!wordBurstText;
 
@@ -1132,18 +1136,20 @@
           });
         } else {
           console.log(`[media] No audio, using fake timing for GIF`);
-          const fake = { duration: 1, currentTime: 0, paused: false, ended: false };
+          // Use a reasonable default duration if no audio duration is provided
+          const defaultDuration = audioDuration > 0 ? audioDuration : 3.0;
+          const fake = { duration: defaultDuration, currentTime: 0, paused: false, ended: false };
           const start = performance.now();
 
           if (lastText) {
-            startMarqueeFromText(lastText, 1.25);
+            startMarqueeFromText(lastText, defaultDuration + 0.25);
           }
           wordBurstActive = !!wordBurstText;
 
           function fakeStep(now) {
             const elapsed = (now - start) / 1000;
             fake.currentTime = elapsed;
-            if (elapsed >= 1) {
+            if (elapsed >= fake.duration) {
               fake.paused = true;
               fake.ended = true;
             }
@@ -1191,6 +1197,7 @@
         const meme = data.meme || "";
         const video = data.video || "";
         const videoDuration = data.video_duration || 0;
+        const audioDuration = data.audio_duration || 0;
         const runs = Array.isArray(data.runs) ? data.runs : [];
 
         const prevRunsLen = lastRunsSnapshot.length;
@@ -1245,7 +1252,7 @@
         triggerFlash();
 
         if (meme || video) {
-          playSoundAndAnimate(sound, meme, video);
+          playSoundAndAnimate(sound, meme, video, audioDuration);
         } else {
           clearMeme();
           clearMarquee();

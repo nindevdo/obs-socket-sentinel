@@ -28,6 +28,7 @@ last_sound: Optional[str] = None        # URL string for sound (Discord cached)
 last_meme_url: Optional[str] = None     # URL string for meme image/gif (Discord)
 last_video_url: Optional[str] = None    # URL string for video (YouTube/direct)
 last_video_duration: Optional[float] = None  # Seconds, if known
+last_audio_duration: Optional[float] = None  # Audio duration for proper timing
 
 # Recently played media tracking to avoid repetition
 recent_media_history: Dict[str, List[str]] = {}  # action_key -> list of recent URLs
@@ -1847,6 +1848,37 @@ async def get_video_duration_from_file(file_path: str) -> Optional[float]:
     return None
 
 
+async def get_audio_duration_from_file(file_path: str) -> Optional[float]:
+    """
+    Get duration from a local audio file using ffprobe.
+    Returns None if the file is corrupted or unreadable.
+    """
+    try:
+        # Use ffprobe to get audio duration
+        result = await asyncio.create_subprocess_exec(
+            "ffprobe", "-v", "quiet", "-show_entries", "format=duration", 
+            "-of", "csv=p=0", file_path,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+        )
+        stdout, stderr = await result.communicate()
+        
+        if result.returncode == 0 and stdout:
+            duration_str = stdout.decode().strip()
+            if duration_str:
+                duration = float(duration_str)
+                if duration > 0:
+                    logging.debug(f"[audio] Valid audio duration: {file_path} ({duration}s)")
+                    return duration
+                else:
+                    logging.warning(f"[audio] Zero duration audio: {file_path}")
+                    return None
+    except Exception:
+        pass
+    
+    logging.warning(f"❗ [audio] Could not determine duration for {file_path} - may be corrupted")
+    return None
+
+
 # -----------------------------
 # DISCORD SOUND SELECTION (Discord-only SFX)
 # -----------------------------
@@ -2465,6 +2497,7 @@ async def update_live_overlay(action: str, project_key: str) -> None:
             last_meme_url = None
             last_video_url = None
             last_video_duration = None
+            last_audio_duration = None
             last_project = ""
 
             # Cancel any pending auto-clear timer
@@ -2502,12 +2535,26 @@ async def update_live_overlay(action: str, project_key: str) -> None:
         last_meme_url = meme_url or None
         last_video_url = video_url or None
         last_video_duration = video_duration
+        
+        # Get audio duration for proper overlay timing
+        last_audio_duration = None
+        if last_sound and last_sound.startswith("/dsounds/"):
+            # Extract filename from /dsounds/filename.ext
+            audio_filename = last_sound.split("/dsounds/")[-1]
+            audio_file_path = DISCORD_SOUND_CACHE_DIR / audio_filename
+            if audio_file_path.exists():
+                try:
+                    last_audio_duration = await get_audio_duration_from_file(str(audio_file_path))
+                    if last_audio_duration:
+                        logging.info(f"🎵 [overlay] Audio duration detected: {last_audio_duration}s for {audio_filename}")
+                except Exception as e:
+                    logging.warning(f"Failed to get audio duration for {audio_filename}: {e}")
 
         codepoints = " ".join(f"U+{ord(ch):04X}" for ch in output)
         logging.info(
             f"🖨️ [overlay] New overlay text: {output} [{codepoints}] "
             f"project={project_key} action={last_action} sound={last_sound} "
-            f"meme={last_meme_url} video={last_video_url} duration={last_video_duration}"
+            f"meme={last_meme_url} video={last_video_url} duration={last_video_duration} audio_duration={last_audio_duration}"
         )
 
         # reset / restart auto-clear timer
@@ -2519,18 +2566,34 @@ async def update_live_overlay(action: str, project_key: str) -> None:
 
 async def _auto_clear_overlay() -> None:
     """
-    Clears overlay after a delay - uses video duration if available, otherwise default 7s.
+    Clears overlay after a delay - uses appropriate duration based on media type.
+    - For Tenor + Discord audio: use audio duration
+    - For YouTube videos: use video duration  
+    - For GIF + audio: use audio duration
+    - Default: no auto-clear (let media play to completion)
     """
-    global overlay_clear_task, last_overlay_output, last_action, last_sound, last_meme_url, last_video_url, last_video_duration, last_project
+    global overlay_clear_task, last_overlay_output, last_action, last_sound, last_meme_url, last_video_url, last_video_duration, last_audio_duration, last_project
 
     try:
-        # Use video duration + buffer if we have a video, otherwise default timer
-        if last_video_url and last_video_duration and last_video_duration > 0:
-            clear_delay = last_video_duration + 1.0  # Add 1 second buffer
-            logging.info(f"⏱️ [overlay] Auto-clear scheduled after video duration: {clear_delay}s")
+        clear_delay = None
+        
+        # Determine appropriate duration based on media combination
+        if last_video_url and last_audio_duration:
+            # Tenor video + Discord audio: use audio duration (audio controls the timing)
+            clear_delay = last_audio_duration + 1.0
+            logging.info(f"⏱️ [overlay] Tenor+Audio mode: Auto-clear scheduled after audio duration: {clear_delay}s")
+        elif last_video_url and last_video_duration:
+            # YouTube video: use video duration (video controls the timing)
+            clear_delay = last_video_duration + 1.0  
+            logging.info(f"⏱️ [overlay] YouTube mode: Auto-clear scheduled after video duration: {clear_delay}s")
+        elif last_audio_duration and (last_sound or last_meme_url):
+            # GIF + Discord audio: use audio duration
+            clear_delay = last_audio_duration + 1.0
+            logging.info(f"⏱️ [overlay] GIF+Audio mode: Auto-clear scheduled after audio duration: {clear_delay}s")
         else:
-            clear_delay = OVERLAY_DISPLAY_SECONDS  # Default 7s for GIF+audio
-            logging.info(f"⏱️ [overlay] Auto-clear scheduled after default delay: {clear_delay}s")
+            # No media with known duration - don't auto-clear, let frontend handle it
+            logging.info(f"⏱️ [overlay] No timed media detected - no auto-clear scheduled")
+            return
             
         await asyncio.sleep(clear_delay)
 
@@ -2541,6 +2604,7 @@ async def _auto_clear_overlay() -> None:
             last_meme_url = None
             last_video_url = None
             last_video_duration = None
+            last_audio_duration = None
             last_project = ""
         logging.info(f"🧽 [overlay] Auto-cleared after {clear_delay}s")
 
@@ -2770,6 +2834,7 @@ async def handle_http(reader: asyncio.StreamReader, writer: asyncio.StreamWriter
                 meme = last_meme_url or ""
                 video = last_video_url or ""
                 video_duration = last_video_duration if last_video_duration is not None else 0.0
+                audio_duration = last_audio_duration if last_audio_duration is not None else 0.0
                 project = last_project or ""
 
                 # ---- Build run summaries for the panel ----
@@ -2851,6 +2916,7 @@ async def handle_http(reader: asyncio.StreamReader, writer: asyncio.StreamWriter
                 "meme": meme,
                 "video": video,
                 "video_duration": video_duration,
+                "audio_duration": audio_duration,
                 "project": project,
                 "runs": runs_for_overlay,
             }
