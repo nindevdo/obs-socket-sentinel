@@ -18,8 +18,6 @@ import re       # for YouTube detection
 # -----------------------------
 # CONFIG / GLOBALS
 # -----------------------------
-OVERLAY_DISPLAY_SECONDS = 7
-
 # Task reference so we can cancel/replace timers
 overlay_clear_task: Optional[asyncio.Task] = None
 
@@ -2536,7 +2534,6 @@ async def update_live_overlay(action: str, project_key: str) -> None:
         last_video_url = video_url or None
         last_video_duration = video_duration
         
-        # Get audio duration for proper overlay timing
         last_audio_duration = None
         if last_sound and last_sound.startswith("/dsounds/"):
             # Extract filename from /dsounds/filename.ext
@@ -2570,7 +2567,7 @@ async def _auto_clear_overlay() -> None:
     - For Tenor + Discord audio: use audio duration
     - For YouTube videos: use video duration  
     - For GIF + audio: use audio duration
-    - Default: no auto-clear (let media play to completion)
+    - Default: 3 second fallback for safety
     """
     global overlay_clear_task, last_overlay_output, last_action, last_sound, last_meme_url, last_video_url, last_video_duration, last_audio_duration, last_project
 
@@ -2590,10 +2587,14 @@ async def _auto_clear_overlay() -> None:
             # GIF + Discord audio: use audio duration
             clear_delay = last_audio_duration + 1.0
             logging.info(f"⏱️ [overlay] GIF+Audio mode: Auto-clear scheduled after audio duration: {clear_delay}s")
+        elif last_meme_url:
+            # GIF without audio: use default timing
+            clear_delay = 3.0
+            logging.info(f"⏱️ [overlay] GIF-only mode: Auto-clear scheduled after default: {clear_delay}s")
         else:
-            # No media with known duration - don't auto-clear, let frontend handle it
-            logging.info(f"⏱️ [overlay] No timed media detected - no auto-clear scheduled")
-            return
+            # Fallback for text-only
+            clear_delay = 3.0
+            logging.info(f"⏱️ [overlay] Text-only mode: Auto-clear scheduled after default: {clear_delay}s")
             
         await asyncio.sleep(clear_delay)
 

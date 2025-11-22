@@ -862,6 +862,8 @@
         newVideo.autoplay = false;  // Don't autoplay yet
         newVideo.playsInline = true;
         newVideo.preload = "auto";
+        newVideo.controls = false;
+        newVideo.volume = 1.0;
         
         // Replace old video element
         memeWrapper.replaceChild(newVideo, memeVideo);
@@ -904,6 +906,14 @@
             shouldLoop = true;
             useExternalAudio = true;
             console.log(`[video] Tenor video with Discord audio - using backend audio duration: ${playbackDuration}s, looping enabled`);
+            
+            // Load and setup Discord audio for Tenor videos
+            currentAudio = new Audio();
+            currentAudio.src = withCacheBuster(soundUrl);
+            currentAudio.volume = 0.7;
+            currentAudio.preload = "auto";
+            setupAnalyserForAudio(currentAudio);
+            
           } else if (isTenorVideo) {
             // Tenor without audio: use video duration, don't loop
             shouldLoop = false;
@@ -915,12 +925,9 @@
             useExternalAudio = false;
             console.log(`[video] YouTube/full video - using video's own audio, duration: ${playbackDuration}s`);
             
-            // Mute any external audio for YouTube videos
-            if (currentAudio) {
-              console.log(`[video] Muting external audio for YouTube video`);
-              currentAudio.pause();
-              currentAudio = null;
-            }
+            // For YouTube videos, make sure video audio is enabled
+            memeVideo.muted = false;
+            memeVideo.volume = 0.8;
           }
           
           // Enable looping only for Tenor videos that need to sync with audio
@@ -936,41 +943,73 @@
           wordBurstText = parseEventWord(lastText, lastAction);
           wordBurstActive = !!wordBurstText;
 
-          // Start playing and animating
-          const playPromise = memeVideo.play();
-          if (playPromise && typeof playPromise.then === "function") {
-            playPromise
-              .then(() => {
-                console.log(`[video] Playing video successfully for ${playbackDuration}s`);
-                animateMeme(myMemeId, memeVideo);
-                
-                // For Tenor videos with Discord audio, stop the video when audio ends
-                if (shouldLoop && useExternalAudio && currentAudio) {
-                  currentAudio.addEventListener('ended', () => {
-                    if (myMemeId === activeMemeId) {
-                      console.log(`[video] Discord audio ended, stopping looped Tenor video`);
-                      memeVideo.pause();
-                      memeVideo.loop = false;
-                      // Trigger ended handler
-                      setTimeout(() => {
-                        if (myMemeId === activeMemeId) {
-                          clearMeme();
-                          clearMarquee();
-                        }
-                      }, 500);
-                    }
-                  }, { once: true });
-                }
-              })
-              .catch(err => {
-                console.error(`[video] Play failed: ${err}`);
-                if (myMemeId === activeMemeId) {
-                  clearMeme();
-                  clearMarquee();
-                }
-              });
+          // Start playing video and optionally external audio
+          const playVideo = () => {
+            const videoPlayPromise = memeVideo.play();
+            if (videoPlayPromise && typeof videoPlayPromise.then === "function") {
+              videoPlayPromise
+                .then(() => {
+                  console.log(`[video] Video playing successfully for ${playbackDuration}s`);
+                  animateMeme(myMemeId, memeVideo);
+                  
+                  // For Tenor videos with Discord audio, stop the video when audio ends
+                  if (shouldLoop && useExternalAudio && currentAudio) {
+                    currentAudio.addEventListener('ended', () => {
+                      if (myMemeId === activeMemeId) {
+                        console.log(`[video] Discord audio ended, stopping looped Tenor video`);
+                        memeVideo.pause();
+                        memeVideo.loop = false;
+                        // Trigger ended handler
+                        setTimeout(() => {
+                          if (myMemeId === activeMemeId) {
+                            clearMeme();
+                            clearMarquee();
+                          }
+                        }, 500);
+                      }
+                    }, { once: true });
+                  }
+                })
+                .catch(err => {
+                  console.error(`[video] Video play failed: ${err}`);
+                  if (myMemeId === activeMemeId) {
+                    clearMeme();
+                    clearMarquee();
+                  }
+                });
+            } else {
+              animateMeme(myMemeId, memeVideo);
+            }
+          };
+
+          // Start external audio for Tenor videos if needed
+          if (useExternalAudio && currentAudio) {
+            console.log(`[video] Starting external audio for Tenor video`);
+            const ctx = ensureAudioContext();
+            if (ctx && ctx.state === "suspended") {
+              ctx.resume().catch(() => {});
+            }
+
+            const audioPlayPromise = currentAudio.play();
+            if (audioPlayPromise && typeof audioPlayPromise.then === "function") {
+              audioPlayPromise
+                .then(() => {
+                  console.log(`[video] External audio playing successfully`);
+                  // Start video playback synchronized with audio
+                  playVideo();
+                })
+                .catch(err => {
+                  console.warn(`[video] External audio play failed: ${err}`);
+                  // Continue with video only
+                  currentAudio = null;
+                  playVideo();
+                });
+            } else {
+              playVideo();
+            }
           } else {
-            animateMeme(myMemeId, memeVideo);
+            // No external audio needed (YouTube videos or silent Tenor)
+            playVideo();
           }
         };
 
