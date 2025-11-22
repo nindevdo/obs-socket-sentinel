@@ -891,14 +891,24 @@
           // For Tenor videos, use audio duration if available, otherwise video duration
           // For YouTube/other videos, always use the full video duration
           let playbackDuration = videoDuration;
+          let shouldLoop = false;
           
           if (isTenorVideo && soundUrl && currentAudio && currentAudio.duration) {
-            // Tenor + audio: use audio length to sync
+            // Tenor + audio: use audio length to sync and loop the video
             playbackDuration = currentAudio.duration;
-            console.log(`[video] Tenor video with audio - using audio duration: ${playbackDuration}s`);
+            shouldLoop = true;
+            console.log(`[video] Tenor video with audio - using audio duration: ${playbackDuration}s, looping enabled`);
           } else {
-            // YouTube or non-Tenor: use full video duration
+            // YouTube or non-Tenor: use full video duration, no looping
             console.log(`[video] Using full video duration: ${playbackDuration}s`);
+          }
+          
+          // Enable looping for Tenor videos when audio is longer
+          if (shouldLoop) {
+            memeVideo.loop = true;
+            console.log(`[video] Enabled looping for Tenor video`);
+          } else {
+            memeVideo.loop = false;
           }
           
           if (lastText) {
@@ -915,6 +925,24 @@
               .then(() => {
                 console.log(`[video] Playing video successfully for ${playbackDuration}s`);
                 animateMeme(myMemeId, memeVideo);
+                
+                // For looping videos with audio, stop the video when audio ends
+                if (shouldLoop && currentAudio) {
+                  currentAudio.addEventListener('ended', () => {
+                    if (myMemeId === activeMemeId) {
+                      console.log(`[video] Audio ended, stopping looped Tenor video`);
+                      memeVideo.pause();
+                      memeVideo.loop = false;
+                      // Trigger ended handler
+                      setTimeout(() => {
+                        if (myMemeId === activeMemeId) {
+                          clearMeme();
+                          clearMarquee();
+                        }
+                      }, 500);
+                    }
+                  }, { once: true });
+                }
               })
               .catch(err => {
                 console.error(`[video] Play failed: ${err}`);

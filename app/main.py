@@ -29,6 +29,10 @@ last_meme_url: Optional[str] = None     # URL string for meme image/gif (Discord
 last_video_url: Optional[str] = None    # URL string for video (YouTube/direct)
 last_video_duration: Optional[float] = None  # Seconds, if known
 
+# Recently played media tracking to avoid repetition
+recent_media_history: Dict[str, List[str]] = {}  # action_key -> list of recent URLs
+RECENT_MEDIA_HISTORY_SIZE = 5  # Remember last 5 items per action
+
 # Where we consider the "recordings/markers" root
 WATCH_DIR = Path(os.getenv("WATCH_DIR", "/markers"))
 
@@ -124,6 +128,60 @@ discord_game_caches: Dict[str, List[dict]] = {} # per-game filtered messages
 discord_cache_lock = asyncio.Lock()             # to avoid concurrent rebuilds
 
 YOUTUBE_RE = re.compile(r"(youtube\.com|youtu\.be)", re.IGNORECASE)
+
+
+def apply_anti_repetition_weighting(weighted_candidates: Dict[str, float], action_key: str) -> Dict[str, float]:
+    """
+    Apply anti-repetition weighting to reduce chances of recently played media.
+    Items played more recently get higher penalty.
+    """
+    if not weighted_candidates:
+        return weighted_candidates
+        
+    recent_list = recent_media_history.get(action_key, [])
+    if not recent_list:
+        return weighted_candidates
+    
+    adjusted_candidates = {}
+    for url, weight in weighted_candidates.items():
+        adjusted_weight = weight
+        
+        # Check if this URL was recently played
+        if url in recent_list:
+            # Apply penalty based on recency (most recent = highest penalty)
+            recency_index = recent_list.index(url)  # 0 = most recent
+            penalty_factor = 1.0 - (0.8 - (recency_index * 0.15))  # 20%, 35%, 50%, 65%, 80% weight
+            adjusted_weight = weight * max(0.2, penalty_factor)
+            
+        adjusted_candidates[url] = adjusted_weight
+        
+    return adjusted_candidates
+
+
+def track_played_media(url: str, action_key: str) -> None:
+    """
+    Track a played media URL to avoid repetition.
+    Maintains a rolling history per action.
+    """
+    if not url or not action_key:
+        return
+        
+    # Get or create history list for this action
+    if action_key not in recent_media_history:
+        recent_media_history[action_key] = []
+    
+    history = recent_media_history[action_key]
+    
+    # Remove if already in list (move to front)
+    if url in history:
+        history.remove(url)
+    
+    # Add to front
+    history.insert(0, url)
+    
+    # Trim to size limit
+    if len(history) > RECENT_MEDIA_HISTORY_SIZE:
+        history[:] = history[:RECENT_MEDIA_HISTORY_SIZE]
 
 # -----------------------------
 # LOGGING
@@ -669,7 +727,7 @@ async def get_cached_discord_sound(action_key: str, project: Optional[str]) -> O
                     matched = True
 
             if matched:
-                match_weight = max(match_weight, count)
+                match_weight += count  # Sum all matching emoji reactions
 
         if match_weight <= 0:
             continue
@@ -717,6 +775,9 @@ async def get_cached_discord_sound(action_key: str, project: Optional[str]) -> O
     if not weighted_candidates:
         return None
 
+    # Apply anti-repetition weighting to avoid playing same sounds repeatedly
+    weighted_candidates = apply_anti_repetition_weighting(weighted_candidates, action_key)
+
     # Weighted random choice from cached candidates
     items = list(weighted_candidates.items())
     total_weight = sum(w for _, w in items)
@@ -725,9 +786,14 @@ async def get_cached_discord_sound(action_key: str, project: Optional[str]) -> O
     for url, w in items:
         upto += w
         if r <= upto:
+            # Track this selection to avoid repetition
+            track_played_media(url, action_key)
             return url
 
-    return random.choice(list(weighted_candidates.keys()))
+    # Fallback selection
+    chosen = random.choice(list(weighted_candidates.keys()))
+    track_played_media(chosen, action_key)
+    return chosen
 
 
 async def get_cached_discord_meme(action_key: str, project: Optional[str]) -> Optional[str]:
@@ -773,7 +839,7 @@ async def get_cached_discord_meme(action_key: str, project: Optional[str]) -> Op
                     matched = True
 
             if matched:
-                match_weight = max(match_weight, count)
+                match_weight += count  # Sum all matching emoji reactions
 
         if match_weight <= 0:
             continue
@@ -816,6 +882,9 @@ async def get_cached_discord_meme(action_key: str, project: Optional[str]) -> Op
     if not weighted_candidates:
         return None
 
+    # Apply anti-repetition weighting to avoid playing same memes repeatedly  
+    weighted_candidates = apply_anti_repetition_weighting(weighted_candidates, action_key)
+
     # Weighted random choice
     items = list(weighted_candidates.items())
     total_weight = sum(w for _, w in items)
@@ -824,9 +893,14 @@ async def get_cached_discord_meme(action_key: str, project: Optional[str]) -> Op
     for url, w in items:
         upto += w
         if r <= upto:
+            # Track this selection to avoid repetition
+            track_played_media(url, action_key)
             return url
 
-    return random.choice(list(weighted_candidates.keys()))
+    # Fallback selection
+    chosen = random.choice(list(weighted_candidates.keys()))
+    track_played_media(chosen, action_key)
+    return chosen
 
 
 async def get_cached_discord_video(action_key: str, project: Optional[str]) -> tuple[Optional[str], Optional[float]]:
@@ -873,7 +947,7 @@ async def get_cached_discord_video(action_key: str, project: Optional[str]) -> t
                     matched = True
 
             if matched:
-                match_weight = max(match_weight, count)
+                match_weight += count  # Sum all matching emoji reactions
 
         if match_weight <= 0:
             continue
@@ -920,8 +994,15 @@ async def get_cached_discord_video(action_key: str, project: Optional[str]) -> t
         logging.info(f"[video] No valid cached videos found for action={action_key} project={project}")
         return None, None
 
+    # Apply anti-repetition weighting to avoid playing same videos repeatedly
+    # Convert tuple format to simple format for anti-repetition processing
+    simple_candidates = {url: weight for url, (weight, _) in weighted_candidates.items()}
+    simple_candidates = apply_anti_repetition_weighting(simple_candidates, action_key)
+    # Convert back to tuple format
+    adjusted_candidates = {url: (simple_candidates[url], weighted_candidates[url][1]) for url in simple_candidates}
+
     # Weighted random choice from cached candidates
-    items = list(weighted_candidates.items())
+    items = list(adjusted_candidates.items())
     total_weight = sum(weight for _, (weight, _) in items)
     r = random.uniform(0, total_weight)
     upto = 0.0
@@ -929,11 +1010,14 @@ async def get_cached_discord_video(action_key: str, project: Optional[str]) -> t
         upto += weight
         if r <= upto:
             logging.info(f"📺 [cache] Selected cached video for action={action_key}: {url} (duration={duration}s)")
+            # Track this selection to avoid repetition
+            track_played_media(url, action_key)
             return url, duration
 
     # Fallback
     chosen_url, (_, chosen_duration) = random.choice(items)
     logging.info(f"📺 [cache] Fallback selected cached video for action={action_key}: {chosen_url} (duration={chosen_duration}s)")
+    track_played_media(chosen_url, action_key)
     return chosen_url, chosen_duration
 
 
@@ -1051,7 +1135,7 @@ async def fetch_random_discord_meme(action_key: str, project: Optional[str]) -> 
                     matched = True
 
             if matched:
-                match_weight = max(match_weight, count)
+                match_weight += count  # Sum all matching emoji reactions
 
         if match_weight <= 0:
             continue  # no matching reaction for this action on this message
@@ -1128,6 +1212,9 @@ async def fetch_random_discord_meme(action_key: str, project: Optional[str]) -> 
         )
         return None
 
+    # Apply anti-repetition weighting to avoid playing same memes repeatedly
+    weighted_candidates = apply_anti_repetition_weighting(weighted_candidates, action_key)
+
     # Weighted random choice from cached candidates
     items = list(weighted_candidates.items())
     total_weight = sum(w for _, w in items)
@@ -1140,6 +1227,8 @@ async def fetch_random_discord_meme(action_key: str, project: Optional[str]) -> 
                 f"🖼️ [discord] Selected cached meme URL for project={project} "
                 f"action={action_key}: {url} (weight={w}, total={total_weight})"
             )
+            # Track this selection to avoid repetition
+            track_played_media(url, action_key)
             return url
 
     chosen = random.choice(list(weighted_candidates.keys()))
@@ -1147,6 +1236,8 @@ async def fetch_random_discord_meme(action_key: str, project: Optional[str]) -> 
         f"🖼️ [discord] Fallback selected cached meme URL for project={project} "
         f"action={action_key}: {chosen}"
     )
+    # Track this selection to avoid repetition
+    track_played_media(chosen, action_key)
     return chosen
 
 
@@ -1243,7 +1334,7 @@ async def fetch_random_discord_video(action_key: str, project: Optional[str]) ->
                     matched = True
 
             if matched:
-                match_weight = max(match_weight, count)
+                match_weight += count  # Sum all matching emoji reactions for voting weight
 
         if match_weight <= 0:
             continue
@@ -1849,7 +1940,7 @@ async def fetch_random_discord_sound(action_key: str, project: Optional[str]) ->
                     matched = True
 
             if matched:
-                match_weight = max(match_weight, count)
+                match_weight += count  # Sum all matching emoji reactions for voting weight
 
         if match_weight <= 0:
             continue  # no matching reaction for this action on this message
