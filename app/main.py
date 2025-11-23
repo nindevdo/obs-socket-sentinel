@@ -1428,10 +1428,12 @@ async def get_cached_discord_video_with_weight(action_key: str, project: Optiona
                         prev_weight, _, _ = weighted_candidates.get(cache_url, (0.0, duration, url))
                         weighted_candidates[cache_url] = (prev_weight + match_weight, duration, url)
 
-        # Check embeds for videos (including YouTube)
+        # Check embeds for videos (including YouTube and Tenor)
         for emb in msg.get("embeds", []):
             emb_url = (emb.get("url") or "").strip()
-            if emb_url and (any(ext in emb_url.lower() for ext in VIDEO_EXTS) or YOUTUBE_RE.search(emb_url)):
+            if emb_url and (any(ext in emb_url.lower() for ext in VIDEO_EXTS) or 
+                            YOUTUBE_RE.search(emb_url) or 
+                            "tenor.com" in emb_url.lower()):
                 h = hashlib.sha256(emb_url.encode("utf-8")).hexdigest()[:32]
                 fs_path = DISCORD_VIDEO_CACHE_DIR / f"{h}.mp4"
                 
