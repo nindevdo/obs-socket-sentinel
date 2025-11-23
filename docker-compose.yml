@@ -24,3 +24,29 @@ services:
       - "5678:5678"
       - "8088:8088"
 
+#  cloudflared:
+#    image: cloudflare/cloudflared:latest
+#    container_name: obs-socket-sentinel-cloudflared-${ENVIRONMENT:-dev}
+#    profiles:
+#      - dev
+#      - main
+#    labels:
+#      - "profile=dev"
+#      - "profile=main"
+#      - "service.type=core"
+#    restart: unless-stopped
+#    command: >
+#      tunnel --config /etc/cloudflared/config.yml --no-autoupdate run --token ${CLOUDFLARED_TUNNEL_TOKEN}
+#    network_mode: host
+#    environment:
+#      - CLOUDFLARED_HOSTNAME=${CLOUDFLARED_HOSTNAME:-ss.nindevdo.com}
+#      - CLOUDFLARED_SERVICE=${CLOUDFLARED_SERVICE:-http://localhost:8088}
+#      - CLOUDFLARED_TUNNEL_ID=${CLOUDFLARED_TUNNEL_ID}
+#      - CLOUDFLARED_TUNNEL_ORIGIN_CERT=/etc/cloudflared/cert.pem
+#      - CLOUDFLARED_TUNNEL_TOKEN=${CLOUDFLARED_TUNNEL_TOKEN}
+#      - CREDENTIALS_FILE=/etc/cloudflared/tunnelid.json
+#    volumes:
+#      - ${HOME}/.cloudflared/obs-socket-sentinel-${ENVIRONMENT:-dev}:/etc/cloudflared:ro
+#    depends_on:
+#      - obs-socket-sentinel
+#
