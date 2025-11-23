@@ -1315,7 +1315,7 @@ async def get_cached_discord_meme_with_weight(action_key: str, project: Optional
                     weighted_candidates[u] = weighted_candidates.get(u, 0.0) + match_weight
 
             if emb_url and (
-                "tenor.com/view" in emb_url.lower()
+                ("tenor.com/view" in emb_url.lower() and not emb_url.lower().endswith('.mp4'))  # Tenor images only, not videos
                 or any(ext in emb_url.lower() for ext in [".gif", ".webp"])
             ):
                 weighted_candidates[emb_url] = weighted_candidates.get(emb_url, 0.0) + match_weight
@@ -2716,8 +2716,8 @@ async def pick_media_for_action(
                     video_duration  # video_duration
                 ))
 
-    # Check for meme + sound combinations
-    if sound_options and meme_options:
+    # Check for meme + sound combinations (only if no videos available)
+    if sound_options and meme_options and not video_options:
         # Create combinations of highest weighted sound + meme
         for _, sound_url, sound_weight, _, _ in sound_options:
             for _, meme_url, meme_weight, _, _ in meme_options:
