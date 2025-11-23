@@ -7,6 +7,7 @@ import logging
 import mimetypes
 import os
 import random
+import subprocess
 import time
 from typing import Dict, List, Any, Optional
 
@@ -497,8 +498,20 @@ async def warm_cache_all_media() -> None:
         """Normalize URL by removing query parameters that don't affect content"""
         import urllib.parse
         parsed = urllib.parse.urlparse(url)
-        # For most URLs, just use the base URL without query params
-        if "tenor.com" in url or "youtube.com" in url or "youtu.be" in url:
+        # For YouTube URLs, keep the video ID parameter as it's essential
+        if "youtube.com" in url and "watch" in parsed.path:
+            # Keep v parameter for YouTube watch URLs
+            query_params = urllib.parse.parse_qs(parsed.query)
+            if 'v' in query_params:
+                video_id = query_params['v'][0]
+                return f"{parsed.scheme}://{parsed.netloc}{parsed.path}?v={video_id}"
+            else:
+                return url  # Return as-is if no v parameter
+        elif "youtu.be" in url:
+            # youtu.be URLs have video ID in path, keep as-is
+            return url
+        elif "tenor.com" in url:
+            # For Tenor, we can remove query params
             return f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
         # For Discord CDN, keep the URL as-is since query params matter for auth
         elif "discord" in parsed.netloc:
@@ -913,20 +926,48 @@ async def get_cached_discord_video(action_key: str, project: Optional[str]) -> t
 
     target_emoji = get_action_emoji(action_key, project)
     if not target_emoji:
+        logging.info(f"[video] No target emoji found for action={action_key} project={project}")
         return None, None, None
 
     normalized_target = normalize_emoji(target_emoji)
+    logging.info(f"[video] Looking for videos with emoji '{target_emoji}' (normalized: '{normalized_target}') for action={action_key}")
+    
     messages = _select_messages_for_project(project)
     if not messages:
+        logging.info(f"[video] No messages found for project={project}")
         return None, None, None
+
+    logging.info(f"[video] Checking {len(messages)} messages for project={project}")
 
     # Build list of candidate video URLs (same logic as fetch_random_discord_video)
     weighted_candidates: Dict[str, tuple[float, float, str]] = {}  # cache_url -> (weight, duration, original_url)
     VIDEO_EXTS = (".mp4", ".webm", ".mov", ".m4v", ".avi", ".mkv")
 
     for msg in messages:
+        msg_id = msg.get("id", "unknown")
         reactions = msg.get("reactions") or []
         match_weight = 0
+        
+        # Debug: check if this message has any videos at all
+        has_video_content = False
+        for att in msg.get("attachments", []):
+            url = (att.get("url") or "").strip()
+            fname = (att.get("filename") or "").lower()
+            ctype = (att.get("content_type") or "").lower()
+            if (ctype.startswith("video/") or 
+                fname.endswith(VIDEO_EXTS) or 
+                any(ext in url.lower() for ext in VIDEO_EXTS)):
+                has_video_content = True
+                break
+        
+        for emb in msg.get("embeds", []):
+            emb_url = (emb.get("url") or "").strip()
+            if emb_url and (any(ext in emb_url.lower() for ext in VIDEO_EXTS) or YOUTUBE_RE.search(emb_url)):
+                has_video_content = True
+                break
+        
+        if has_video_content:
+            logging.info(f"[video] Message {msg_id} has video content, checking reactions...")
 
         for r in reactions:
             emoji_obj = r.get("emoji") or {}
@@ -940,17 +981,28 @@ async def get_cached_discord_video(action_key: str, project: Optional[str]) -> t
             matched = False
             if emoji_id is None:
                 norm_name = normalize_emoji(name)
+                if has_video_content:
+                    logging.info(f"[video] Message {msg_id}: checking reaction '{name}' (normalized: '{norm_name}') vs target '{normalized_target}'")
                 if norm_name == normalized_target:
                     matched = True
+                    if has_video_content:
+                        logging.info(f"[video] Message {msg_id}: EMOJI MATCH! '{name}' matched target '{target_emoji}'")
             else:
                 if name.lower() == action_key.lower():
                     matched = True
+                    if has_video_content:
+                        logging.info(f"[video] Message {msg_id}: CUSTOM EMOJI MATCH! '{name}' matched action '{action_key}'")
 
             if matched:
                 match_weight += count  # Sum all matching emoji reactions
 
         if match_weight <= 0:
+            if has_video_content:
+                logging.info(f"[video] Message {msg_id} has video content but no matching reactions (weight={match_weight})")
             continue
+        
+        if has_video_content:
+            logging.info(f"[video] Message {msg_id} has video content AND matching reactions (weight={match_weight})")
 
         # Check attachments for videos
         for att in msg.get("attachments", []):
@@ -969,12 +1021,22 @@ async def get_cached_discord_video(action_key: str, project: Optional[str]) -> t
                 h = hashlib.sha256(url.encode("utf-8")).hexdigest()[:32]
                 fs_path = DISCORD_VIDEO_CACHE_DIR / f"{h}.mp4"
                 
+                logging.info(f"[video] Message {msg_id}: checking attachment video {url[:50]}... -> {fs_path}")
+                logging.info(f"[video] Message {msg_id}: full attachment URL for hash: {url}")
+                logging.info(f"[video] Message {msg_id}: calculated hash: {h}")
+                
                 if fs_path.exists() and fs_path.stat().st_size > 0:
                     duration = await get_video_duration_from_file(str(fs_path))
+                    logging.info(f"[video] Message {msg_id}: cached file exists, duration={duration}")
                     if duration is not None and duration > 0:  # Accept any positive duration
                         cache_url = f"/dvideos/{h}.mp4"
                         prev_weight, _, _ = weighted_candidates.get(cache_url, (0.0, 0.0, url))
                         weighted_candidates[cache_url] = (prev_weight + match_weight, duration, url)
+                        logging.info(f"[video] Message {msg_id}: ADDED video candidate {cache_url} (weight={prev_weight + match_weight}, duration={duration})")
+                    else:
+                        logging.warning(f"[video] Message {msg_id}: cached file has invalid duration ({duration})")
+                else:
+                    logging.info(f"[video] Message {msg_id}: cached file NOT found or empty at {fs_path}")
 
         # Check embeds for videos (including YouTube)
         for emb in msg.get("embeds", []):
@@ -983,12 +1045,28 @@ async def get_cached_discord_video(action_key: str, project: Optional[str]) -> t
                 h = hashlib.sha256(emb_url.encode("utf-8")).hexdigest()[:32]
                 fs_path = DISCORD_VIDEO_CACHE_DIR / f"{h}.mp4"
                 
+                logging.info(f"[video] Message {msg_id}: checking embed video {emb_url[:50]}... -> {fs_path}")
+                logging.info(f"[video] Message {msg_id}: full embed URL for hash: {emb_url}")
+                logging.info(f"[video] Message {msg_id}: calculated hash: {h}")
+                
                 if fs_path.exists() and fs_path.stat().st_size > 0:
                     duration = await get_video_duration_from_file(str(fs_path))
+                    logging.info(f"[video] Message {msg_id}: cached file exists, duration={duration}")
                     if duration is not None and duration > 0:  # Accept any positive duration
                         cache_url = f"/dvideos/{h}.mp4"
                         prev_weight, _, _ = weighted_candidates.get(cache_url, (0.0, 0.0, emb_url))
                         weighted_candidates[cache_url] = (prev_weight + match_weight, duration, emb_url)
+                        logging.info(f"[video] Message {msg_id}: ADDED video candidate {cache_url} (weight={prev_weight + match_weight}, duration={duration})")
+                    else:
+                        logging.warning(f"[video] Message {msg_id}: cached file has invalid duration ({duration})")
+                else:
+                    logging.info(f"[video] Message {msg_id}: cached file NOT found or empty at {fs_path}")
+                    # Let's also check what files ARE in the cache directory
+                    try:
+                        cache_files = list(DISCORD_VIDEO_CACHE_DIR.glob("*.mp4"))
+                        logging.info(f"[video] Cache directory has {len(cache_files)} files: {[f.name for f in cache_files[:5]]}")
+                    except Exception:
+                        pass
 
     if not weighted_candidates:
         logging.info(f"[video] No valid cached videos found for action={action_key} project={project}")
@@ -1628,6 +1706,10 @@ async def cache_discord_video(url: str) -> tuple[Optional[str], Optional[float]]
     h = hashlib.sha256(url.encode("utf-8")).hexdigest()[:32]
     fname = f"{h}.mp4"
     fs_path = DISCORD_VIDEO_CACHE_DIR / fname
+    
+    logging.info(f"[cache] Caching video with URL: {url}")
+    logging.info(f"[cache] Calculated hash: {h}")
+    logging.info(f"[cache] Target file path: {fs_path}")
 
     # Check for existing valid cached file
     if fs_path.exists() and fs_path.stat().st_size > 0:
@@ -1672,33 +1754,45 @@ async def cache_discord_video(url: str) -> tuple[Optional[str], Optional[float]]
                 async def _download_youtube(u: str) -> Optional[float]:
                     def _inner() -> Optional[float]:
                         ydl_opts = {
-                            "format": "mp4[height<=720]/best[height<=720]/best",
+                            "format": "best[ext=mp4][height<=720]/best[height<=720]/best",
                             "outtmpl": str(fs_path),
-                            "quiet": True,
-                            "no_warnings": True,
+                            "quiet": False,  # Enable logging to see what's happening
+                            "no_warnings": False,  # Enable warnings
                             "writesubtitles": False,
                             "writeautomaticsub": False,
                             "writeinfojson": False,
                             "writethumbnail": False,
                             "socket_timeout": 30,
-                            "retries": 2,
+                            "retries": 3,
+                            "extract_flat": False,
+                            "ignoreerrors": False,
                         }
-                        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                            info = ydl.extract_info(u, download=True)
-                            dur = info.get("duration")
-                            if dur is None:
-                                return None
-                            try:
-                                duration = float(dur)
-                                # Accept any positive duration - Tenor GIFs are valid even if short
-                                if duration > 0:
-                                    logging.debug(f"[video] Valid YouTube video: {u[:50]}... ({duration}s)")
-                                    return duration
-                                else:
-                                    logging.info(f"[video] Skipping zero-duration YouTube video: {u[:50]}...")
+                        try:
+                            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                                logging.info(f"📹 [yt-dlp] Extracting info for {u[:50]}...")
+                                info = ydl.extract_info(u, download=True)
+                                if not info:
+                                    logging.warning(f"❗ [yt-dlp] No info extracted for {u[:50]}...")
                                     return None
-                            except Exception:
-                                return None
+                                    
+                                dur = info.get("duration")
+                                if dur is None:
+                                    logging.warning(f"❗ [yt-dlp] No duration in info for {u[:50]}...")
+                                    return None
+                                try:
+                                    duration = float(dur)
+                                    if duration > 0:
+                                        logging.info(f"✅ [yt-dlp] Downloaded video: {u[:50]}... ({duration}s)")
+                                        return duration
+                                    else:
+                                        logging.warning(f"❗ [yt-dlp] Zero duration video: {u[:50]}...")
+                                        return None
+                                except Exception as e:
+                                    logging.error(f"❗ [yt-dlp] Duration parse error for {u[:50]}...: {e}")
+                                    return None
+                        except Exception as e:
+                            logging.error(f"❗ [yt-dlp] Download failed for {u[:50]}...: {e}")
+                            return None
 
                     return await asyncio.to_thread(_inner)
 
@@ -2157,44 +2251,43 @@ async def pick_media_for_action(
     logging.info(f"[media] Action={action_key}, has_gif_audio={has_gif_audio}, has_tenor={has_tenor_video}, has_youtube={has_youtube_video}")
 
     # Media selection logic:
-    # 1. YouTube videos always play alone (with their own audio)
-    # 2. Tenor videos can be paired with Discord audio or GIF memes
-    # 3. GIF memes can be paired with Discord audio
+    # 1. YouTube videos always play alone (with their own audio) - PRIORITY
+    # 2. Tenor videos can be paired with Discord audio 
+    # 3. Tenor videos can play silent if no audio available
+    # 4. GIF memes can be paired with Discord audio
     
     available_modes = []
     
+    # YouTube videos get highest priority and always play if available
     if has_youtube_video:
         available_modes.append("youtube")
     
+    # Tenor videos can play with or without audio
     if has_tenor_video and sound:
         available_modes.append("tenor_with_audio") 
     elif has_tenor_video:
         available_modes.append("tenor_silent")
         
-    if has_gif_audio and not has_tenor_video:  # Only if no tenor video to compete
+    # GIF+audio mode only if no videos are available
+    if has_gif_audio and not (has_tenor_video or has_youtube_video):
         available_modes.append("gif_audio")
 
     if not available_modes:
         logging.info(f"[media] No compatible media combinations available for {action_key}")
         return None, None, None, None
 
-    # Choose mode with some weighting preferences
+    # Choose mode with YouTube getting priority
     if len(available_modes) == 1:
         chosen_mode = available_modes[0]
     else:
-        # Prefer modes with both video and audio
-        weights = []
-        for mode in available_modes:
-            if mode == "tenor_with_audio":
-                weights.append(3)  # Highest preference
-            elif mode == "youtube":
-                weights.append(2)  # Second preference
-            elif mode == "gif_audio":
-                weights.append(1)  # Third preference
-            else:  # tenor_silent
-                weights.append(1)  # Lowest preference
-                
-        chosen_mode = random.choices(available_modes, weights=weights)[0]
+        # Always prefer YouTube if available, then Tenor+audio, then others
+        if "youtube" in available_modes:
+            chosen_mode = "youtube"
+        elif "tenor_with_audio" in available_modes:
+            chosen_mode = "tenor_with_audio"
+        else:
+            # Random selection from remaining modes
+            chosen_mode = random.choice(available_modes)
 
     # Return appropriate media based on chosen mode
     if chosen_mode == "youtube":
@@ -2563,11 +2656,11 @@ async def update_live_overlay(action: str, project_key: str) -> None:
 
 async def _auto_clear_overlay() -> None:
     """
-    Clears overlay after a delay - uses appropriate duration based on media type.
+    Clears overlay after a delay - ALWAYS respects media duration.
     - For Tenor + Discord audio: use audio duration
     - For YouTube videos: use video duration  
     - For GIF + audio: use audio duration
-    - Default: 3 second fallback for safety
+    - NO fallback timing - only clear when media duration is known
     """
     global overlay_clear_task, last_overlay_output, last_action, last_sound, last_meme_url, last_video_url, last_video_duration, last_audio_duration, last_project
 
@@ -2587,14 +2680,10 @@ async def _auto_clear_overlay() -> None:
             # GIF + Discord audio: use audio duration
             clear_delay = last_audio_duration + 1.0
             logging.info(f"⏱️ [overlay] GIF+Audio mode: Auto-clear scheduled after audio duration: {clear_delay}s")
-        elif last_meme_url:
-            # GIF without audio: use default timing
-            clear_delay = 3.0
-            logging.info(f"⏱️ [overlay] GIF-only mode: Auto-clear scheduled after default: {clear_delay}s")
         else:
-            # Fallback for text-only
-            clear_delay = 3.0
-            logging.info(f"⏱️ [overlay] Text-only mode: Auto-clear scheduled after default: {clear_delay}s")
+            # No timed media - don't auto-clear, let frontend handle it
+            logging.info(f"⏱️ [overlay] No timed media detected - no auto-clear scheduled")
+            return
             
         await asyncio.sleep(clear_delay)
 
@@ -2944,6 +3033,64 @@ async def handle_http(reader: asyncio.StreamReader, writer: asyncio.StreamWriter
             headers = (
                 "HTTP/1.1 200 OK\r\n"
                 "Content-Type: text/yaml; charset=utf-8\r\n"
+                f"Content-Length: {len(body_bytes)}\r\n"
+                "Connection: close\r\n"
+                "\r\n"
+            )
+            writer.write(headers.encode("ascii") + body_bytes)
+            await writer.drain()
+
+        elif path.startswith("/debug_video"):
+            # DEBUG ENDPOINT: Force select a cached video for testing
+            try:
+                import os
+                from pathlib import Path
+                video_dir = Path("/discord/discord_videos")
+                video_files = list(video_dir.glob("*.mp4"))
+                
+                if video_files:
+                    # Select first video file
+                    video_file = video_files[0]
+                    video_filename = video_file.name
+                    
+                    # Get duration
+                    duration = None
+                    try:
+                        result = subprocess.run([
+                            'ffprobe', '-v', 'quiet', '-show_entries', 'format=duration',
+                            '-of', 'default=noprint_wrappers=1:nokey=1', str(video_file)
+                        ], capture_output=True, text=True, timeout=10)
+                        
+                        if result.returncode == 0:
+                            duration_str = result.stdout.strip()
+                            if duration_str:
+                                duration = float(duration_str)
+                    except Exception:
+                        duration = 10.0  # fallback
+                    
+                    # Create debug response
+                    debug_response = {
+                        "text": "🎬 DEBUG VIDEO",
+                        "action": "debug",
+                        "sound": "",
+                        "meme": "",
+                        "video": f"/dvideos/{video_filename}",
+                        "video_duration": duration or 10.0,
+                        "audio_duration": 0.0,
+                        "project": "debug",
+                        "runs": []
+                    }
+                    
+                    body_bytes = json.dumps(debug_response).encode("utf-8")
+                else:
+                    body_bytes = json.dumps({"error": "No cached videos found"}).encode("utf-8")
+                    
+            except Exception as e:
+                body_bytes = json.dumps({"error": str(e)}).encode("utf-8")
+            
+            headers = (
+                "HTTP/1.1 200 OK\r\n"
+                "Content-Type: application/json; charset=utf-8\r\n"
                 f"Content-Length: {len(body_bytes)}\r\n"
                 "Connection: close\r\n"
                 "\r\n"

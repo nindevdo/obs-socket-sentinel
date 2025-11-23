@@ -19,6 +19,7 @@ services:
     volumes:
       - ./_data/markers:/markers:rw
       - ./_data/discord:/discord:rw
+      - ./app:/app:rw
     ports:
       - "5678:5678"
       - "8088:8088"
