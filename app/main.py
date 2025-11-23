@@ -550,14 +550,14 @@ async def warm_cache_all_media() -> None:
             fname = (att.get("filename") or "").lower()
             ctype = (att.get("content_type") or "").lower()
             
-            # Check if it's audio
-            if (ctype.startswith("audio/") or 
-                fname.endswith(AUDIO_EXTS) or 
-                any(ext in url.lower() for ext in AUDIO_EXTS)):
-                audio_urls.add(url)  # Keep Discord URLs as-is for auth
+            # Check if it's audio - DISABLED for YouTube-only mode
+            # if (ctype.startswith("audio/") or 
+            #     fname.endswith(AUDIO_EXTS) or 
+            #     any(ext in url.lower() for ext in AUDIO_EXTS)):
+            #     audio_urls.add(url)  # Keep Discord URLs as-is for auth
                 
             # Check if it's video  
-            elif (ctype.startswith("video/") or 
+            if (ctype.startswith("video/") or 
                   fname.endswith(VIDEO_EXTS) or 
                   any(ext in url.lower() for ext in VIDEO_EXTS)):
                 video_urls.add(url)  # Keep Discord URLs as-is for auth
@@ -571,8 +571,8 @@ async def warm_cache_all_media() -> None:
                 video_urls.add(normalize_url(emb_url))  # Normalize YouTube URLs
             elif emb_url and any(ext in emb_url.lower() for ext in VIDEO_EXTS):
                 video_urls.add(normalize_url(emb_url))  # Normalize other video URLs
-            elif emb_url and any(ext in emb_url.lower() for ext in AUDIO_EXTS):
-                audio_urls.add(normalize_url(emb_url))  # Normalize other audio URLs
+            # DISABLED: elif emb_url and any(ext in emb_url.lower() for ext in AUDIO_EXTS):
+            #     audio_urls.add(normalize_url(emb_url))  # Normalize other audio URLs
                 
             # Check embed video/audio objects
             video_obj = emb.get("video") or {}
@@ -581,10 +581,10 @@ async def warm_cache_all_media() -> None:
                 if any(ext in v_url.lower() for ext in VIDEO_EXTS) or YOUTUBE_RE.search(v_url):
                     video_urls.add(normalize_url(v_url))
                     
-            audio_obj = emb.get("audio") or {}
-            a_url = (audio_obj.get("url") or "").strip()
-            if a_url and any(ext in a_url.lower() for ext in AUDIO_EXTS):
-                audio_urls.add(normalize_url(a_url))
+            # DISABLED: audio_obj = emb.get("audio") or {}
+            # a_url = (audio_obj.get("url") or "").strip()
+            # if a_url and any(ext in a_url.lower() for ext in AUDIO_EXTS):
+            #     audio_urls.add(normalize_url(a_url))
         
         # Check content for direct links
         content = (msg.get("content") or "").strip()
@@ -595,40 +595,21 @@ async def warm_cache_all_media() -> None:
                     continue
                     
                 lower_part = part.lower()
-                if any(ext in lower_part for ext in AUDIO_EXTS):
-                    audio_urls.add(normalize_url(part))
-                elif any(ext in lower_part for ext in VIDEO_EXTS) or YOUTUBE_RE.search(part):
+                # DISABLED: if any(ext in lower_part for ext in AUDIO_EXTS):
+                #     audio_urls.add(normalize_url(part))
+                if any(ext in lower_part for ext in VIDEO_EXTS) or YOUTUBE_RE.search(part):
                     video_urls.add(normalize_url(part))
     
-    logging.info(f"[warm_cache] Found {len(audio_urls)} unique audio URLs and {len(video_urls)} unique video URLs")
+    logging.info(f"[warm_cache] Found 0 audio URLs (disabled) and {len(video_urls)} unique video URLs")
     
-    # Pre-cache all audio files with better error handling
+    # DISABLED: Skip all audio files - YouTube videos only
     audio_cached = 0
-    audio_skipped = 0
+    audio_skipped = len(audio_urls) if audio_urls else 0  # Count as skipped
     audio_failed = 0
     
-    for url in audio_urls:
-        try:
-            h = hashlib.sha256(url.encode("utf-8")).hexdigest()[:32]
-            base_part = url.split("?", 1)[0]
-            _, ext = os.path.splitext(os.path.basename(base_part))
-            if not ext:
-                ext = ".ogg"
-            fs_path = DISCORD_SOUND_CACHE_DIR / f"{h}{ext}"
-            
-            if fs_path.exists() and fs_path.stat().st_size > 0:
-                audio_skipped += 1
-                continue
-                
-            result = await cache_discord_audio(url)
-            if result:
-                audio_cached += 1
-            else:
-                audio_failed += 1
-                logging.warning(f"[warm_cache] Failed to cache audio: {url}")
-        except Exception as e:
-            audio_failed += 1
-            logging.error(f"[warm_cache] Error caching audio {url}: {e}")
+    # Skip audio processing entirely
+    logging.info(f"[warm_cache] Skipped {audio_skipped} audio URLs (YouTube-only mode)")
+    
     
     # Pre-cache all video files with better error handling
     video_cached = 0
@@ -1432,8 +1413,8 @@ async def get_cached_discord_video_with_weight(action_key: str, project: Optiona
         for emb in msg.get("embeds", []):
             emb_url = (emb.get("url") or "").strip()
             if emb_url and (any(ext in emb_url.lower() for ext in VIDEO_EXTS) or 
-                            YOUTUBE_RE.search(emb_url) or 
-                            "tenor.com" in emb_url.lower()):
+                            YOUTUBE_RE.search(emb_url)):
+                # DISABLED: "tenor.com" in emb_url.lower()  # YouTube-only mode
                 h = hashlib.sha256(emb_url.encode("utf-8")).hexdigest()[:32]
                 fs_path = DISCORD_VIDEO_CACHE_DIR / f"{h}.mp4"
                 
@@ -2648,14 +2629,14 @@ async def pick_media_for_action(
     Core principle: Only media with valid emoji votes can be selected.
     Selection is weighted by reaction counts (democratic voting system).
     
-    Returns: (sound_url, meme_url, video_url, video_duration_seconds)
+    Returns: (video_url, video_duration_seconds) - YouTube videos only
     """
     game_conf = GAMES_CONFIG.get(project_key, {})
     actions_map = (game_conf.get("actions") or {})
     
     if action_key not in actions_map or action_key == "clear":
         logging.info(f"[media] No action mapping for {action_key} in project {project_key}")
-        return None, None, None, None
+        return None, None
     
     # Get all media options with their emoji weights
     # SIMPLIFIED: Only process YouTube videos
@@ -2665,52 +2646,24 @@ async def pick_media_for_action(
         
         if not video_result or not video_result[0]:
             logging.info(f"[media] No YouTube videos found for action={action_key}")
-            return None, None, None, None
+            return None, None
             
         video_url, video_weight, video_duration, original_video_url = video_result
         
         # Only process if it's a YouTube video
         if not (original_video_url and YOUTUBE_RE.search(original_video_url)):
             logging.info(f"[media] No YouTube videos found for action={action_key} (skipping non-YouTube)")
-            return None, None, None, None
+            return None, None
             
         logging.info(f"[media] youtube_video: {video_url} (weight={video_weight}, duration={video_duration}s)")
         
     except Exception as e:
         logging.error(f"[media] Error getting YouTube videos for {action_key}: {e}")
-        return None, None, None, None
+        return None, None
     
-    # Simple YouTube video combination
-    available_combinations = [("youtube_video", video_weight, None, None, video_url, video_duration)]
-    
-    if not available_combinations:
-        logging.info(f"[media] No valid media combinations for action={action_key}")
-        return None, None, None, None
-    
-    # Weighted selection based on emoji votes
-    total_weight = sum(weight for _, weight, _, _, _, _ in available_combinations)
-    if total_weight <= 0:
-        logging.warning(f"[media] All media has zero weight for action={action_key}")
-        return None, None, None, None
-    
-    # Log combinations
-    for combo_type, weight, sound, meme, video, duration in available_combinations:
-        logging.info(f"[media] Combination: {combo_type} (weight={weight:.1f})")
-    
-    # Weighted random selection
-    import random
-    r = random.uniform(0, total_weight)
-    upto = 0.0
-    for combo_type, weight, sound_url, meme_url, video_url, video_duration in available_combinations:
-        upto += weight
-        if r <= upto:
-            logging.info(f"[media] SELECTED: {combo_type} (weight={weight:.1f}/{total_weight:.1f})")
-            return sound_url, meme_url, video_url, video_duration
-    
-    # Fallback (shouldn't happen)
-    combo_type, weight, sound_url, meme_url, video_url, video_duration = available_combinations[0]
-    logging.info(f"[media] FALLBACK: {combo_type} (weight={weight:.1f})")
-    return sound_url, meme_url, video_url, video_duration
+    # Return YouTube video directly - no complex combinations needed
+    logging.info(f"[media] SELECTED: youtube_video (weight={video_weight:.1f})")
+    return video_url, video_duration
 
 
 # -----------------------------
@@ -3028,11 +2981,11 @@ async def update_live_overlay(action: str, project_key: str) -> None:
         last_action = key
         last_project = project_key
 
-        # --- MEDIA PICKER: choose between (GIF+audio) and (video) ---
-        sound_url, meme_url, video_url, video_duration = await pick_media_for_action(key, project_key)
+        # --- MEDIA PICKER: YouTube videos only ---
+        video_url, video_duration = await pick_media_for_action(key, project_key)
 
-        last_sound = sound_url or ""
-        last_meme_url = meme_url or None
+        last_sound = ""  # No audio files
+        last_meme_url = None  # No memes  
         last_video_url = video_url or None
         last_video_duration = video_duration
         
