@@ -51,6 +51,9 @@ PORT = int(os.getenv("LISTEN_PORT", "5678"))
 HTTP_HOST = os.getenv("HTTP_HOST", "0.0.0.0")
 HTTP_PORT = int(os.getenv("HTTP_PORT", "8088"))
 
+# Security token for API access
+SS_TOKEN = os.getenv("SS_TOKEN", "").strip()
+
 # Discord config (for emoji-tagged memes & sounds)
 DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN", "").strip()
 DISCORD_CHANNEL_ID = os.getenv("DISCORD_CHANNEL_ID", "").strip()
@@ -254,6 +257,83 @@ def get_action_emoji(action_key: str, project: Optional[str]) -> str:
     actions = game_conf.get("actions") or {}
     emoji = actions.get(action_key)
     return emoji or ""
+
+
+# -----------------------------
+# SECURITY HELPERS
+# -----------------------------
+def check_auth_header(request_headers: str) -> bool:
+    """
+    Check if the Authorization header contains a valid SS_TOKEN.
+    Returns True if authorized, False otherwise.
+    """
+    if not SS_TOKEN:
+        # If no token is configured, allow access (backward compatibility)
+        return True
+    
+    # Parse headers to find Authorization
+    lines = request_headers.split('\r\n')
+    for line in lines:
+        if line.lower().startswith('authorization:'):
+            auth_value = line[len('authorization:'):].strip()
+            # Support both "Bearer TOKEN" and just "TOKEN" formats
+            if auth_value.lower().startswith('bearer '):
+                token = auth_value[7:].strip()
+            else:
+                token = auth_value
+            
+            return token == SS_TOKEN
+    
+    # No Authorization header found and token is required
+    return False
+
+
+def requires_auth(path: str, method: str = "GET") -> bool:
+    """
+    Determine if a request path and method requires authentication.
+    
+    Public endpoints (no auth required):
+    - GET / (main HTML page for browser overlay)
+    - GET /overlay (JSON data for browser overlay)  
+    - GET /config (configuration for hotkey scripts)
+    - GET /dsounds/* (cached audio files for overlay)
+    - GET /dvideos/* (cached video files for overlay)
+    - GET /dmemes/* (cached meme files for overlay)
+    
+    Protected endpoints (auth required):
+    - POST requests (if any)
+    - Other endpoints not explicitly listed as public
+    """
+    # All POST requests require auth
+    if method.upper() != "GET":
+        return True
+    
+    # Public GET endpoints for browser overlay and scripts
+    if (path == "/" or 
+        path.startswith("/overlay") or 
+        path.startswith("/config") or
+        path.startswith("/dsounds/") or 
+        path.startswith("/dvideos/") or 
+        path.startswith("/dmemes/")):
+        return False
+    
+    # Default: require auth for unknown endpoints
+    return True
+
+
+def send_unauthorized(writer: asyncio.StreamWriter) -> None:
+    """
+    Send a 401 Unauthorized response.
+    """
+    resp = (
+        "HTTP/1.1 401 Unauthorized\r\n"
+        "Content-Type: application/json\r\n"
+        "Content-Length: 44\r\n"
+        "Connection: close\r\n"
+        "\r\n"
+        '{"error":"Unauthorized: Missing or invalid token"}'
+    )
+    writer.write(resp.encode('utf-8'))
 
 
 def load_overlay_config() -> None:
@@ -3164,19 +3244,23 @@ async def handle_action(action: str, project: Optional[str]) -> None:
     await update_live_overlay(action, project_key)
 
 
-def extract_from_payload(text: str) -> tuple[Optional[str], list[str]]:
+def extract_from_payload(text: str) -> tuple[Optional[str], list[str], bool]:
     """
-    Extract project/game + one or more actions from the raw payload.
+    Extract project/game + one or more actions from the raw payload, and validate token.
 
     Supports lines like:
+      token=secret_token
       game=hunt_showdown
       action=kill
       action=death
 
     And also bare actions like 'kill' if they exist in ANY game's actions.
+    
+    Returns: (project, actions, is_authorized)
     """
     project: Optional[str] = None
     actions: list[str] = []
+    provided_token: Optional[str] = None
 
     # Precompute lowercase set for faster membership tests
     all_actions_lower = {a.lower() for a in ALL_ACTION_KEYS}
@@ -3188,6 +3272,11 @@ def extract_from_payload(text: str) -> tuple[Optional[str], list[str]]:
 
         logging.info(f"🔍 [parser] Checking line: {repr(line)}")
         lower = line.lower()
+
+        if lower.startswith("token="):
+            provided_token = line.split("=", 1)[1].strip()
+            logging.info("🔑 [parser] Token provided in TCP payload")
+            continue
 
         if lower.startswith("game=") or lower.startswith("project="):
             val = line.split("=", 1)[1].strip()
@@ -3209,9 +3298,21 @@ def extract_from_payload(text: str) -> tuple[Optional[str], list[str]]:
             logging.info(f"✅ [parser] Parsed bare action: {token}")
             actions.append(token)
         else:
-            logging.info(f"⚠️ [parser] Line did not match project/action format: {repr(line)}")
+            logging.info(f"⚠️ [parser] Line did not match project/action/token format: {repr(line)}")
 
-    return project, actions
+    # Check authorization
+    is_authorized = True
+    if SS_TOKEN:  # If server requires token
+        if not provided_token:
+            logging.warning("🚫 [tcp] No token provided but SS_TOKEN is required")
+            is_authorized = False
+        elif provided_token != SS_TOKEN:
+            logging.warning("🚫 [tcp] Invalid token provided")
+            is_authorized = False
+        else:
+            logging.info("✅ [tcp] Token validated successfully")
+
+    return project, actions, is_authorized
 
 
 async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
@@ -3230,7 +3331,14 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
         logging.info(f"📥 [tcp] Raw payload bytes: {data!r}")
         logging.info(f"📥 [tcp] Raw payload text: {repr(text)}")
 
-        project, actions = extract_from_payload(text)
+        project, actions, is_authorized = extract_from_payload(text)
+        
+        if not is_authorized:
+            logging.warning(f"🚫 [tcp] Unauthorized TCP request from {addr}")
+            writer.close()
+            await writer.wait_closed()
+            return
+            
         if not actions:
             logging.info("⚠️ [tcp] No actions parsed from payload.")
         else:
@@ -3282,6 +3390,16 @@ async def handle_http(reader: asyncio.StreamReader, writer: asyncio.StreamWriter
 
         path = raw_path.split("?", 1)[0]  # strip query params
         logging.debug(f"🌐 [http] {method} {path}")
+
+        # Selective authentication - only protect certain endpoints
+        if requires_auth(path, method):
+            if not check_auth_header(req_text):
+                logging.warning(f"🚫 [http] Unauthorized access attempt from {addr} to {method} {path}")
+                send_unauthorized(writer)
+                await writer.drain()
+                return
+        else:
+            logging.debug(f"🌍 [http] Public access: {method} {path}")
 
         if path.startswith("/overlay"):
             async with state_lock:
@@ -3640,6 +3758,12 @@ async def main() -> None:
 
     ensure_paths()
     logging.info("🚀 obs-socket-sentinel starting up...")
+
+    # Security configuration logging
+    if SS_TOKEN:
+        logging.info("🔐 Security: Token authentication ENABLED")
+    else:
+        logging.warning("⚠️ Security: Token authentication DISABLED - set SS_TOKEN for security!")
 
     # ---- Discord cache bootstrap ----
     if DISCORD_BOT_TOKEN and DISCORD_CHANNEL_ID:

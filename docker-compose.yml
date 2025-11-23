@@ -14,6 +14,7 @@ services:
       - HTTP_HOST=0.0.0.0
       - HTTP_PORT=8088
       - LISTEN_PORT=5678
+      - SS_TOKEN=${SS_TOKEN}
       - TEMPLATE_FILE=/app/overlay_template.html
       - WATCH_DIR=/markers
     volumes:

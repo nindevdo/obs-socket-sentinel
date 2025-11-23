@@ -12,6 +12,7 @@ local obs = obslua
 local HOST = "127.0.0.1" -- both TCP + HTTP hostname
 local PORT = 5678 -- TCP port for action messages
 local HTTP_PORT = 8088 -- NEW: port for fetching YAML via /config
+local SS_TOKEN = "" -- Security token for authentication (configured in OBS settings)
 
 local GAMES = {} -- populated from YAML
 local hotkey_ids = {} -- [game][action] = id
@@ -104,8 +105,12 @@ local function send_tcp_message(game_key, action_name)
 		return
 	end
 
-	-- We send both game=<game_key> and action=<action_name>
-	local payload = "game=" .. tostring(game_key) .. "\n" .. "action=" .. action_name .. "\n"
+	-- Include token in TCP payload for authentication
+	local payload = ""
+	if SS_TOKEN and SS_TOKEN ~= "" then
+		payload = payload .. "token=" .. SS_TOKEN .. "\n"
+	end
+	payload = payload .. "game=" .. tostring(game_key) .. "\n" .. "action=" .. action_name .. "\n"
 
 	local cmd = string.format("printf %s | nc %s %d >/dev/null 2>&1 &", shell_escape(payload), HOST, PORT)
 
@@ -160,8 +165,12 @@ end
 -- FETCH YAML FROM PYTHON /config
 ----------------------------------------------------
 
-local function http_get(host, port, path)
-	local cmd = string.format("curl -fsSL http://%s:%d%s", host, port, path)
+local function http_get(host, port, path, token)
+	local auth_header = ""
+	if token and token ~= "" then
+		auth_header = string.format(' -H "Authorization: Bearer %s"', token)
+	end
+	local cmd = string.format("curl -fsSL%s http://%s:%d%s", auth_header, host, port, path)
 	local f = io.popen(cmd, "r")
 	if not f then
 		return nil
@@ -173,9 +182,9 @@ end
 
 local function load_yaml_from_server()
 	log_info(string.format("Fetching YAML from http://%s:%d/config ...", HOST, HTTP_PORT))
-	local text = http_get(HOST, HTTP_PORT, "/config")
+	local text = http_get(HOST, HTTP_PORT, "/config", SS_TOKEN)
 	if not text or text == "" then
-		log_error("YAML fetch failed or empty.")
+		log_error("YAML fetch failed or empty. Check token and server connectivity.")
 		return nil
 	end
 	return text
@@ -311,6 +320,7 @@ function script_properties()
 	obs.obs_properties_add_text(props, "host", "Server Host", obs.OBS_TEXT_DEFAULT)
 	obs.obs_properties_add_int(props, "port", "TCP Port (actions)", 1, 65535, 1)
 	obs.obs_properties_add_int(props, "http_port", "HTTP Port (YAML /config)", 1, 65535, 1)
+	obs.obs_properties_add_text(props, "ss_token", "Security Token (SS_TOKEN)", obs.OBS_TEXT_PASSWORD)
 
 	return props
 end
@@ -319,6 +329,7 @@ function script_defaults(settings)
 	obs.obs_data_set_default_string(settings, "host", HOST)
 	obs.obs_data_set_default_int(settings, "port", PORT)
 	obs.obs_data_set_default_int(settings, "http_port", HTTP_PORT)
+	obs.obs_data_set_default_string(settings, "ss_token", SS_TOKEN)
 end
 
 function script_update(settings)
@@ -334,7 +345,10 @@ function script_update(settings)
 		HTTP_PORT = 8088
 	end
 
-	log_info(string.format("Updated settings → TCP=%s:%d HTTP=%s:%d", HOST, PORT, HOST, HTTP_PORT))
+	SS_TOKEN = obs.obs_data_get_string(settings, "ss_token") or ""
+
+	log_info(string.format("Updated settings → TCP=%s:%d HTTP=%s:%d Token=%s", HOST, PORT, HOST, HTTP_PORT, 
+		SS_TOKEN ~= "" and "***SET***" or "NOT_SET"))
 end
 
 function script_load(settings)
