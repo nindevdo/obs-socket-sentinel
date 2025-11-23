@@ -69,6 +69,11 @@ DISCORD_VIDEO_CACHE_DIR = Path(
     os.getenv("DISCORD_VIDEO_CACHE_DIR", "/discord/discord_videos")
 )
 
+# Discord meme/image file cache (persistent)
+DISCORD_MEME_CACHE_DIR = Path(
+    os.getenv("DISCORD_MEME_CACHE_DIR", "/discord/discord_memes")
+)
+
 # Loaded from YAML
 GAMES_CONFIG: Dict[str, Dict[str, Any]] = {}
 GAME_EMOJI_MAP: Dict[str, set] = {}
@@ -333,7 +338,7 @@ async def cleanup_old_cache_files() -> None:
         import time
         cutoff_time = time.time() - (24 * 60 * 60)  # 24 hours ago
         
-        for cache_dir in [DISCORD_SOUND_CACHE_DIR, DISCORD_VIDEO_CACHE_DIR]:
+        for cache_dir in [DISCORD_SOUND_CACHE_DIR, DISCORD_VIDEO_CACHE_DIR, DISCORD_MEME_CACHE_DIR]:
             if not cache_dir.exists():
                 continue
                 
@@ -1329,13 +1334,25 @@ async def get_cached_discord_meme_with_weight(action_key: str, project: Optional
     for url, w in items:
         upto += w
         if r <= upto:
-            track_played_media(url, action_key)
-            return url, w
+            # Convert remote URL to local cached URL
+            cached_url = await cache_discord_meme(url)
+            if cached_url:
+                track_played_media(cached_url, action_key)
+                return cached_url, w
+            else:
+                # Failed to cache, skip this one
+                logging.warning(f"❗ [meme] Failed to cache selected meme: {url[:50]}...")
+                continue
 
     # Fallback
     chosen_url, chosen_weight = random.choice(items)
-    track_played_media(chosen_url, action_key)
-    return chosen_url, chosen_weight
+    cached_url = await cache_discord_meme(chosen_url)
+    if cached_url:
+        track_played_media(cached_url, action_key)
+        return cached_url, chosen_weight
+    else:
+        logging.warning(f"❗ [meme] Failed to cache fallback meme: {chosen_url[:50]}...")
+        return None, 0.0
 
 
 async def get_cached_discord_video_with_weight(action_key: str, project: Optional[str]) -> tuple[Optional[str], float, Optional[float], Optional[str]]:
@@ -2227,6 +2244,75 @@ async def cache_discord_video(url: str) -> tuple[Optional[str], Optional[float]]
     return None, None
 
 
+async def cache_discord_meme(url: str) -> Optional[str]:
+    """
+    Download a meme/image URL into local cache and return a local HTTP path.
+    
+    - Files are stored under DISCORD_MEME_CACHE_DIR  
+    - Names are based on SHA256(url) + appropriate extension
+    - Returns local path like /dmemes/<hashed>.<ext> that the overlay can use
+    """
+    if not url:
+        return None
+        
+    DISCORD_MEME_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    
+    # Stable name based on URL hash
+    h = hashlib.sha256(url.encode("utf-8")).hexdigest()[:32]
+    
+    # Determine file extension from URL
+    try:
+        from urllib.parse import urlparse
+        parsed = urlparse(url)
+        path = parsed.path.lower()
+        if path.endswith(('.png', '.jpg', '.jpeg', '.gif', '.webp')):
+            ext = path[path.rfind('.'):]
+        else:
+            ext = '.png'  # Default fallback
+    except:
+        ext = '.png'
+        
+    fname = f"{h}{ext}"
+    fs_path = DISCORD_MEME_CACHE_DIR / fname
+    
+    # Check for existing valid cached file
+    if fs_path.exists() and fs_path.stat().st_size > 0:
+        logging.debug(f"🎨 [meme] Using cached meme for {url[:50]}... -> {fs_path}")
+        return f"/dmemes/{fname}"
+    
+    # Download the meme
+    try:
+        import aiohttp
+        async with aiohttp.ClientSession(
+            timeout=aiohttp.ClientTimeout(total=30),
+            connector=aiohttp.TCPConnector(limit=5)
+        ) as session:
+            async with session.get(url) as resp:
+                if resp.status != 200:
+                    logging.warning(f"❗ [meme] Failed to download {url[:50]}...: status={resp.status}")
+                    return None
+                
+                content = await resp.read()
+                if len(content) < 100:  # Too small to be a valid image
+                    logging.warning(f"❗ [meme] Downloaded content too small for {url[:50]}...")
+                    return None
+                
+                fs_path.write_bytes(content)
+                logging.info(f"🎨 [meme] Downloaded {url[:50]}... -> {fs_path} (size={len(content)} bytes)")
+                return f"/dmemes/{fname}"
+                
+    except Exception as e:
+        logging.warning(f"❗ [meme] Error downloading {url[:50]}...: {e}")
+        # Clean up failed download
+        if fs_path.exists():
+            try:
+                fs_path.unlink()
+            except Exception:
+                pass
+        return None
+
+
+
 async def get_video_duration_from_file(file_path: str) -> Optional[float]:
     """
     Get duration from a local video file using ffprobe or similar.
@@ -2707,12 +2793,15 @@ def ensure_paths() -> None:
     CHAPTER_DIR.mkdir(parents=True, exist_ok=True)
     DISCORD_SOUND_CACHE_DIR.mkdir(parents=True, exist_ok=True)
     DISCORD_VIDEO_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    DISCORD_MEME_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
     logging.info(f"📁 WATCH_DIR      = {WATCH_DIR.resolve()}")
     logging.info(f"📁 CHAPTER_DIR    = {CHAPTER_DIR.resolve()}")
     logging.info(f"📝 TEMPLATE_FILE  = {TEMPLATE_FILE.resolve()}")
     logging.info(f"🎮 DEFAULT_PROJECT_NAME = {DEFAULT_PROJECT_NAME}")
     logging.info(f"🎧 DISCORD_SOUND_CACHE_DIR = {DISCORD_SOUND_CACHE_DIR.resolve()}")
+    logging.info(f"📹 DISCORD_VIDEO_CACHE_DIR = {DISCORD_VIDEO_CACHE_DIR.resolve()}")
+    logging.info(f"🎨 DISCORD_MEME_CACHE_DIR = {DISCORD_MEME_CACHE_DIR.resolve()}")
     logging.info(f"📹 DISCORD_VIDEO_CACHE_DIR = {DISCORD_VIDEO_CACHE_DIR.resolve()}")
 
 
@@ -3289,6 +3378,7 @@ async def handle_http(reader: asyncio.StreamReader, writer: asyncio.StreamWriter
       - GET /config       => serves raw YAML config
       - GET /dsounds/<...> => serves cached Discord audio files
       - GET /dvideos/<...> => serves cached Discord video files
+      - GET /dmemes/<...>  => serves cached Discord meme/image files
     """
     addr = writer.get_extra_info("peername")
     logging.debug(f"🌐 [http] Request from {addr}")
@@ -3568,6 +3658,49 @@ async def handle_http(reader: asyncio.StreamReader, writer: asyncio.StreamWriter
                 mime = mime or "video/mp4"
             except Exception as e:
                 logging.error(f"❗ [http] Failed to read cached video file {fs_path}: {e}", exc_info=True)
+                resp = b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                writer.write(resp)
+                await writer.drain()
+                return
+
+            headers = (
+                "HTTP/1.1 200 OK\r\n"
+                f"Content-Type: {mime}\r\n"
+                f"Content-Length: {len(body_bytes)}\r\n"
+                "Connection: close\r\n"
+                "\r\n"
+            )
+            writer.write(headers.encode("ascii") + body_bytes)
+            await writer.drain()
+
+        elif path.startswith("/dmemes/"):
+            # Static served cached Discord memes
+            rel = path[len("/dmemes/"):].lstrip("/")
+            fs_path = (DISCORD_MEME_CACHE_DIR / rel).resolve()
+
+            # Security: ensure it's inside DISCORD_MEME_CACHE_DIR
+            try:
+                fs_path.relative_to(DISCORD_MEME_CACHE_DIR.resolve())
+            except ValueError:
+                logging.warning(f"🚫 [http] Attempted path escape for dmemes: {fs_path}")
+                resp = b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                writer.write(resp)
+                await writer.drain()
+                return
+
+            if not fs_path.exists() or not fs_path.is_file():
+                logging.warning(f"❓ [http] Cached meme not found: {fs_path}")
+                resp = b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                writer.write(resp)
+                await writer.drain()
+                return
+
+            try:
+                body_bytes = fs_path.read_bytes()
+                mime, _ = mimetypes.guess_type(fs_path.name)
+                mime = mime or "image/png"
+            except Exception as e:
+                logging.error(f"❗ [http] Failed to read cached meme file {fs_path}: {e}", exc_info=True)
                 resp = b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
                 writer.write(resp)
                 await writer.drain()
