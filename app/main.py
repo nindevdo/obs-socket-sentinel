@@ -3002,18 +3002,22 @@ async def update_live_overlay(action: str, project_key: str) -> None:
         last_video_url = video_url or None
         last_video_duration = video_duration
         
-        last_audio_duration = None
+        # CRITICAL: Calculate audio duration BEFORE setting globals to avoid race conditions
+        calculated_audio_duration = None
         if last_sound and last_sound.startswith("/dsounds/"):
             # Extract filename from /dsounds/filename.ext
             audio_filename = last_sound.split("/dsounds/")[-1]
             audio_file_path = DISCORD_SOUND_CACHE_DIR / audio_filename
             if audio_file_path.exists():
                 try:
-                    last_audio_duration = await get_audio_duration_from_file(str(audio_file_path))
-                    if last_audio_duration:
-                        logging.info(f"🎵 [overlay] Audio duration detected: {last_audio_duration}s for {audio_filename}")
+                    calculated_audio_duration = await get_audio_duration_from_file(str(audio_file_path))
+                    if calculated_audio_duration:
+                        logging.info(f"🎵 [overlay] Audio duration detected: {calculated_audio_duration}s for {audio_filename}")
                 except Exception as e:
                     logging.warning(f"Failed to get audio duration for {audio_filename}: {e}")
+        
+        # Set the global AFTER calculation completes  
+        last_audio_duration = calculated_audio_duration
 
         codepoints = " ".join(f"U+{ord(ch):04X}" for ch in output)
         logging.info(
@@ -3301,6 +3305,9 @@ async def handle_http(reader: asyncio.StreamReader, writer: asyncio.StreamWriter
                 video_duration = last_video_duration if last_video_duration is not None else 0.0
                 audio_duration = last_audio_duration if last_audio_duration is not None else 0.0
                 project = last_project or ""
+                
+                # DEBUG: Log audio duration value when API is called
+                #logging.info(f"🔍 [overlay] API call - last_audio_duration={last_audio_duration}, final_audio_duration={audio_duration}")
 
                 # ---- Build run summaries for the panel ----
                 runs_for_overlay: List[Dict[str, Any]] = []
