@@ -2591,29 +2591,46 @@ async def pick_media_for_action(
     # Determine media combinations based on available weighted options
     available_combinations = []
     
-    # Check for video options (highest impact media)
-    video_options = [opt for opt in weighted_media_options if opt[0] == "video"]
-    if video_options:
-        for video_type, video_url, video_weight, video_duration, original_video_url in video_options:
-            # Determine video type for proper handling
-            if original_video_url and YOUTUBE_RE.search(original_video_url):
-                combo_type = "youtube_video"
-            else:
-                combo_type = "tenor_video" 
-            
-            available_combinations.append((
-                combo_type, 
-                video_weight,
-                None,  # sound_url 
-                None,  # meme_url
-                video_url,  # video_url
-                video_duration  # video_duration
-            ))
-    
-    # Check for meme + sound combinations
+    # Extract media options for combination logic
     sound_options = [opt for opt in weighted_media_options if opt[0] == "sound"]
     meme_options = [opt for opt in weighted_media_options if opt[0] == "meme"]
+    video_options = [opt for opt in weighted_media_options if opt[0] == "video"]
     
+    # Check for video options (can be combined with text overlays)
+    if video_options:
+        # Check if we can combine videos with text overlays (memes)
+        if meme_options:
+            # Create video + meme combinations for text overlay support
+            for video_type, video_url, video_weight, video_duration, original_video_url in video_options:
+                for _, meme_url, meme_weight, _, _ in meme_options:
+                    combo_type = "youtube_with_overlay" if (original_video_url and YOUTUBE_RE.search(original_video_url)) else "tenor_with_overlay"
+                    # Average the weights to not double-count
+                    combo_weight = (video_weight + meme_weight) / 2
+                    
+                    available_combinations.append((
+                        combo_type,
+                        combo_weight,
+                        None,         # sound_url (video has its own audio)  
+                        meme_url,     # meme_url (provides text overlay background)
+                        video_url,    # video_url (the main video content)
+                        video_duration  # video_duration
+                    ))
+        
+        # Only add standalone video options if NO memes are available for overlays
+        if not meme_options:
+            for video_type, video_url, video_weight, video_duration, original_video_url in video_options:
+                combo_type = "youtube_standalone" if (original_video_url and YOUTUBE_RE.search(original_video_url)) else "tenor_standalone"
+                
+                available_combinations.append((
+                    combo_type, 
+                    video_weight,  # Full weight since no overlay alternative exists
+                    None,  # sound_url 
+                    None,  # meme_url
+                    video_url,  # video_url
+                    video_duration  # video_duration
+                ))
+
+    # Check for meme + sound combinations
     if sound_options and meme_options:
         # Create combinations of highest weighted sound + meme
         for _, sound_url, sound_weight, _, _ in sound_options:
