@@ -497,19 +497,35 @@ async def warm_cache_all_media() -> None:
     def normalize_url(url: str) -> str:
         """Normalize URL by removing query parameters that don't affect content"""
         import urllib.parse
+        import re
         parsed = urllib.parse.urlparse(url)
-        # For YouTube URLs, keep the video ID parameter as it's essential
-        if "youtube.com" in url and "watch" in parsed.path:
-            # Keep v parameter for YouTube watch URLs
-            query_params = urllib.parse.parse_qs(parsed.query)
-            if 'v' in query_params:
-                video_id = query_params['v'][0]
-                return f"{parsed.scheme}://{parsed.netloc}{parsed.path}?v={video_id}"
+        
+        # For YouTube URLs, normalize to canonical format
+        if "youtube.com" in url or "youtu.be" in url:
+            video_id = None
+            
+            # Extract video ID from different YouTube URL formats
+            if "watch" in parsed.path and parsed.query:
+                # https://www.youtube.com/watch?v=VIDEO_ID
+                query_params = urllib.parse.parse_qs(parsed.query)
+                if 'v' in query_params:
+                    video_id = query_params['v'][0]
+            elif "/embed/" in parsed.path:
+                # https://www.youtube.com/embed/VIDEO_ID
+                video_id = parsed.path.split('/embed/')[-1].split('/')[0]
+            elif "/shorts/" in parsed.path:
+                # https://www.youtube.com/shorts/VIDEO_ID  
+                video_id = parsed.path.split('/shorts/')[-1].split('/')[0]
+            elif "youtu.be" in parsed.netloc:
+                # https://youtu.be/VIDEO_ID
+                video_id = parsed.path.lstrip('/').split('/')[0]
+            
+            if video_id:
+                # Normalize ALL YouTube URLs to watch format for consistent hashing
+                return f"https://www.youtube.com/watch?v={video_id}"
             else:
-                return url  # Return as-is if no v parameter
-        elif "youtu.be" in url:
-            # youtu.be URLs have video ID in path, keep as-is
-            return url
+                return url  # Return as-is if video ID can't be extracted
+                
         elif "tenor.com" in url:
             # For Tenor, we can remove query params
             return f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
@@ -1280,7 +1296,7 @@ async def get_cached_discord_meme_with_weight(action_key: str, project: Optional
         for emb in msg.get("embeds", []):
             emb_url = (emb.get("url") or "").strip()
             
-            # Check various embed URL types
+            # Check various embed URL types  
             for label, u in [
                 ("url", emb.get("url")),
                 ("image.url", emb.get("image", {}).get("url")),
@@ -1288,6 +1304,9 @@ async def get_cached_discord_meme_with_weight(action_key: str, project: Optional
                 ("video.thumbnail_url", emb.get("video", {}).get("thumbnail_url"))
             ]:
                 if u and any(ext in u.lower() for ext in [".gif", ".webp", ".png", ".jpg", ".jpeg"]):
+                    # CRITICAL: Exclude YouTube thumbnails - these should be handled by video logic, not meme logic
+                    if "ytimg.com" in u.lower() or "youtube.com" in u.lower():
+                        continue  # Skip YouTube thumbnails
                     weighted_candidates[u] = weighted_candidates.get(u, 0.0) + match_weight
 
             if emb_url and (
