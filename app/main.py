@@ -2315,6 +2315,26 @@ async def cache_discord_meme(url: str) -> Optional[str]:
 
 
 
+async def video_has_audio(video_path: str) -> bool:
+    """
+    Check if a video file contains an audio track.
+    Returns True if audio is present, False otherwise.
+    """
+    try:
+        import subprocess
+        result = subprocess.run([
+            'ffprobe', '-v', 'quiet', '-select_streams', 'a', 
+            '-show_entries', 'stream=codec_type', '-of', 'csv=p=0', 
+            video_path
+        ], capture_output=True, text=True, timeout=30)
+        
+        # If ffprobe finds audio streams, it will output "audio"
+        return 'audio' in result.stdout
+    except Exception as e:
+        logging.warning(f"❗ [audio_detect] Error checking audio in {video_path}: {e}")
+        return False  # Assume no audio if detection fails
+
+
 async def get_video_duration_from_file(file_path: str) -> Optional[float]:
     """
     Get duration from a local video file using ffprobe or similar.
@@ -2638,105 +2658,30 @@ async def pick_media_for_action(
         return None, None, None, None
     
     # Get all media options with their emoji weights
-    weighted_media_options = []  # List of (media_type, url, weight, duration, original_url)
-    
+    # SIMPLIFIED: Only process YouTube videos
     try:
-        # Get cached media with weights
-        sound_result = await get_cached_discord_sound_with_weight(action_key, project=project_key)
-        meme_result = await get_cached_discord_meme_with_weight(action_key, project=project_key)  
+        # Get only YouTube video results - skip all other media
         video_result = await get_cached_discord_video_with_weight(action_key, project=project_key)
         
-        # Add sound options (these can pair with memes)
-        if sound_result and sound_result[0]:  # (url, weight)
-            sound_url, sound_weight = sound_result
-            weighted_media_options.append(("sound", sound_url, sound_weight, None, None))
-        
-        # Add meme options (these can pair with sounds)
-        if meme_result and meme_result[0]:  # (url, weight) 
-            meme_url, meme_weight = meme_result
-            weighted_media_options.append(("meme", meme_url, meme_weight, None, None))
+        if not video_result or not video_result[0]:
+            logging.info(f"[media] No YouTube videos found for action={action_key}")
+            return None, None, None, None
             
-        # Add video options (these play standalone)
-        if video_result and video_result[0]:  # (url, weight, duration, original_url)
-            video_url, video_weight, video_duration, original_video_url = video_result
-            weighted_media_options.append(("video", video_url, video_weight, video_duration, original_video_url))
+        video_url, video_weight, video_duration, original_video_url = video_result
+        
+        # Only process if it's a YouTube video
+        if not (original_video_url and YOUTUBE_RE.search(original_video_url)):
+            logging.info(f"[media] No YouTube videos found for action={action_key} (skipping non-YouTube)")
+            return None, None, None, None
+            
+        logging.info(f"[media] youtube_video: {video_url} (weight={video_weight}, duration={video_duration}s)")
         
     except Exception as e:
-        logging.error(f"[media] Error getting weighted media for {action_key}: {e}")
+        logging.error(f"[media] Error getting YouTube videos for {action_key}: {e}")
         return None, None, None, None
     
-    if not weighted_media_options:
-        logging.info(f"[media] No media with valid emoji votes found for action={action_key}")
-        return None, None, None, None
-    
-    # Log available options
-    for media_type, url, weight, duration, orig_url in weighted_media_options:
-        if media_type == "video":
-            logging.info(f"[media] {media_type}: {url} (weight={weight}, duration={duration}s, original={orig_url[:50] if orig_url else 'N/A'}...)")
-        else:
-            logging.info(f"[media] {media_type}: {url} (weight={weight})")
-    
-    # Determine media combinations based on available weighted options
-    available_combinations = []
-    
-    # Extract media options for combination logic
-    sound_options = [opt for opt in weighted_media_options if opt[0] == "sound"]
-    meme_options = [opt for opt in weighted_media_options if opt[0] == "meme"]
-    video_options = [opt for opt in weighted_media_options if opt[0] == "video"]
-    
-    # Check for video options (standalone videos only)
-    if video_options:
-        # Always add standalone video options - videos should play standalone
-        for video_type, video_url, video_weight, video_duration, original_video_url in video_options:
-            combo_type = "youtube_standalone" if (original_video_url and YOUTUBE_RE.search(original_video_url)) else "tenor_standalone"
-            
-            available_combinations.append((
-                combo_type, 
-                video_weight,  # Full weight for standalone videos
-                None,  # sound_url (video has embedded audio)
-                None,  # meme_url (no separate meme needed)
-                video_url,  # video_url
-                video_duration  # video_duration
-            ))
-
-    # Check for meme + sound combinations (only if no videos available)
-    if sound_options and meme_options and not video_options:
-        # Create combinations of highest weighted sound + meme
-        for _, sound_url, sound_weight, _, _ in sound_options:
-            for _, meme_url, meme_weight, _, _ in meme_options:
-                # Combined weight is average to not double-count
-                combo_weight = (sound_weight + meme_weight) / 2
-                available_combinations.append((
-                    "gif_audio",
-                    combo_weight, 
-                    sound_url,
-                    meme_url,
-                    None,  # video_url
-                    None   # video_duration
-                ))
-    
-    # Check for standalone options
-    if sound_options and not meme_options:
-        for _, sound_url, sound_weight, _, _ in sound_options:
-            available_combinations.append((
-                "audio_only",
-                sound_weight,
-                sound_url,
-                None,  # meme_url
-                None,  # video_url  
-                None   # video_duration
-            ))
-    
-    if meme_options and not sound_options:
-        for _, meme_url, meme_weight, _, _ in meme_options:
-            available_combinations.append((
-                "gif_only", 
-                meme_weight,
-                None,  # sound_url
-                meme_url,
-                None,  # video_url
-                None   # video_duration
-            ))
+    # Simple YouTube video combination
+    available_combinations = [("youtube_video", video_weight, None, None, video_url, video_duration)]
     
     if not available_combinations:
         logging.info(f"[media] No valid media combinations for action={action_key}")
