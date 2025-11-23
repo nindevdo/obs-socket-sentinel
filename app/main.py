@@ -1100,6 +1100,339 @@ async def get_cached_discord_video(action_key: str, project: Optional[str]) -> t
 
 
 # -----------------------------
+# WEIGHT-AWARE CACHED MEDIA FUNCTIONS  
+# -----------------------------
+
+async def get_cached_discord_sound_with_weight(action_key: str, project: Optional[str]) -> tuple[Optional[str], float]:
+    """
+    Look up a random cached audio for the action/project with emoji weight.
+    Returns: (cached_url, total_weight)
+    """
+    if not DISCORD_BOT_TOKEN or not DISCORD_CHANNEL_ID:
+        return None, 0.0
+
+    target_emoji = get_action_emoji(action_key, project)
+    if not target_emoji:
+        return None, 0.0
+
+    normalized_target = normalize_emoji(target_emoji)
+    messages = _select_messages_for_project(project)
+    if not messages:
+        return None, 0.0
+
+    weighted_candidates: Dict[str, float] = {}
+    AUDIO_EXTS = (".mp3", ".wav", ".ogg", ".m4a", ".aac", ".flac")
+
+    for msg in messages:
+        reactions = msg.get("reactions") or []
+        match_weight = 0
+
+        # Calculate emoji weight for this message
+        for r in reactions:
+            emoji_obj = r.get("emoji") or {}
+            name = emoji_obj.get("name") or ""
+            emoji_id = emoji_obj.get("id")
+            count = r.get("count") or 0
+
+            if count <= 0:
+                continue
+
+            matched = False
+            if emoji_id is None:
+                norm_name = normalize_emoji(name)
+                if norm_name == normalized_target:
+                    matched = True
+            else:
+                if name.lower() == action_key.lower():
+                    matched = True
+
+            if matched:
+                match_weight += count
+
+        if match_weight <= 0:
+            continue
+
+        # Check attachments for audio with this weight
+        for att in msg.get("attachments", []):
+            url = (att.get("url") or "").strip()
+            fname = (att.get("filename") or "").lower()
+            ctype = (att.get("content_type") or "").lower()
+
+            if not url:
+                continue
+
+            if (ctype.startswith("audio/") or 
+                fname.endswith(AUDIO_EXTS) or 
+                any(ext in url.lower() for ext in AUDIO_EXTS)):
+                
+                # Check if cached locally
+                h = hashlib.sha256(url.encode("utf-8")).hexdigest()[:32]
+                base_part = url.split("?", 1)[0]
+                _, ext = os.path.splitext(os.path.basename(base_part))
+                if not ext:
+                    ext = ".ogg"
+                fs_path = DISCORD_SOUND_CACHE_DIR / f"{h}{ext}"
+                
+                if fs_path.exists() and fs_path.stat().st_size > 0:
+                    cache_url = f"/dsounds/{h}{ext}"
+                    # Accumulate weight for same URL from multiple messages
+                    weighted_candidates[cache_url] = weighted_candidates.get(cache_url, 0.0) + match_weight
+
+        # Check embeds for audio
+        for emb in msg.get("embeds", []):
+            emb_url = (emb.get("url") or "").strip()
+            if emb_url and any(ext in emb_url.lower() for ext in AUDIO_EXTS):
+                h = hashlib.sha256(emb_url.encode("utf-8")).hexdigest()[:32]
+                base_part = emb_url.split("?", 1)[0]
+                _, ext = os.path.splitext(os.path.basename(base_part))
+                if not ext:
+                    ext = ".ogg"
+                fs_path = DISCORD_SOUND_CACHE_DIR / f"{h}{ext}"
+                
+                if fs_path.exists() and fs_path.stat().st_size > 0:
+                    cache_url = f"/dsounds/{h}{ext}"
+                    weighted_candidates[cache_url] = weighted_candidates.get(cache_url, 0.0) + match_weight
+
+    if not weighted_candidates:
+        return None, 0.0
+
+    # Apply anti-repetition and weighted selection
+    weighted_candidates = apply_anti_repetition_weighting(weighted_candidates, action_key)
+    
+    # Weighted random choice
+    items = list(weighted_candidates.items())
+    total_weight = sum(w for _, w in items)
+    r = random.uniform(0, total_weight)
+    upto = 0.0
+    for url, w in items:
+        upto += w
+        if r <= upto:
+            track_played_media(url, action_key)
+            return url, w
+
+    # Fallback
+    chosen_url, chosen_weight = random.choice(items)
+    track_played_media(chosen_url, action_key)
+    return chosen_url, chosen_weight
+
+
+async def get_cached_discord_meme_with_weight(action_key: str, project: Optional[str]) -> tuple[Optional[str], float]:
+    """
+    Look up a random cached meme for the action/project with emoji weight.
+    Returns: (cached_url, total_weight)
+    """
+    if not DISCORD_BOT_TOKEN or not DISCORD_CHANNEL_ID:
+        return None, 0.0
+
+    target_emoji = get_action_emoji(action_key, project)
+    if not target_emoji:
+        return None, 0.0
+
+    normalized_target = normalize_emoji(target_emoji)
+    messages = _select_messages_for_project(project)
+    if not messages:
+        return None, 0.0
+
+    weighted_candidates: Dict[str, float] = {}
+
+    for msg in messages:
+        reactions = msg.get("reactions") or []
+        match_weight = 0
+
+        # Calculate emoji weight for this message
+        for r in reactions:
+            emoji_obj = r.get("emoji") or {}
+            name = emoji_obj.get("name") or ""
+            emoji_id = emoji_obj.get("id")
+            count = r.get("count") or 0
+
+            if count <= 0:
+                continue
+
+            matched = False
+            if emoji_id is None:
+                norm_name = normalize_emoji(name)
+                if norm_name == normalized_target:
+                    matched = True
+            else:
+                if name.lower() == action_key.lower():
+                    matched = True
+
+            if matched:
+                match_weight += count
+
+        if match_weight <= 0:
+            continue
+
+        # Check attachments for images
+        for att in msg.get("attachments", []):
+            url = (att.get("url") or "").strip()
+            fname = (att.get("filename") or "").lower()
+            ctype = (att.get("content_type") or "").lower()
+
+            if not url:
+                continue
+
+            if any(ext in fname for ext in [".gif", ".webp", ".png", ".jpg", ".jpeg"]):
+                weighted_candidates[url] = weighted_candidates.get(url, 0.0) + match_weight
+
+        # Check embeds for images/GIFs
+        for emb in msg.get("embeds", []):
+            emb_url = (emb.get("url") or "").strip()
+            
+            # Check various embed URL types
+            for label, u in [
+                ("url", emb.get("url")),
+                ("image.url", emb.get("image", {}).get("url")),
+                ("thumbnail.url", emb.get("thumbnail", {}).get("url")),
+                ("video.thumbnail_url", emb.get("video", {}).get("thumbnail_url"))
+            ]:
+                if u and any(ext in u.lower() for ext in [".gif", ".webp", ".png", ".jpg", ".jpeg"]):
+                    weighted_candidates[u] = weighted_candidates.get(u, 0.0) + match_weight
+
+            if emb_url and (
+                "tenor.com/view" in emb_url.lower()
+                or any(ext in emb_url.lower() for ext in [".gif", ".webp"])
+            ):
+                weighted_candidates[emb_url] = weighted_candidates.get(emb_url, 0.0) + match_weight
+
+    if not weighted_candidates:
+        return None, 0.0
+
+    # Apply anti-repetition and weighted selection
+    weighted_candidates = apply_anti_repetition_weighting(weighted_candidates, action_key)
+    
+    # Weighted random choice
+    items = list(weighted_candidates.items())
+    total_weight = sum(w for _, w in items)
+    r = random.uniform(0, total_weight)
+    upto = 0.0
+    for url, w in items:
+        upto += w
+        if r <= upto:
+            track_played_media(url, action_key)
+            return url, w
+
+    # Fallback
+    chosen_url, chosen_weight = random.choice(items)
+    track_played_media(chosen_url, action_key)
+    return chosen_url, chosen_weight
+
+
+async def get_cached_discord_video_with_weight(action_key: str, project: Optional[str]) -> tuple[Optional[str], float, Optional[float], Optional[str]]:
+    """
+    Look up a random cached video for the action/project with emoji weight.
+    Returns: (cached_url, total_weight, duration, original_source_url)
+    """
+    if not DISCORD_BOT_TOKEN or not DISCORD_CHANNEL_ID:
+        return None, 0.0, None, None
+
+    target_emoji = get_action_emoji(action_key, project)
+    if not target_emoji:
+        return None, 0.0, None, None
+
+    normalized_target = normalize_emoji(target_emoji)
+    messages = _select_messages_for_project(project)
+    if not messages:
+        return None, 0.0, None, None
+
+    # cache_url -> (weight, duration, original_url)
+    weighted_candidates: Dict[str, tuple[float, float, str]] = {}
+    VIDEO_EXTS = (".mp4", ".webm", ".mov", ".m4v", ".avi", ".mkv")
+
+    for msg in messages:
+        reactions = msg.get("reactions") or []
+        match_weight = 0
+
+        # Calculate emoji weight for this message
+        for r in reactions:
+            emoji_obj = r.get("emoji") or {}
+            name = emoji_obj.get("name") or ""
+            emoji_id = emoji_obj.get("id")
+            count = r.get("count") or 0
+
+            if count <= 0:
+                continue
+
+            matched = False
+            if emoji_id is None:
+                norm_name = normalize_emoji(name)
+                if norm_name == normalized_target:
+                    matched = True
+            else:
+                if name.lower() == action_key.lower():
+                    matched = True
+
+            if matched:
+                match_weight += count
+
+        if match_weight <= 0:
+            continue
+
+        # Check attachments for videos
+        for att in msg.get("attachments", []):
+            url = (att.get("url") or "").strip()
+            fname = (att.get("filename") or "").lower()
+            ctype = (att.get("content_type") or "").lower()
+
+            if not url:
+                continue
+
+            if (ctype.startswith("video/") or 
+                fname.endswith(VIDEO_EXTS) or 
+                any(ext in url.lower() for ext in VIDEO_EXTS)):
+                
+                h = hashlib.sha256(url.encode("utf-8")).hexdigest()[:32]
+                fs_path = DISCORD_VIDEO_CACHE_DIR / f"{h}.mp4"
+                
+                if fs_path.exists() and fs_path.stat().st_size > 0:
+                    duration = await get_video_duration_from_file(str(fs_path))
+                    if duration is not None and duration > 0:
+                        cache_url = f"/dvideos/{h}.mp4"
+                        prev_weight, _, _ = weighted_candidates.get(cache_url, (0.0, duration, url))
+                        weighted_candidates[cache_url] = (prev_weight + match_weight, duration, url)
+
+        # Check embeds for videos (including YouTube)
+        for emb in msg.get("embeds", []):
+            emb_url = (emb.get("url") or "").strip()
+            if emb_url and (any(ext in emb_url.lower() for ext in VIDEO_EXTS) or YOUTUBE_RE.search(emb_url)):
+                h = hashlib.sha256(emb_url.encode("utf-8")).hexdigest()[:32]
+                fs_path = DISCORD_VIDEO_CACHE_DIR / f"{h}.mp4"
+                
+                if fs_path.exists() and fs_path.stat().st_size > 0:
+                    duration = await get_video_duration_from_file(str(fs_path))
+                    if duration is not None and duration > 0:
+                        cache_url = f"/dvideos/{h}.mp4"
+                        prev_weight, _, _ = weighted_candidates.get(cache_url, (0.0, duration, emb_url))
+                        weighted_candidates[cache_url] = (prev_weight + match_weight, duration, emb_url)
+
+    if not weighted_candidates:
+        return None, 0.0, None, None
+
+    # Apply anti-repetition weighting
+    simple_candidates = {url: weight for url, (weight, _, _) in weighted_candidates.items()}
+    simple_candidates = apply_anti_repetition_weighting(simple_candidates, action_key)
+    adjusted_candidates = {url: (simple_candidates[url], weighted_candidates[url][1], weighted_candidates[url][2]) for url in simple_candidates}
+
+    # Weighted random choice
+    items = list(adjusted_candidates.items())
+    total_weight = sum(weight for _, (weight, _, _) in items)
+    r = random.uniform(0, total_weight)
+    upto = 0.0
+    for url, (weight, duration, original_url) in items:
+        upto += weight
+        if r <= upto:
+            track_played_media(url, action_key)
+            return url, weight, duration, original_url
+
+    # Fallback
+    chosen_url, (chosen_weight, chosen_duration, chosen_original) = random.choice(items)
+    track_played_media(chosen_url, action_key)
+    return chosen_url, chosen_weight, chosen_duration, chosen_original
+
+
+
+# -----------------------------
 # DISCORD MEME SELECTION
 # -----------------------------
 def _normalize_meme_url(url: str) -> str:
@@ -2183,128 +2516,151 @@ async def pick_media_for_action(
     project_key: str,
 ) -> tuple[Optional[str], Optional[str], Optional[str], Optional[float]]:
     """
-    Decide which media to use for a given action - ONLY FROM LOCAL CACHE.
-
-      Mode A: GIF + Discord audio (meme + sound)
-      Mode B: Video (YouTube/direct) with its own audio
-
-    If both modes are available, choose between them with ~50/50 weighting.
-    Returns: (sound_url, meme_url, video_url, video_duration_seconds)
+    Decide which media to use for a given action based on EMOJI VOTE WEIGHTS ONLY.
     
-    NOTE: This function now only looks up pre-cached media, it doesn't download anything.
+    Core principle: Only media with valid emoji votes can be selected.
+    Selection is weighted by reaction counts (democratic voting system).
+    
+    Returns: (sound_url, meme_url, video_url, video_duration_seconds)
     """
     game_conf = GAMES_CONFIG.get(project_key, {})
     actions_map = (game_conf.get("actions") or {})
-
-    # Get cached media URLs (these should already be downloaded)
-    if action_key in actions_map and action_key != "clear":
-        try:
-            # Look up cached media without downloading
-            sound_task = get_cached_discord_sound(action_key, project=project_key)
-            meme_task = get_cached_discord_meme(action_key, project=project_key) 
-            video_task = get_cached_discord_video(action_key, project=project_key)
-            
-            sound, meme, video_result = await asyncio.gather(
-                sound_task, meme_task, video_task, return_exceptions=True
-            )
-            
-            # Handle exceptions in individual tasks
-            if isinstance(sound, Exception):
-                logging.warning(f"Sound lookup failed: {sound}")
-                sound = None
-            if isinstance(meme, Exception):
-                logging.warning(f"Meme lookup failed: {meme}")
-                meme = None
-            if isinstance(video_result, Exception):
-                logging.warning(f"Video lookup failed: {video_result}")
-                video_result = None, None, None
-                
-        except Exception as e:
-            logging.error(f"Media lookup error: {e}")
-            sound, meme, video_result = None, None, (None, None, None)
-    else:
-        sound, meme, video_result = None, None, (None, None, None)
     
-    # Unpack video result (now returns 3-tuple with original source URL)
-    video, video_duration, original_video_url = video_result if video_result else (None, None, None)
-
-    # Determine if video is a Tenor (silent GIF) or YouTube (has audio)
-    # Now we can use the original source URL to properly detect the type
-    is_tenor_video = False
-    is_youtube_video = False
+    if action_key not in actions_map or action_key == "clear":
+        logging.info(f"[media] No action mapping for {action_key} in project {project_key}")
+        return None, None, None, None
     
-    if video and original_video_url:
-        # Check if original URL is from YouTube
-        if YOUTUBE_RE.search(original_video_url):
-            is_youtube_video = True
-            logging.info(f"[media] Detected YouTube video: {original_video_url} -> {video}")
-        else:
-            # Everything else (Tenor, Discord attachments, etc.) is treated as silent video
-            is_tenor_video = True
-            logging.info(f"[media] Detected Tenor/attachment video: {original_video_url} -> {video}")
+    # Get all media options with their emoji weights
+    weighted_media_options = []  # List of (media_type, url, weight, duration, original_url)
     
-
-    has_gif_audio = bool(sound or meme)
-    has_tenor_video = bool(is_tenor_video)
-    has_youtube_video = bool(is_youtube_video)
-
-    logging.info(f"[media] Action={action_key}, has_gif_audio={has_gif_audio}, has_tenor={has_tenor_video}, has_youtube={has_youtube_video}")
-
-    # Media selection logic:
-    # 1. YouTube videos always play alone (with their own audio) - PRIORITY
-    # 2. Tenor videos can be paired with Discord audio 
-    # 3. Tenor videos can play silent if no audio available
-    # 4. GIF memes can be paired with Discord audio
-    
-    available_modes = []
-    
-    # YouTube videos get highest priority and always play if available
-    if has_youtube_video:
-        available_modes.append("youtube")
-    
-    # Tenor videos can play with or without audio
-    if has_tenor_video and sound:
-        available_modes.append("tenor_with_audio") 
-    elif has_tenor_video:
-        available_modes.append("tenor_silent")
+    try:
+        # Get cached media with weights
+        sound_result = await get_cached_discord_sound_with_weight(action_key, project=project_key)
+        meme_result = await get_cached_discord_meme_with_weight(action_key, project=project_key)  
+        video_result = await get_cached_discord_video_with_weight(action_key, project=project_key)
         
-    # GIF+audio mode only if no videos are available
-    if has_gif_audio and not (has_tenor_video or has_youtube_video):
-        available_modes.append("gif_audio")
-
-    if not available_modes:
-        logging.info(f"[media] No compatible media combinations available for {action_key}")
+        # Add sound options (these can pair with memes)
+        if sound_result and sound_result[0]:  # (url, weight)
+            sound_url, sound_weight = sound_result
+            weighted_media_options.append(("sound", sound_url, sound_weight, None, None))
+        
+        # Add meme options (these can pair with sounds)
+        if meme_result and meme_result[0]:  # (url, weight) 
+            meme_url, meme_weight = meme_result
+            weighted_media_options.append(("meme", meme_url, meme_weight, None, None))
+            
+        # Add video options (these play standalone)
+        if video_result and video_result[0]:  # (url, weight, duration, original_url)
+            video_url, video_weight, video_duration, original_video_url = video_result
+            weighted_media_options.append(("video", video_url, video_weight, video_duration, original_video_url))
+        
+    except Exception as e:
+        logging.error(f"[media] Error getting weighted media for {action_key}: {e}")
         return None, None, None, None
-
-    # Choose mode with YouTube getting priority
-    if len(available_modes) == 1:
-        chosen_mode = available_modes[0]
-    else:
-        # Always prefer YouTube if available, then Tenor+audio, then others
-        if "youtube" in available_modes:
-            chosen_mode = "youtube"
-        elif "tenor_with_audio" in available_modes:
-            chosen_mode = "tenor_with_audio"
+    
+    if not weighted_media_options:
+        logging.info(f"[media] No media with valid emoji votes found for action={action_key}")
+        return None, None, None, None
+    
+    # Log available options
+    for media_type, url, weight, duration, orig_url in weighted_media_options:
+        if media_type == "video":
+            logging.info(f"[media] {media_type}: {url} (weight={weight}, duration={duration}s, original={orig_url[:50] if orig_url else 'N/A'}...)")
         else:
-            # Random selection from remaining modes
-            chosen_mode = random.choice(available_modes)
-
-    # Return appropriate media based on chosen mode
-    if chosen_mode == "youtube":
-        logging.info(f"[media] Choosing YOUTUBE mode for {action_key}")
-        return None, None, video, video_duration
-    elif chosen_mode == "tenor_with_audio":
-        logging.info(f"[media] Choosing TENOR+AUDIO mode for {action_key}")
-        return sound, None, video, video_duration  # Tenor video with Discord audio
-    elif chosen_mode == "tenor_silent":
-        logging.info(f"[media] Choosing TENOR (silent) mode for {action_key}")
-        return None, meme, video, video_duration  # Tenor video with optional meme overlay
-    elif chosen_mode == "gif_audio":
-        logging.info(f"[media] Choosing GIF+AUDIO mode for {action_key}")
-        return sound, meme, None, None  # Traditional GIF + audio
-    else:
-        logging.info(f"[media] No media available for {action_key}")
+            logging.info(f"[media] {media_type}: {url} (weight={weight})")
+    
+    # Determine media combinations based on available weighted options
+    available_combinations = []
+    
+    # Check for video options (highest impact media)
+    video_options = [opt for opt in weighted_media_options if opt[0] == "video"]
+    if video_options:
+        for video_type, video_url, video_weight, video_duration, original_video_url in video_options:
+            # Determine video type for proper handling
+            if original_video_url and YOUTUBE_RE.search(original_video_url):
+                combo_type = "youtube_video"
+            else:
+                combo_type = "tenor_video" 
+            
+            available_combinations.append((
+                combo_type, 
+                video_weight,
+                None,  # sound_url 
+                None,  # meme_url
+                video_url,  # video_url
+                video_duration  # video_duration
+            ))
+    
+    # Check for meme + sound combinations
+    sound_options = [opt for opt in weighted_media_options if opt[0] == "sound"]
+    meme_options = [opt for opt in weighted_media_options if opt[0] == "meme"]
+    
+    if sound_options and meme_options:
+        # Create combinations of highest weighted sound + meme
+        for _, sound_url, sound_weight, _, _ in sound_options:
+            for _, meme_url, meme_weight, _, _ in meme_options:
+                # Combined weight is average to not double-count
+                combo_weight = (sound_weight + meme_weight) / 2
+                available_combinations.append((
+                    "gif_audio",
+                    combo_weight, 
+                    sound_url,
+                    meme_url,
+                    None,  # video_url
+                    None   # video_duration
+                ))
+    
+    # Check for standalone options
+    if sound_options and not meme_options:
+        for _, sound_url, sound_weight, _, _ in sound_options:
+            available_combinations.append((
+                "audio_only",
+                sound_weight,
+                sound_url,
+                None,  # meme_url
+                None,  # video_url  
+                None   # video_duration
+            ))
+    
+    if meme_options and not sound_options:
+        for _, meme_url, meme_weight, _, _ in meme_options:
+            available_combinations.append((
+                "gif_only", 
+                meme_weight,
+                None,  # sound_url
+                meme_url,
+                None,  # video_url
+                None   # video_duration
+            ))
+    
+    if not available_combinations:
+        logging.info(f"[media] No valid media combinations for action={action_key}")
         return None, None, None, None
+    
+    # Weighted selection based on emoji votes
+    total_weight = sum(weight for _, weight, _, _, _, _ in available_combinations)
+    if total_weight <= 0:
+        logging.warning(f"[media] All media has zero weight for action={action_key}")
+        return None, None, None, None
+    
+    # Log combinations
+    for combo_type, weight, sound, meme, video, duration in available_combinations:
+        logging.info(f"[media] Combination: {combo_type} (weight={weight:.1f})")
+    
+    # Weighted random selection
+    import random
+    r = random.uniform(0, total_weight)
+    upto = 0.0
+    for combo_type, weight, sound_url, meme_url, video_url, video_duration in available_combinations:
+        upto += weight
+        if r <= upto:
+            logging.info(f"[media] SELECTED: {combo_type} (weight={weight:.1f}/{total_weight:.1f})")
+            return sound_url, meme_url, video_url, video_duration
+    
+    # Fallback (shouldn't happen)
+    combo_type, weight, sound_url, meme_url, video_url, video_duration = available_combinations[0]
+    logging.info(f"[media] FALLBACK: {combo_type} (weight={weight:.1f})")
+    return sound_url, meme_url, video_url, video_duration
 
 
 # -----------------------------
