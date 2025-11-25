@@ -20,25 +20,90 @@ local hotkey_ids = {} -- [game][action] = id
 -- LOGGING
 ----------------------------------------------------
 
-function log_info(msg)
-	print("[INFO] " .. tostring(msg))
-	obs.blog(obs.LOG_INFO, "[Socket Sentinel] " .. tostring(msg))
+local function log_info(msg)
+	obs.script_log(obs.LOG_INFO, "[socket-sentinel-http] " .. msg)
 end
 
-function log_error(msg)
-	print("[ERROR] " .. tostring(msg))
-	obs.blog(obs.LOG_ERROR, "[Socket Sentinel] " .. tostring(msg))
+local function log_error(msg)
+	obs.script_log(obs.LOG_ERROR, "[socket-sentinel-http] " .. msg)
+end
+
+local function log_warn(msg)
+	obs.script_log(obs.LOG_WARNING, "[socket-sentinel-http] " .. msg)
 end
 
 ----------------------------------------------------
--- HTTP CLIENT
+-- STRING / NAME NORMALIZERS
 ----------------------------------------------------
 
-function shell_escape(str)
-	return "'" .. string.gsub(str, "'", "'\"'\"'") .. "'"
+local function trim(s)
+	if s == nil then
+		return ""
+	end
+	return (s:gsub("^%s+", ""):gsub("%s+$", ""))
 end
 
-function send_http_action(game_key, action_name)
+local function strip_comment(line)
+	local in_quote = false
+	local out = {}
+	for i = 1, #line do
+		local ch = line:sub(i, i)
+		if ch == '"' or ch == "'" then
+			in_quote = not in_quote
+		elseif ch == "#" and not in_quote then
+			break
+		end
+		table.insert(out, ch)
+	end
+	return table.concat(out)
+end
+
+local function indent_level(s)
+	local _, spaces = s:find("^[ ]*")
+	return spaces or 0
+end
+
+-- Normalize both scene names and game keys
+local function normalize_name(s)
+	s = trim(s or "")
+	s = s:lower()
+	s = s:gsub("%s+", "_")
+	return s
+end
+
+----------------------------------------------------
+-- SHELL ESCAPE
+----------------------------------------------------
+
+local function shell_escape(s)
+	if s == nil then
+		s = ""
+	end
+	return "'" .. string.gsub(s, "'", "'\"'\"'") .. "'"
+end
+
+----------------------------------------------------
+-- CURRENT SCENE NAME
+----------------------------------------------------
+
+local function get_current_scene_name()
+	local src = obs.obs_frontend_get_current_scene()
+	if not src then
+		return nil
+	end
+	local name = obs.obs_source_get_name(src)
+	obs.obs_source_release(src)
+	return name
+end
+
+----------------------------------------------------
+-- HTTP ACTION SEND VIA CURL
+----------------------------------------------------
+local function send_http_action(game_key, action_name)
+	if not action_name or action_name == "" then
+		return
+	end
+
 	-- Prepare JSON payload
 	local json_payload = string.format('{"action": "%s", "game": "%s"}', action_name, tostring(game_key))
 	
@@ -63,42 +128,32 @@ end
 ----------------------------------------------------
 -- HOTKEY CALLBACK
 ----------------------------------------------------
-
-function hotkey_callback(game_key, action_name)
+local function make_hotkey_callback(game_key, action_name)
 	return function(pressed)
 		if not pressed then
 			return
 		end
 
-		-- Scene-based gating
-		local current_scene_name = obs.obs_frontend_get_current_scene_name()
-		if not current_scene_name then
-			log_info("No current scene detected, skipping action")
+		local scene_name = get_current_scene_name()
+		if not scene_name then
 			return
 		end
 
-		local game_config = GAMES[game_key]
-		if not game_config then
-			log_error(string.format("Game config missing for key: %s", game_key))
-			return
-		end
+		local scene = normalize_name(scene_name)
+		local game = normalize_name(game_key)
 
-		local allowed_scenes = game_config.scenes
-		if allowed_scenes and #allowed_scenes > 0 then
-			local scene_allowed = false
-			for _, scene_name in ipairs(allowed_scenes) do
-				if current_scene_name == scene_name then
-					scene_allowed = true
-					break
-				end
-			end
-
-			if not scene_allowed then
+		-- System actions (undo, clear, start) work globally regardless of scene
+		local system_actions = {undo = true, clear = true, start = true}
+		
+		if not system_actions[action_name] then
+			-- Scene gating: only fire when this game matches the current scene for regular actions
+			if scene ~= game then
 				log_info(
 					string.format(
-						"Scene gating: current='%s' not in allowed scenes %s for game=%s",
-						current_scene_name,
-						table.concat(allowed_scenes, ", "),
+						"Ignoring [%s:%s] because scene '%s' != game '%s'",
+						game_key,
+						action_name,
+						scene_name,
 						game_key
 					)
 				)
@@ -107,19 +162,19 @@ function hotkey_callback(game_key, action_name)
 		end
 
 		log_info(
-			string.format("Action triggered: %s.%s (scene: %s)", game_key, action_name, current_scene_name)
+			string.format("Hotkey triggered → game=%s action=%s (scene '%s')", game_key, action_name, scene_name)
 		)
 
-		-- Send HTTP action
+		-- send both game and action via HTTP
 		send_http_action(game_key, action_name)
 	end
 end
 
 ----------------------------------------------------
--- HTTP GET utility
+-- FETCH YAML FROM PYTHON /config
 ----------------------------------------------------
 
-function http_get(host, port, path, token)
+local function http_get(host, port, path, token)
 	local auth_header = ""
 	if token and token ~= "" then
 		auth_header = string.format("-H 'Authorization: Bearer %s'", token)
@@ -152,43 +207,154 @@ local function load_yaml_from_server()
 end
 
 ----------------------------------------------------
--- YAML PARSER (simplified)
+-- MINIMAL YAML PARSER FOR games.*.actions (COPIED FROM WORKING VERSION)
 ----------------------------------------------------
 
-local function parse_yaml(yaml_text)
+local function load_games_from_yaml_text(yaml_text)
+	local lines = {}
+	for line in yaml_text:gmatch("[^\r\n]+") do
+		table.insert(lines, line)
+	end
+
 	local games = {}
+	local in_games = false
 	local current_game = nil
 	local in_actions = false
-	local in_scenes = false
 
-	for line in yaml_text:gmatch("[^\r\n]+") do
-		line = line:gsub("^%s+", ""):gsub("%s+$", "") -- trim
-		
-		if line == "" or line:match("^#") then
-			-- skip empty/comment lines
-		elseif line:match("^(%w+):$") then
-			-- top-level game key
-			current_game = line:match("^(%w+):$")
-			games[current_game] = { actions = {}, scenes = {} }
-			in_actions = false
-			in_scenes = false
-			log_info("Found game: " .. current_game)
-		elseif line == "actions:" and current_game then
-			in_actions = true
-			in_scenes = false
-		elseif line == "scenes:" and current_game then
-			in_actions = false
-			in_scenes = true
-		elseif in_actions and current_game and line:match("^%- (.+)$") then
-			local action = line:match("^%- (.+)$")
-			table.insert(games[current_game].actions, action)
-		elseif in_scenes and current_game and line:match("^%- (.+)$") then
-			local scene = line:match("^%- (.+)$")
-			table.insert(games[current_game].scenes, scene)
+	for _, raw in ipairs(lines) do
+		local line = strip_comment(raw)
+		if line:match("^%s*$") then
+			goto continue
 		end
+
+		local lvl = indent_level(line)
+		local t = trim(line)
+
+		if lvl == 0 and t == "games:" then
+			in_games = true
+			current_game = nil
+			in_actions = false
+			goto continue
+		end
+
+		if not in_games then
+			goto continue
+		end
+
+		if lvl == 2 then
+			local gkey = t:match("^([%w_]+):%s*$")
+			if gkey then
+				current_game = gkey
+				games[current_game] = { actions = {} }
+				in_actions = false
+				log_info("Found game: " .. current_game)
+			end
+			goto continue
+		end
+
+		if not current_game then
+			goto continue
+		end
+
+		if lvl == 4 and t == "actions:" then
+			in_actions = true
+			log_info("Found actions section for: " .. current_game)
+			goto continue
+		end
+
+		if in_actions and lvl >= 6 then
+			local akey = t:match("^([%w_]+)%s*:")
+			if akey then
+				table.insert(games[current_game].actions, akey)
+				log_info("  Added action: " .. akey)
+			end
+		end
+
+		::continue::
 	end
 
 	return games
+end
+
+local function init_games_from_server()
+	local text = load_yaml_from_server()
+	if not text then
+		log_error("Could not load YAML — no hotkeys will be registered.")
+		GAMES = {}
+		return
+	end
+
+	local parsed = load_games_from_yaml_text(text)
+	if not parsed or next(parsed) == nil then
+		log_error("Parsed YAML but found no games.*.actions.")
+		GAMES = {}
+		return
+	end
+
+	GAMES = parsed
+end
+
+----------------------------------------------------
+-- REGISTER HOTKEYS (COPIED FROM WORKING VERSION)
+----------------------------------------------------
+
+local function register_hotkeys()
+	-- Don't clear existing hotkeys - preserve user's key mappings!
+	-- Only register hotkeys that don't already exist
+	
+	-- Register game-specific actions
+	for game_key, g in pairs(GAMES) do
+		hotkey_ids[game_key] = hotkey_ids[game_key] or {}
+		for _, action_name in ipairs(g.actions or {}) do
+			-- Skip if hotkey already exists (preserve user mappings)
+			if hotkey_ids[game_key][action_name] then
+				log_info(string.format("Skipping existing hotkey: %s.%s", game_key, action_name))
+				goto continue
+			end
+			
+			local internal_id = "socket_sentinel_" .. game_key .. "_" .. action_name
+			local label = string.format("Socket Sentinel [%s]: %s", game_key, action_name)
+
+			local id = obs.obs_hotkey_register_frontend(internal_id, label, make_hotkey_callback(game_key, action_name))
+
+			if id then
+				hotkey_ids[game_key][action_name] = id
+				log_info("Registered NEW hotkey: " .. label)
+			else
+				log_warn("Failed hotkey register: " .. internal_id)
+			end
+			
+			::continue::
+		end
+	end
+	
+	-- Register system actions for the first game (they work globally)
+	local first_game = next(GAMES)
+	if first_game then
+		hotkey_ids[first_game] = hotkey_ids[first_game] or {}
+		local system_actions = {"undo", "clear", "start"}
+		for _, action_name in ipairs(system_actions) do
+			-- Skip if system hotkey already exists
+			if hotkey_ids[first_game][action_name] then
+				log_info(string.format("Skipping existing system hotkey: %s", action_name))
+				goto continue_system
+			end
+			
+			local internal_id = "socket_sentinel_system_" .. action_name
+			local label = string.format("Socket Sentinel [SYSTEM]: %s", action_name)
+
+			local id = obs.obs_hotkey_register_frontend(internal_id, label, make_hotkey_callback(first_game, action_name))
+
+			if id then
+				hotkey_ids[first_game][action_name] = id
+				log_info("Registered NEW system hotkey: " .. label)
+			else
+				log_warn("Failed system hotkey register: " .. internal_id)
+			end
+			
+			::continue_system::
+		end
+	end
 end
 
 ----------------------------------------------------
@@ -205,50 +371,65 @@ local function clear_hotkeys()
 	hotkey_ids = {}
 end
 
-local function register_hotkeys()
-	clear_hotkeys()
-
-	for game_key, game_config in pairs(GAMES) do
-		hotkey_ids[game_key] = {}
-		for _, action_name in ipairs(game_config.actions or {}) do
-			local hotkey_name = string.format("%s.%s", game_key, action_name)
-			local hotkey_desc = string.format("[%s] %s", game_key, action_name)
-
-			local hotkey_id = obs.obs_hotkey_register_frontend(
-				hotkey_name,
-				hotkey_desc,
-				hotkey_callback(game_key, action_name)
-			)
-
-			hotkey_ids[game_key][action_name] = hotkey_id
-			log_info(string.format("Registered hotkey: %s → %s", hotkey_name, hotkey_desc))
+local function cleanup_removed_hotkeys()
+	-- Remove hotkeys for actions that no longer exist in the config
+	-- But preserve hotkeys for actions that still exist
+	
+	for game_key, actions_map in pairs(hotkey_ids) do
+		local game_config = GAMES[game_key]
+		if not game_config then
+			-- Entire game was removed from config
+			log_info(string.format("Removing all hotkeys for removed game: %s", game_key))
+			for action_name, hotkey_id in pairs(actions_map) do
+				obs.obs_hotkey_unregister(hotkey_id)
+				log_info(string.format("Unregistered hotkey for removed game: %s.%s", game_key, action_name))
+			end
+			hotkey_ids[game_key] = nil
+		else
+			-- Game still exists, check individual actions
+			local valid_actions = {}
+			for _, action_name in ipairs(game_config.actions or {}) do
+				valid_actions[action_name] = true
+			end
+			
+			-- Add system actions to valid list for the first game
+			if game_key == next(GAMES) then
+				valid_actions["undo"] = true
+				valid_actions["clear"] = true
+				valid_actions["start"] = true
+			end
+			
+			-- Remove hotkeys for actions that no longer exist
+			for action_name, hotkey_id in pairs(actions_map) do
+				if not valid_actions[action_name] then
+					log_info(string.format("Removing hotkey for removed action: %s.%s", game_key, action_name))
+					obs.obs_hotkey_unregister(hotkey_id)
+					hotkey_ids[game_key][action_name] = nil
+				end
+			end
 		end
 	end
 end
 
 local function refresh_config()
 	log_info("🔄 Refreshing configuration from server...")
-	local yaml_text = load_yaml_from_server()
-	if not yaml_text then
-		log_error("Failed to load YAML from server")
-		return
-	end
-
-	local new_games = parse_yaml(yaml_text)
-	GAMES = new_games
+	init_games_from_server()
 
 	log_info(string.format("Loaded %d games from server", table_length(GAMES)))
 	for game_key, game_config in pairs(GAMES) do
 		log_info(
 			string.format(
-				"  %s: %d actions, %d scenes",
+				"  %s: %d actions",
 				game_key,
-				#(game_config.actions or {}),
-				#(game_config.scenes or {})
+				#(game_config.actions or {})
 			)
 		)
 	end
 
+	-- Clean up hotkeys for removed games/actions
+	cleanup_removed_hotkeys()
+	
+	-- Register new hotkeys (existing ones are preserved)
 	register_hotkeys()
 	log_info("✅ Configuration refresh complete")
 end
