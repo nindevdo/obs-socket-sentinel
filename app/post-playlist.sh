@@ -25,6 +25,9 @@ if [ $# -lt 1 ]; then
     echo "Environment variables required:"
     echo "  DISCORD_BOT_TOKEN - Discord bot token"
     echo "  DISCORD_CHANNEL_ID - Discord channel ID"
+    echo ""
+    echo "Note: If max_videos is not specified, ALL videos in the playlist will be posted."
+    echo "      Duplicate checking is always enabled to prevent reposting existing videos."
     exit 1
 fi
 

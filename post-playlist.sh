@@ -33,6 +33,9 @@ if [ $# -lt 1 ]; then
     echo ""
     echo "This will post each video from the YouTube playlist as individual messages"
     echo "to the Discord channel configured in your .env file."
+    echo ""
+    echo "If max_videos is not specified, ALL videos in the playlist will be posted."
+    echo "Duplicate checking is always enabled to prevent reposting existing videos."
     exit 1
 fi
 
@@ -58,11 +61,7 @@ echo "🚀 Executing playlist poster inside container..."
 echo ""
 
 # Execute the script inside the container
-if [ -n "$MAX_VIDEOS" ]; then
-    docker exec "$CONTAINER_NAME" /app/post-playlist.sh "$PLAYLIST_URL" "$MAX_VIDEOS"
-else
-    docker exec "$CONTAINER_NAME" /app/post-playlist.sh "$PLAYLIST_URL"
-fi
+docker exec "$CONTAINER_NAME" /app/post-playlist.sh "$@"
 
 exit_code=$?
 

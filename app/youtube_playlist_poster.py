@@ -23,7 +23,7 @@ DISCORD_CHANNEL_ID = os.getenv("DISCORD_CHANNEL_ID", "").strip()
 
 # Rate limiting to avoid hitting Discord API limits
 DISCORD_POST_DELAY = 2.0  # seconds between posts
-MAX_VIDEOS_PER_BATCH = 50  # max videos to post in one run
+# Removed MAX_VIDEOS_PER_BATCH - no limits on playlist size
 
 
 class YouTubePlaylistPoster:
@@ -96,6 +96,62 @@ class YouTubePlaylistPoster:
             logging.error(f"❗ Failed to extract playlist: {e}")
             raise
     
+    async def get_existing_youtube_urls(self, limit: int = 100) -> set[str]:
+        """
+        Fetch existing YouTube URLs from Discord channel to avoid duplicates.
+        Returns a set of YouTube URLs that have already been posted.
+        Note: Discord API limits message fetching to 100 messages per request.
+        """
+        if not self.session:
+            raise RuntimeError("Session not initialized - use async context manager")
+            
+        # Discord API limits to 100 messages maximum
+        api_limit = min(limit, 100)
+            
+        existing_urls = set()
+        url = f"https://discord.com/api/v10/channels/{self.channel_id}/messages?limit={api_limit}"
+        headers = {
+            "Authorization": f"Bot {self.bot_token}",
+            "User-Agent": "obs-socket-sentinel-playlist-poster/1.0"
+        }
+        
+        try:
+            logging.info(f"🔍 Checking last {api_limit} messages in Discord channel for duplicates...")
+            async with self.session.get(url, headers=headers) as resp:
+                if resp.status == 200:
+                    messages = await resp.json()
+                    
+                    youtube_patterns = [
+                        r'https://www\.youtube\.com/watch\?v=([a-zA-Z0-9_-]+)',
+                        r'https://youtu\.be/([a-zA-Z0-9_-]+)',
+                        r'youtube\.com/watch\?v=([a-zA-Z0-9_-]+)',
+                        r'youtu\.be/([a-zA-Z0-9_-]+)'
+                    ]
+                    
+                    import re
+                    for message in messages:
+                        content = message.get('content', '')
+                        
+                        # Check for YouTube URLs in message content
+                        for pattern in youtube_patterns:
+                            matches = re.findall(pattern, content)
+                            for video_id in matches:
+                                # Normalize to standard format
+                                standard_url = f"https://www.youtube.com/watch?v={video_id}"
+                                existing_urls.add(standard_url)
+                    
+                    logging.info(f"📊 Found {len(existing_urls)} existing YouTube videos in last {api_limit} messages")
+                    return existing_urls
+                    
+                else:
+                    error_text = await resp.text()
+                    logging.warning(f"❗ Failed to fetch existing messages: {resp.status} - {error_text}")
+                    return set()
+                    
+        except Exception as e:
+            logging.error(f"❗ Error checking existing messages: {e}")
+            return set()
+
     async def post_message_to_discord(self, content: str) -> bool:
         """
         Post a message to the configured Discord channel.
@@ -133,10 +189,12 @@ class YouTubePlaylistPoster:
         self, 
         playlist_url: str, 
         max_videos: Optional[int] = None,
-        delay: float = DISCORD_POST_DELAY
+        delay: float = DISCORD_POST_DELAY,
+        check_duplicates: bool = True
     ) -> int:
         """
         Extract videos from playlist and post each one to Discord channel.
+        Skips videos that are already posted if check_duplicates is True.
         Returns number of successfully posted videos.
         """
         # Extract videos from playlist
@@ -150,16 +208,34 @@ class YouTubePlaylistPoster:
             logging.warning("⚠️ No videos found in playlist")
             return 0
         
+        # Check for existing videos to avoid duplicates
+        existing_urls = set()
+        if check_duplicates:
+            existing_urls = await self.get_existing_youtube_urls()
+        
+        # Filter out duplicates
+        if existing_urls:
+            original_count = len(videos)
+            videos = [v for v in videos if v['url'] not in existing_urls]
+            duplicates_found = original_count - len(videos)
+            
+            if duplicates_found > 0:
+                logging.info(f"⚠️ Skipping {duplicates_found} duplicate videos already in channel")
+            
+            if not videos:
+                logging.info("ℹ️ All videos from playlist are already posted in Discord channel")
+                return 0
+        
         # Apply limit if specified
         if max_videos and max_videos > 0:
             videos = videos[:max_videos]
-            logging.info(f"📊 Limited to first {len(videos)} videos")
+            logging.info(f"📊 Limited to first {len(videos)} new videos")
         
         # Post each video to Discord
         success_count = 0
         total_videos = len(videos)
         
-        logging.info(f"📤 Starting to post {total_videos} videos to Discord channel {self.channel_id}")
+        logging.info(f"📤 Starting to post {total_videos} new videos to Discord channel {self.channel_id}")
         
         for i, video in enumerate(videos, 1):
             video_url = video['url']
@@ -181,7 +257,7 @@ class YouTubePlaylistPoster:
             if i < total_videos:  # Don't delay after the last post
                 await asyncio.sleep(delay)
         
-        logging.info(f"🎯 Successfully posted {success_count}/{total_videos} videos")
+        logging.info(f"🎯 Successfully posted {success_count}/{total_videos} new videos")
         return success_count
 
 
@@ -207,28 +283,28 @@ async def main():
     if len(sys.argv) < 2:
         logging.error("❗ Usage: python youtube_playlist_poster.py <playlist_url> [max_videos]")
         logging.error("   Example: python youtube_playlist_poster.py 'https://www.youtube.com/playlist?list=PLrAXtmRdnEQy6nuLMCSM05Zo1Jzwg_kkF' 25")
+        logging.error("   Note: If max_videos is not specified, all videos in the playlist will be posted")
         return 1
     
     playlist_url = sys.argv[1]
     max_videos = None
     
-    if len(sys.argv) >= 3:
-        try:
-            max_videos = int(sys.argv[2])
+    # Parse remaining arguments
+    for arg in sys.argv[2:]:
+        if arg.isdigit():
+            max_videos = int(arg)
             if max_videos <= 0:
                 logging.error("❗ max_videos must be a positive integer")
                 return 1
-        except ValueError:
-            logging.error("❗ max_videos must be a valid integer")
+        else:
+            logging.error(f"❗ Unknown argument: {arg}")
             return 1
     
-    # Apply safety limit
-    if not max_videos:
-        max_videos = MAX_VIDEOS_PER_BATCH
-        logging.info(f"⚠️ No limit specified, using safety limit of {MAX_VIDEOS_PER_BATCH} videos")
-    elif max_videos > MAX_VIDEOS_PER_BATCH:
-        logging.warning(f"⚠️ Requested {max_videos} videos, limiting to safety maximum of {MAX_VIDEOS_PER_BATCH}")
-        max_videos = MAX_VIDEOS_PER_BATCH
+    # Apply safety limit - REMOVED: Now supports unlimited videos
+    if max_videos and max_videos > 0:
+        logging.info(f"📊 User requested limit: {max_videos} videos")
+    else:
+        logging.info(f"📊 No limit specified - will post all new videos from playlist")
     
     # Post playlist to Discord
     try:
@@ -236,7 +312,8 @@ async def main():
             success_count = await poster.post_playlist_videos(
                 playlist_url=playlist_url,
                 max_videos=max_videos,
-                delay=DISCORD_POST_DELAY
+                delay=DISCORD_POST_DELAY,
+                check_duplicates=True  # Always check duplicates
             )
             
             if success_count > 0:
