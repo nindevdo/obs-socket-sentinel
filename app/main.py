@@ -3575,7 +3575,7 @@ def extract_from_payload(text: str) -> tuple[Optional[str], list[str], bool]:
         if not line:
             continue
 
-        logging.info(f"🔍 [parser] Checking line: {repr(line)}")
+        logging.info(f"🔍 [parser] Checking line: {repr(line[:50])}{'...' if len(line) > 50 else ''}")
         lower = line.lower()
 
         if lower.startswith("token="):
@@ -3633,8 +3633,8 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
             return
 
         text = data.decode("utf-8", errors="ignore")
-        logging.info(f"📥 [tcp] Raw payload bytes: {data!r}")
-        logging.info(f"📥 [tcp] Raw payload text: {repr(text)}")
+        logging.info(f"📥 [tcp] Received {len(data)} bytes from {addr}")
+        logging.debug(f"📥 [tcp] Raw payload text: {repr(text[:100])}{'...' if len(text) > 100 else ''}")
 
         project, actions, is_authorized = extract_from_payload(text)
         
@@ -3672,6 +3672,7 @@ async def handle_http(reader: asyncio.StreamReader, writer: asyncio.StreamWriter
       - GET /config       => serves raw YAML config
       - POST /achievement => accepts Steam achievement notification data (requires auth)
       - POST /playtime    => accepts Steam playtime notification data (requires auth)
+      - POST /action      => accepts game action triggers (replaces TCP server, requires auth)
       - GET /sounds/<...> => serves local sound files from _data/sounds/
       - GET /dsounds/<...> => serves cached Discord audio files
       - GET /dvideos/<...> => serves cached Discord video files
@@ -3849,6 +3850,102 @@ async def handle_http(reader: asyncio.StreamReader, writer: asyncio.StreamWriter
                 return
             except Exception as e:
                 logging.error(f"❗ [playtime] Error processing playtime: {e}", exc_info=True)
+                resp = b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                writer.write(resp)
+                await writer.drain()
+                return
+
+        # Handle POST /action endpoint (replaces TCP server)
+        if method == "POST" and path == "/action":
+            try:
+                # Read the full request body
+                content_length = 0
+                for line in req_text.split('\r\n'):
+                    if line.lower().startswith('content-length:'):
+                        content_length = int(line.split(':')[1].strip())
+                        break
+                
+                # Read JSON body
+                body_data = b""
+                if content_length > 0:
+                    # We may have already read part of the body in the initial read
+                    lines = req_text.split('\r\n\r\n', 1)
+                    if len(lines) > 1:
+                        body_start = lines[1].encode('utf-8')
+                        body_data += body_start
+                        remaining = content_length - len(body_start)
+                        if remaining > 0:
+                            more_data = await reader.read(remaining)
+                            body_data += more_data
+
+                # Parse JSON
+                action_data = json.loads(body_data.decode('utf-8'))
+                
+                # Extract required fields
+                game = action_data.get("game", action_data.get("project"))
+                action = action_data.get("action")
+                
+                if not action:
+                    logging.warning(f"❌ [action] Missing required field: action")
+                    error_msg = "Missing required field: action"
+                    response_body = json.dumps({"error": error_msg}).encode('utf-8')
+                    resp_headers = (
+                        "HTTP/1.1 400 Bad Request\r\n"
+                        "Content-Type: application/json\r\n"
+                        f"Content-Length: {len(response_body)}\r\n"
+                        "Connection: close\r\n"
+                        "\r\n"
+                    )
+                    writer.write(resp_headers.encode("ascii") + response_body)
+                    await writer.drain()
+                    return
+
+                # Validate action exists in config
+                if action.lower() not in {a.lower() for a in ALL_ACTION_KEYS}:
+                    logging.warning(f"❌ [action] Unknown action: {action}")
+                    error_msg = f"Unknown action: {action}. Valid actions: {', '.join(sorted(ALL_ACTION_KEYS))}"
+                    response_body = json.dumps({"error": error_msg}).encode('utf-8')
+                    resp_headers = (
+                        "HTTP/1.1 400 Bad Request\r\n"
+                        "Content-Type: application/json\r\n"
+                        f"Content-Length: {len(response_body)}\r\n"
+                        "Connection: close\r\n"
+                        "\r\n"
+                    )
+                    writer.write(resp_headers.encode("ascii") + response_body)
+                    await writer.drain()
+                    return
+
+                # Process the action
+                await handle_action(action, game)
+                
+                # Send success response
+                response_body = json.dumps({
+                    "status": "success", 
+                    "message": f"Action '{action}' processed successfully",
+                    "game": game,
+                    "action": action
+                }).encode('utf-8')
+                
+                headers = (
+                    "HTTP/1.1 200 OK\r\n"
+                    "Content-Type: application/json\r\n"
+                    f"Content-Length: {len(response_body)}\r\n"
+                    "Connection: close\r\n"
+                    "\r\n"
+                )
+                writer.write(headers.encode("ascii") + response_body)
+                await writer.drain()
+                return
+                
+            except json.JSONDecodeError as e:
+                logging.warning(f"❌ [action] Invalid JSON in POST body: {e}")
+                resp = b"HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: 26\r\nConnection: close\r\n\r\n{\"error\":\"Invalid JSON\"}"
+                writer.write(resp)
+                await writer.drain()
+                return
+            except Exception as e:
+                logging.error(f"❗ [action] Error processing action: {e}", exc_info=True)
                 resp = b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
                 writer.write(resp)
                 await writer.drain()

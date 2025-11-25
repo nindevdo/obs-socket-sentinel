@@ -22,7 +22,6 @@ services:
       - ./_data/discord:/discord:rw
       - ./_data/sounds:/sounds:ro
     ports:
-      - "5678:5678"
       - "8088:8088"
 
 #  cloudflared:
