@@ -4,12 +4,12 @@
 
 AUTH_TOKEN=${AUTH_TOKEN:-"your-secret-token"}
 
-echo "🎮 Achievement Percentages Test Script"
+echo "🎮 Achievement Percentages Test Script - Golden Edition"
 echo "======================================================"
 echo "🧪 Testing achievement percentages endpoint..."
 
 # Test payload matching the actual structure
-curl -v -X POST http://localhost:8088/global-achievement-percentages \
+curl -X POST http://localhost:8088/global-achievement-percentages \
   -H "Authorization: Bearer $AUTH_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
@@ -28,6 +28,4 @@ curl -v -X POST http://localhost:8088/global-achievement-percentages \
   }'
 
 echo -e "\n\n✅ Achievement percentages test completed!"
-echo "💡 Check the OBS overlay for the achievement progress display"
-echo -e "\n📋 To run this test:"
-echo "  docker exec -it obs-socket-sentinel-1 bash test_achievement_percentages.sh"
+echo "💡 Check the OBS overlay for the golden achievement progress display"
