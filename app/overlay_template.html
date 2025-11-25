@@ -591,6 +591,128 @@
       color: #d1d5db;
     }
 
+    /* Achievement Percentages notification styles (left side, below playtime) */
+    #achievement-percentages-notification {
+      position: fixed;
+      top: 12vh; /* Position below playtime notification */
+      left: 2vw;
+      transform: translateX(-100%);
+      opacity: 0;
+      pointer-events: none;
+      z-index: 13900;
+      
+      max-width: 500px;
+      min-width: 400px;
+      background: rgba(30, 15, 40, 0.85);
+      border: 3px solid rgba(140, 90, 150, 0.7);
+      border-radius: 16px;
+      box-shadow: 
+        0 8px 32px rgba(0, 0, 0, 0.6),
+        0 0 20px rgba(140, 90, 150, 0.3),
+        inset 0 2px 8px rgba(255, 255, 255, 0.1);
+      
+      font-family: "ProggyClean Nerd Font", "Noto Color Emoji", sans-serif;
+      color: #ffffff;
+      
+      transition: 
+        transform 0.6s cubic-bezier(0.22, 1, 0.36, 1),
+        opacity 0.4s ease-out;
+    }
+
+    #achievement-percentages-notification.visible {
+      transform: translateX(0%);
+      opacity: 1;
+    }
+
+    .achievement-percentages-header {
+      background: rgba(20, 10, 25, 0.8);
+      padding: 12px 20px;
+      border-radius: 16px 16px 0 0;
+      border-bottom: 2px solid rgba(140, 90, 150, 0.5);
+      font-size: 1.0rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      text-shadow: 0 2px 4px rgba(0, 0, 0, 0.8);
+      color: #e0e0e0;
+    }
+
+    .achievement-percentages-content {
+      background: rgba(15, 5, 20, 0.85);
+      padding: 20px;
+      border-radius: 0 0 16px 16px;
+    }
+
+    .achievement-percentages-item {
+      margin-bottom: 16px;
+      padding: 12px 0;
+      border-bottom: 1px solid rgba(140, 90, 150, 0.3);
+    }
+    
+    .achievement-percentages-item:last-child {
+      margin-bottom: 0;
+      border-bottom: none;
+    }
+
+    .achievement-percentages-game {
+      font-size: 1.4rem;
+      font-weight: 700;
+      margin: 0 0 8px 0;
+      text-shadow: 0 2px 4px rgba(0, 0, 0, 0.8);
+      color: #e879f9;
+    }
+
+    .achievement-percentages-name {
+      font-size: 1.2rem;
+      font-weight: 600;
+      margin: 0 0 6px 0;
+      color: #fbbf24;
+      text-shadow: 0 2px 4px rgba(0, 0, 0, 0.8);
+    }
+
+    .achievement-percentages-progress {
+      margin-top: 8px;
+    }
+    
+    .achievement-percentages-progress-bar {
+      width: 100%;
+      height: 24px;
+      background: rgba(40, 25, 45, 0.9);
+      border: 2px solid rgba(140, 90, 150, 0.4);
+      border-radius: 12px;
+      overflow: hidden;
+      position: relative;
+      box-shadow: 
+        inset 0 2px 8px rgba(0, 0, 0, 0.6),
+        0 2px 4px rgba(0, 0, 0, 0.3);
+    }
+    
+    .achievement-percentages-progress-fill {
+      height: 100%;
+      background: linear-gradient(90deg, #10b981, #34d399, #6ee7b7);
+      border-radius: 10px;
+      transition: width 0.8s cubic-bezier(0.25, 0.46, 0.45, 0.94);
+      position: relative;
+      box-shadow: 
+        0 0 10px rgba(16, 185, 129, 0.4),
+        inset 0 1px 3px rgba(255, 255, 255, 0.2);
+    }
+    
+    .achievement-percentages-progress-text {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      color: #ffffff;
+      font-size: 1.1rem;
+      font-weight: 800;
+      text-shadow: 
+        0 1px 3px rgba(0, 0, 0, 0.9),
+        0 0 6px rgba(0, 0, 0, 0.7);
+      z-index: 10;
+      letter-spacing: 0.05em;
+    }
+
   </style>
 </head>
 
@@ -638,6 +760,14 @@
     </div>
   </div>
 
+  <!-- Achievement percentages notification (left side, below playtime) -->
+  <div id="achievement-percentages-notification">
+    <div class="achievement-percentages-header">🏆 ACHIEVEMENT PROGRESS</div>
+    <div class="achievement-percentages-content" id="achievement-percentages-content">
+      <!-- Achievements will be dynamically populated here -->
+    </div>
+  </div>
+
   <script>
     const POLL_INTERVAL_MS = 500;
 
@@ -667,6 +797,10 @@
     const playtimeTime = document.getElementById("playtime-time");
     const playtimeHours = document.getElementById("playtime-hours");
 
+    // Achievement percentages notification elements
+    const achievementPercentagesNotification = document.getElementById("achievement-percentages-notification");
+    const achievementPercentagesContent = document.getElementById("achievement-percentages-content");
+
     let lastText = null;
     let lastAction = null;
     let lastSound = null;
@@ -686,6 +820,10 @@
     // Playtime notification state
     let lastPlaytime = null;
     let playtimeTimeoutId = null;
+
+    // Achievement percentages notification state
+    let lastAchievementPercentages = null;
+    let achievementPercentagesTimeoutId = null;
 
     // Web Audio for GIF+audio
     let audioCtx = null;
@@ -1137,6 +1275,97 @@
       console.log(`[playtime] Hidden`);
     }
 
+    function showAchievementPercentages(achievementPercentages) {
+      if (!achievementPercentages) {
+        hideAchievementPercentages();
+        return;
+      }
+
+      // Clear any existing timeout
+      if (achievementPercentagesTimeoutId) {
+        clearTimeout(achievementPercentagesTimeoutId);
+        achievementPercentagesTimeoutId = null;
+      }
+
+      // Handle both array and single object formats
+      let achievements = [];
+      if (Array.isArray(achievementPercentages)) {
+        achievements = achievementPercentages;
+      } else if (achievementPercentages.achievements && Array.isArray(achievementPercentages.achievements)) {
+        achievements = achievementPercentages.achievements;
+      } else {
+        // Single achievement object
+        achievements = [achievementPercentages];
+      }
+
+      // Clear content and populate with achievements
+      achievementPercentagesContent.innerHTML = '';
+      
+      achievements.forEach((achievement, index) => {
+        const item = document.createElement('div');
+        item.className = 'achievement-percentages-item';
+        
+        const game = document.createElement('div');
+        game.className = 'achievement-percentages-game';
+        // Handle both old and new structure - get game name from achievement or parent object
+        game.textContent = achievement.game_name || achievementPercentages.game_name || 'Unknown Game';
+        
+        const name = document.createElement('div');
+        name.className = 'achievement-percentages-name';
+        // Use 'name' field from new structure, fallback to old 'achievement_name'
+        name.textContent = achievement.name || achievement.achievement_name || 'Unknown Achievement';
+        
+        const progress = document.createElement('div');
+        progress.className = 'achievement-percentages-progress';
+        
+        const progressBar = document.createElement('div');
+        progressBar.className = 'achievement-percentages-progress-bar';
+        
+        const progressFill = document.createElement('div');
+        progressFill.className = 'achievement-percentages-progress-fill';
+        // Use 'percent' field from new structure, fallback to old 'percent_complete'
+        const percentValue = parseFloat(achievement.percent || achievement.percent_complete || 0);
+        progressFill.style.width = `${percentValue}%`;
+        
+        const progressText = document.createElement('div');
+        progressText.className = 'achievement-percentages-progress-text';
+        progressText.textContent = `${percentValue}%`;
+        
+        progressBar.appendChild(progressFill);
+        progressBar.appendChild(progressText);
+        progress.appendChild(progressBar);
+        
+        item.appendChild(game);
+        item.appendChild(name);
+        item.appendChild(progress);
+        achievementPercentagesContent.appendChild(item);
+      });
+
+      // Show the notification
+      achievementPercentagesNotification.classList.add('visible');
+      
+      // Auto-hide after remaining time or default duration (5 minutes)
+      const remainingTime = (achievementPercentages.remaining_time || achievements[0]?.remaining_time || 300) * 1000;
+      achievementPercentagesTimeoutId = setTimeout(() => {
+        hideAchievementPercentages();
+      }, remainingTime);
+      
+      const achievementNames = achievements.map(a => `${a.name || a.achievement_name} (${parseFloat(a.percent || a.percent_complete || 0)}%)`).join(', ');
+      const gameNames = [...new Set(achievements.map(a => a.game_name || achievementPercentages.game_name))].filter(Boolean);
+      console.log(`[achievement_percentages] Showing ${achievements.length} achievements for ${gameNames.join(', ')}: ${achievementNames} (${remainingTime/1000}s remaining)`);
+    }
+
+    function hideAchievementPercentages() {
+      achievementPercentagesNotification.classList.remove('visible');
+      
+      if (achievementPercentagesTimeoutId) {
+        clearTimeout(achievementPercentagesTimeoutId);
+        achievementPercentagesTimeoutId = null;
+      }
+      
+      console.log(`[achievement_percentages] Hidden`);
+    }
+
     function playSoundAndAnimate(soundUrl, memeUrl, videoUrl, audioDuration = 0) {
       const hasVideo = !!videoUrl;
       const hasMeme = !!memeUrl;
@@ -1572,6 +1801,7 @@
         const runs = Array.isArray(data.runs) ? data.runs : [];
         const achievement = data.achievement || null;
         const playtime = data.playtime || null;
+        const achievement_percentages = data.achievement_percentages || null;
 
         // Handle achievement notifications
         const achievementChanged = !lastAchievement && achievement || 
@@ -1595,6 +1825,17 @@
         if (playtimeChanged) {
           showPlaytime(playtime);
           lastPlaytime = playtime;
+        }
+
+        // Handle achievement percentages notifications
+        const achievementPercentagesChanged = !lastAchievementPercentages && achievement_percentages || 
+                                            lastAchievementPercentages && !achievement_percentages ||
+                                            lastAchievementPercentages && achievement_percentages && 
+                                            JSON.stringify(lastAchievementPercentages) !== JSON.stringify(achievement_percentages);
+        
+        if (achievementPercentagesChanged) {
+          showAchievementPercentages(achievement_percentages);
+          lastAchievementPercentages = achievement_percentages;
         }
 
         const prevRunsLen = lastRunsSnapshot.length;

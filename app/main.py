@@ -235,6 +235,11 @@ current_playtime: Optional[Dict[str, Any]] = None
 playtime_display_until: Optional[float] = None
 PLAYTIME_DISPLAY_DURATION = 300.0  # Show playtime for 5 minutes (300 seconds)
 
+# Achievement percentages display state
+current_achievement_percentages: Optional[Dict[str, Any]] = None
+achievement_percentages_display_until: Optional[float] = None
+ACHIEVEMENT_PERCENTAGES_DISPLAY_DURATION = 300.0  # Show achievement percentages for 5 minutes (300 seconds)
+
 # Chapter file/session state
 current_chapter_file: Optional[Path] = None
 session_start_wall: Optional[float] = None  # time.time() when "start" was received
@@ -3429,6 +3434,46 @@ async def _auto_clear_playtime() -> None:
         return
 
 
+async def display_achievement_percentages(achievement_data: Dict[str, Any]) -> None:
+    """
+    Display achievement percentages notification for 5 minutes.
+    """
+    global current_achievement_percentages, achievement_percentages_display_until
+    
+    async with state_lock:
+        current_achievement_percentages = achievement_data.copy()
+        achievement_percentages_display_until = time.time() + ACHIEVEMENT_PERCENTAGES_DISPLAY_DURATION
+        
+        # Log what we're displaying
+        game_name = achievement_data.get('game_name', 'Unknown')
+        achievements_list = achievement_data.get('achievements', [])
+        achievement_names = [f"{a.get('name', 'Unknown')} ({a.get('percent', 0)}%)" for a in achievements_list]
+        
+        logging.info(f"🏆 [achievement_percentages] Displaying {len(achievements_list)} achievements for {game_name}: {', '.join(achievement_names)}")
+        
+        # Auto-clear after duration
+        asyncio.create_task(_auto_clear_achievement_percentages())
+
+async def _auto_clear_achievement_percentages() -> None:
+    """
+    Clear achievement percentages notification after display duration.
+    """
+    global current_achievement_percentages, achievement_percentages_display_until
+    
+    try:
+        await asyncio.sleep(ACHIEVEMENT_PERCENTAGES_DISPLAY_DURATION)
+        
+        async with state_lock:
+            current_achievement_percentages = None
+            achievement_percentages_display_until = None
+            
+        logging.info(f"🧽 [achievement_percentages] Auto-cleared notification after {ACHIEVEMENT_PERCENTAGES_DISPLAY_DURATION}s")
+        
+    except asyncio.CancelledError:
+        logging.debug("⏳ [achievement_percentages] Auto-clear cancelled")
+        return
+
+
 def validate_achievement_data(data: Dict[str, Any]) -> bool:
     """
     Validate that achievement data contains required fields.
@@ -3833,10 +3878,11 @@ async def handle_http(reader: asyncio.StreamReader, writer: asyncio.StreamWriter
     """
     Simple HTTP server:
       - GET /             => serves the HTML template
-      - GET /overlay      => JSON with latest overlay text + action + sound + meme + project + runs + achievements + playtime
+      - GET /overlay      => JSON with latest overlay text + action + sound + meme + project + runs + achievements + playtime + achievement_percentages
       - GET /config       => serves raw YAML config
       - POST /achievement => accepts Steam achievement notification data (requires auth)
       - POST /playtime    => accepts Steam playtime notification data (requires auth)
+      - POST /global-achievement-percentages => accepts Steam achievement percentages data (requires auth)
       - POST /action      => accepts game action triggers (replaces TCP server, requires auth)
       - GET /sounds/<...> => serves local sound files from _data/sounds/
       - GET /dsounds/<...> => serves cached Discord audio files
@@ -4015,6 +4061,101 @@ async def handle_http(reader: asyncio.StreamReader, writer: asyncio.StreamWriter
                 return
             except Exception as e:
                 logging.error(f"❗ [playtime] Error processing playtime: {e}", exc_info=True)
+                resp = b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                writer.write(resp)
+                await writer.drain()
+                return
+
+        # Handle POST /global-achievement-percentages endpoint
+        if method == "POST" and path == "/global-achievement-percentages":
+            try:
+                # Read the full request body
+                content_length = 0
+                for line in req_text.split('\r\n'):
+                    if line.lower().startswith('content-length:'):
+                        content_length = int(line.split(':')[1].strip())
+                        break
+                
+                # Read JSON body
+                body_data = b""
+                if content_length > 0:
+                    # We may have already read part of the body in the initial read
+                    lines = req_text.split('\r\n\r\n', 1)
+                    if len(lines) > 1:
+                        body_start = lines[1].encode('utf-8')
+                        body_data += body_start
+                        remaining = content_length - len(body_start)
+                        if remaining > 0:
+                            more_data = await reader.read(remaining)
+                            body_data += more_data
+
+                # Parse JSON
+                achievement_data = json.loads(body_data.decode('utf-8'))
+                
+                # Validate required top-level fields
+                required_fields = ["game_name", "achievements"]
+                missing_fields = [field for field in required_fields if field not in achievement_data]
+                
+                if missing_fields:
+                    logging.warning(f"❌ [achievement_percentages] Missing required fields: {missing_fields}")
+                    error_msg = f"Missing required fields: {', '.join(missing_fields)}"
+                    response_body = json.dumps({"error": error_msg}).encode('utf-8')
+                    resp_headers = (
+                        "HTTP/1.1 400 Bad Request\r\n"
+                        "Content-Type: application/json\r\n"
+                        f"Content-Length: {len(response_body)}\r\n"
+                        "Connection: close\r\n"
+                        "\r\n"
+                    )
+                    writer.write(resp_headers.encode("ascii") + response_body)
+                    await writer.drain()
+                    return
+                
+                # Validate each achievement in the array
+                achievements_list = achievement_data['achievements']
+                for i, achievement in enumerate(achievements_list):
+                    required_achievement_fields = ["name", "percent"]
+                    missing_achievement_fields = [field for field in required_achievement_fields if field not in achievement]
+                    
+                    if missing_achievement_fields:
+                        logging.warning(f"❌ [achievement_percentages] Achievement {i}: Missing required fields: {missing_achievement_fields}")
+                        error_msg = f"Achievement {i}: Missing required fields: {', '.join(missing_achievement_fields)}"
+                        response_body = json.dumps({"error": error_msg}).encode('utf-8')
+                        resp_headers = (
+                            "HTTP/1.1 400 Bad Request\r\n"
+                            "Content-Type: application/json\r\n"
+                            f"Content-Length: {len(response_body)}\r\n"
+                            "Connection: close\r\n"
+                            "\r\n"
+                        )
+                        writer.write(resp_headers.encode("ascii") + response_body)
+                        await writer.drain()
+                        return
+
+                # Display the achievement percentages notification
+                await display_achievement_percentages(achievement_data)
+                
+                # Send success response
+                response_body = json.dumps({"status": "success", "message": "Achievement percentages displayed"}).encode('utf-8')
+                headers = (
+                    "HTTP/1.1 200 OK\r\n"
+                    "Content-Type: application/json\r\n"
+                    f"Content-Length: {len(response_body)}\r\n"
+                    "Connection: close\r\n"
+                    "\r\n"
+                )
+                writer.write(headers.encode("ascii") + response_body)
+                await writer.drain()
+                return
+                
+            except json.JSONDecodeError as e:
+                logging.warning(f"❌ [achievement_percentages] Invalid JSON in POST body: {e}")
+                resp = b"HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: 26\r\nConnection: close\r\n\r\n{\"error\":\"Invalid JSON\"}"
+                writer.write(resp)
+                await writer.drain()
+                return
+            except Exception as e:
+                logging.error(f"❗ [achievement_percentages] Error processing achievement percentages: {e}", exc_info=True)
                 resp = b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
                 writer.write(resp)
                 await writer.drain()
@@ -4218,6 +4359,22 @@ async def handle_http(reader: asyncio.StreamReader, writer: asyncio.StreamWriter
                         # Add remaining display time for frontend timing
                         playtime_notification["remaining_time"] = max(0.0, playtime_display_until - now)
 
+                # ---- Build achievement percentages notification data ----
+                achievement_percentages_notification = None
+                if current_achievement_percentages and achievement_percentages_display_until:
+                    if now < achievement_percentages_display_until:
+                        achievement_percentages_notification = current_achievement_percentages.copy()
+                        # Add remaining display time for frontend timing
+                        remaining_time = max(0.0, achievement_percentages_display_until - now)
+                        
+                        if isinstance(achievement_percentages_notification, list):
+                            # For list of achievements, add remaining_time to each item
+                            for achievement in achievement_percentages_notification:
+                                achievement["remaining_time"] = remaining_time
+                        else:
+                            # For single achievement, add directly
+                            achievement_percentages_notification["remaining_time"] = remaining_time
+
             body_obj = {
                 "text": text,
                 "action": action,
@@ -4230,6 +4387,7 @@ async def handle_http(reader: asyncio.StreamReader, writer: asyncio.StreamWriter
                 "runs": runs_for_overlay,
                 "achievement": achievement_notification,
                 "playtime": playtime_notification,
+                "achievement_percentages": achievement_percentages_notification,
             }
             body_bytes = json.dumps(body_obj).encode("utf-8")
             headers = (
