@@ -31,8 +31,9 @@ The OBS Socket Sentinel now includes a Steam achievement notification system tha
 3. **View the result**: Open http://localhost:8088 in your browser to see the golden achievement notification appear at the top of the page.
 
 ### What You Should See
-- Golden notification slides down from top center
-- Shows achievement title, description, and game name
+- **Large golden notification** slides down from top center (much bigger fonts!)
+- Shows achievement title, description, and game name clearly
+- **Xbox achievement sound** plays automatically
 - Auto-hides after 10 seconds with glow animation
 - Test script confirms API success and overlay data
 

@@ -314,7 +314,7 @@ def requires_auth(path: str, method: str = "GET") -> bool:
     - Other endpoints not explicitly listed as public
     """
     # All POST requests require auth
-    if method.upper() != "GET":
+    if method.upper() not in ("GET", "HEAD"):
         return True
     
     # Public GET endpoints for browser overlay and scripts
@@ -323,7 +323,8 @@ def requires_auth(path: str, method: str = "GET") -> bool:
         path.startswith("/config") or
         path.startswith("/dsounds/") or 
         path.startswith("/dvideos/") or 
-        path.startswith("/dmemes/")):
+        path.startswith("/dmemes/") or
+        path.startswith("/sounds/")):
         return False
     
     # Default: require auth for unknown endpoints
@@ -3188,6 +3189,8 @@ async def display_achievement_notification(achievement_data: Dict[str, Any]) -> 
     
     async with state_lock:
         current_achievement = achievement_data.copy()
+        # Add sound URL for achievement notifications
+        current_achievement["sound"] = "/sounds/achievement-unlocked-xbox.mp3"
         achievement_display_until = time.time() + ACHIEVEMENT_DISPLAY_DURATION
         
         logging.info(f"🏆 [achievement] Displaying notification: {achievement_data.get('achievement_title', 'Unknown')} from {achievement_data.get('game_name', 'Unknown Game')}")
@@ -3623,6 +3626,7 @@ async def handle_http(reader: asyncio.StreamReader, writer: asyncio.StreamWriter
       - GET /overlay      => JSON with latest overlay text + action + sound + meme + project + runs + achievements
       - GET /config       => serves raw YAML config
       - POST /achievement => accepts Steam achievement notification data (requires auth)
+      - GET /sounds/<...> => serves local sound files from _data/sounds/
       - GET /dsounds/<...> => serves cached Discord audio files
       - GET /dvideos/<...> => serves cached Discord video files
       - GET /dmemes/<...>  => serves cached Discord meme/image files
@@ -4038,6 +4042,60 @@ async def handle_http(reader: asyncio.StreamReader, writer: asyncio.StreamWriter
                 mime = mime or "image/png"
             except Exception as e:
                 logging.error(f"❗ [http] Failed to read cached meme file {fs_path}: {e}", exc_info=True)
+                resp = b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                writer.write(resp)
+                await writer.drain()
+                return
+
+            headers = (
+                "HTTP/1.1 200 OK\r\n"
+                f"Content-Type: {mime}\r\n"
+                f"Content-Length: {len(body_bytes)}\r\n"
+                "Connection: close\r\n"
+                "\r\n"
+            )
+            writer.write(headers.encode("ascii") + body_bytes)
+            await writer.drain()
+
+        elif path.startswith("/sounds/"):
+            # Static served local sound files  
+            import os.path
+            rel = path[len("/sounds/"):].lstrip("/")
+            sounds_dir = "/sounds"
+            fs_path = os.path.join(sounds_dir, rel)
+            
+            # Security: ensure it's inside sounds directory
+            if not os.path.abspath(fs_path).startswith(os.path.abspath(sounds_dir)):
+                logging.warning(f"🚫 [http] Attempted path escape for sounds: {fs_path}")
+                resp = b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                writer.write(resp)
+                await writer.drain()
+                return
+
+            if not os.path.exists(fs_path):
+                logging.warning(f"⚠️ [http] Sound file not found: {fs_path}")
+                resp = b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                writer.write(resp)
+                await writer.drain()
+                return
+
+            # Determine MIME type
+            if fs_path.endswith('.mp3'):
+                mime = "audio/mpeg"
+            elif fs_path.endswith('.wav'):
+                mime = "audio/wav"
+            elif fs_path.endswith('.ogg'):
+                mime = "audio/ogg"
+            elif fs_path.endswith('.m4a'):
+                mime = "audio/mp4"
+            else:
+                mime = "audio/mpeg"  # Default fallback
+
+            try:
+                with open(fs_path, 'rb') as f:
+                    body_bytes = f.read()
+            except Exception as e:
+                logging.error(f"❗ [http] Failed to read sound file {fs_path}: {e}", exc_info=True)
                 resp = b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
                 writer.write(resp)
                 await writer.drain()

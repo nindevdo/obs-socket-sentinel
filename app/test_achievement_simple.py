@@ -35,6 +35,7 @@ def send_achievement(title=None):
     try:
         # Send achievement
         print(f"📤 Sending: {achievement_title}")
+        print("   📏 This will display a LARGE notification with sound")
         
         data = json.dumps(achievement).encode('utf-8')
         headers = {
