@@ -23,10 +23,38 @@ def send_achievement_percentages():
         "app_id": "440", 
         "game_name": "Team Fortress 2",
         "achievements": [
-            {"name": "TF_GET_HEALPOINTS", "percent": "89.9"},
-            {"name": "TF_WIN_2FORT", "percent": "53.6"},
-            {"name": "TF_PLAY_GAME_FRIENDS", "percent": "12.3"},
-            {"name": "TF_GET_HEADSHOTS", "percent": "76.8"}
+            {
+                "name": "TF_GET_HEALPOINTS", 
+                "display_name": "Master Medic", 
+                "description": "Accumulate 25000 heal points in a single life",
+                "icon": "https://steamcdn-a.akamaihd.net/steamcommunity/public/images/apps/440/achievements/TF_GET_HEALPOINTS.jpg",
+                "icon_gray": "https://steamcdn-a.akamaihd.net/steamcommunity/public/images/apps/440/achievements/TF_GET_HEALPOINTS_gray.jpg",
+                "percent": "89.9"
+            },
+            {
+                "name": "TF_WIN_2FORT", 
+                "display_name": "2Fort Fortress",
+                "description": "Play a complete round on 2Fort",
+                "icon": "https://steamcdn-a.akamaihd.net/steamcommunity/public/images/apps/440/achievements/TF_WIN_2FORT.jpg",
+                "icon_gray": "https://steamcdn-a.akamaihd.net/steamcommunity/public/images/apps/440/achievements/TF_WIN_2FORT_gray.jpg",
+                "percent": "53.6"
+            },
+            {
+                "name": "TF_PLAY_GAME_FRIENDS", 
+                "display_name": "Team Player",
+                "description": "Accumulate 1000 minutes of playtime with friends",
+                "icon": "https://steamcdn-a.akamaihd.net/steamcommunity/public/images/apps/440/achievements/TF_PLAY_GAME_FRIENDS.jpg",
+                "icon_gray": "https://steamcdn-a.akamaihd.net/steamcommunity/public/images/apps/440/achievements/TF_PLAY_GAME_FRIENDS_gray.jpg",
+                "percent": "12.3"
+            },
+            {
+                "name": "TF_GET_HEADSHOTS", 
+                "display_name": "Sniper Elite",
+                "description": "Get 25 headshots as a Sniper",
+                "icon": "https://steamcdn-a.akamaihd.net/steamcommunity/public/images/apps/440/achievements/TF_GET_HEADSHOTS.jpg",
+                "icon_gray": "https://steamcdn-a.akamaihd.net/steamcommunity/public/images/apps/440/achievements/TF_GET_HEADSHOTS_gray.jpg",
+                "percent": "76.8"
+            }
         ],
         "timestamp": int(time.time()),
         "timestamp_iso": time.strftime('%Y-%m-%dT%H:%M:%S.000Z', time.gmtime()),

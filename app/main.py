@@ -3447,7 +3447,7 @@ async def display_achievement_percentages(achievement_data: Dict[str, Any]) -> N
         # Log what we're displaying
         game_name = achievement_data.get('game_name', 'Unknown')
         achievements_list = achievement_data.get('achievements', [])
-        achievement_names = [f"{a.get('name', 'Unknown')} ({a.get('percent', 0)}%)" for a in achievements_list]
+        achievement_names = [f"{a.get('display_name', a.get('name', 'Unknown'))} ({a.get('percent', 0)}%)" for a in achievements_list]
         
         logging.info(f"🏆 [achievement_percentages] Displaying {len(achievements_list)} achievements for {game_name}: {', '.join(achievement_names)}")
         
@@ -4114,7 +4114,7 @@ async def handle_http(reader: asyncio.StreamReader, writer: asyncio.StreamWriter
                 # Validate each achievement in the array
                 achievements_list = achievement_data['achievements']
                 for i, achievement in enumerate(achievements_list):
-                    required_achievement_fields = ["name", "percent"]
+                    required_achievement_fields = ["name", "percent", "display_name", "description", "icon"]
                     missing_achievement_fields = [field for field in required_achievement_fields if field not in achievement]
                     
                     if missing_achievement_fields:
