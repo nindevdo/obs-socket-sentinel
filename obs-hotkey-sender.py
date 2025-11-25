@@ -229,9 +229,13 @@ def setup_default_hotkeys(games: Dict) -> Dict[str, tuple]:
         'revive': 'f5',
         'start': 'f9',
         'clear': 'f10',
+        'undo': 'f11',
         'run_start': 'ctrl+f1',
         'run_end': 'ctrl+f2'
     }
+    
+    # System actions that work across all games  
+    system_actions = {'undo', 'clear', 'start'}
     
     for game_key, game_config in games.items():
         actions = game_config.get('actions', {})
@@ -241,6 +245,15 @@ def setup_default_hotkeys(games: Dict) -> Dict[str, tuple]:
                 hotkeys[hotkey] = (game_key, action_key)
                 logging.info(f"🔑 Mapped {hotkey} → {game_key}:{action_key}")
     
+    # Add system actions for the first game (they work globally anyway)
+    if games:
+        first_game_key = next(iter(games.keys()))
+        for action_key in system_actions:
+            if action_key in default_mappings:
+                hotkey = default_mappings[action_key] 
+                hotkeys[hotkey] = (first_game_key, action_key)
+                logging.info(f"🔑 Mapped {hotkey} → SYSTEM:{action_key} (via {first_game_key})")
+    
     return hotkeys
 
 
@@ -248,12 +261,16 @@ def handle_hotkey(config: Config, game_key: str, action_key: str, current_scene:
     """Handle a hotkey press"""
     global current_game
     
-    # Scene gating: only allow actions for the current game
-    scene_game = determine_current_game(current_scene, games_config)
+    # System actions (undo, clear, start) work globally regardless of scene
+    system_actions = {'undo', 'clear', 'start'}
     
-    if scene_game != game_key:
-        logging.info(f"🚫 Ignoring {game_key}:{action_key} - current scene '{current_scene}' maps to game '{scene_game}'")
-        return
+    if action_key not in system_actions:
+        # Scene gating: only allow game-specific actions for the current game
+        scene_game = determine_current_game(current_scene, games_config)
+        
+        if scene_game != game_key:
+            logging.info(f"🚫 Ignoring {game_key}:{action_key} - current scene '{current_scene}' maps to game '{scene_game}'")
+            return
     
     logging.info(f"🎯 Executing {game_key}:{action_key} for scene '{current_scene}'")
     success = send_tcp_message(config, game_key, action_key)

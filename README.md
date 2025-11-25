@@ -5,6 +5,7 @@ OBS overlay system with Discord integration that triggers videos, sounds, and me
 ## Features
 
 - **Real-time Overlay**: Display action counts with emojis (kills, deaths, etc.)
+- **Undo System**: Reverse accidental button presses with F11 undo hotkey
 - **Discord Integration**: Automatically fetch and cache media from Discord messages
 - **YouTube Video Support**: Play YouTube videos triggered by emoji reactions
 - **Run Tracking**: Track gaming session statistics with visual run panels

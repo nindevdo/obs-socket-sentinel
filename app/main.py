@@ -92,6 +92,10 @@ last_overlay_output: str = ""           # current overlay text
 last_action: str = ""                   # last action key
 last_project: str = ""                  # last project/game key used for overlay
 
+# Action history for undo functionality
+action_history: List[Dict[str, Any]] = []  # List of action records for undo
+MAX_UNDO_HISTORY = 50  # Maximum number of actions to keep in undo history
+
 # Chapter file/session state
 current_chapter_file: Optional[Path] = None
 session_start_wall: Optional[float] = None  # time.time() when "start" was received
@@ -380,6 +384,10 @@ def load_overlay_config() -> None:
     for gconf in GAMES_CONFIG.values():
         acts = gconf.get("actions") or {}
         ALL_ACTION_KEYS.update(acts.keys())
+    
+    # Add special system actions that are always available
+    ALL_ACTION_KEYS.add("undo")
+    ALL_ACTION_KEYS.add("clear")
 
     if not ALL_ACTION_KEYS:
         logging.error("❌ No actions defined under any games.*.actions.")
@@ -3009,6 +3017,162 @@ async def stop_all_runs() -> None:
 
 
 # -----------------------------
+# UNDO HELPERS
+# -----------------------------
+def add_action_to_history(action: str, project_key: str) -> None:
+    """
+    Add an action to the undo history.
+    """
+    global action_history
+    
+    # Record the action for potential undo
+    action_record = {
+        "action": action,
+        "project_key": project_key,
+        "timestamp": time.time(),
+        "original_count": action_counts.get((project_key, action.lower()), 0),
+    }
+    
+    action_history.append(action_record)
+    
+    # Trim history to maximum size
+    if len(action_history) > MAX_UNDO_HISTORY:
+        action_history.pop(0)
+    
+    logging.info(f"📝 [undo] Added action to history: {action} for {project_key} (history size: {len(action_history)})")
+
+
+def reverse_run_event(project_key: str, action_key: str) -> None:
+    """
+    Reverse run stats for an undone action (opposite of register_run_event).
+    """
+    run_num = current_run_by_project.get(project_key)
+    if not run_num:
+        return  # no active run
+
+    key = (project_key, run_num)
+    stats = run_stats_by_project.get(key)
+    if not stats:
+        return
+
+    # Decrement events count
+    stats["events"] = max(0, stats.get("events", 0) - 1)
+
+    ak = action_key.lower()
+    
+    # Reverse specific action stats
+    if ak in RUN_KILL_ACTIONS:
+        stats["kills"] = max(0, stats.get("kills", 0) - 1)
+    if ak in RUN_DEATH_ACTIONS:
+        stats["deaths"] = max(0, stats.get("deaths", 0) - 1)
+    if ak == "headshot":
+        stats["headshots"] = max(0, stats.get("headshots", 0) - 1)
+
+    logging.info(f"↩️ [undo] Reversed run stats for action={action_key} in project={project_key}, run={run_num}")
+
+
+async def undo_last_action() -> bool:
+    """
+    Undo the last action in the history.
+    Returns True if an action was undone, False if no actions to undo.
+    """
+    global action_history, action_counts, last_overlay_output, last_action, last_project
+    
+    if not action_history:
+        logging.info("⚠️ [undo] No actions in history to undo")
+        return False
+    
+    # Get the last action from history
+    last_action_record = action_history.pop()
+    action = last_action_record["action"]
+    project_key = last_action_record["project_key"]
+    original_count = last_action_record["original_count"]
+    
+    logging.info(f"↩️ [undo] Undoing last action: {action} for project {project_key}")
+    
+    # Reverse the action count
+    count_key = (project_key, action.lower())
+    current_count = action_counts.get(count_key, 0)
+    
+    if current_count > 0:
+        new_count = current_count - 1
+        if new_count == 0:
+            # Remove the entry entirely if count reaches 0
+            action_counts.pop(count_key, None)
+        else:
+            action_counts[count_key] = new_count
+    
+    # Reverse run stats if applicable
+    if action.lower() not in ["clear", "start", "run_start", "run_end", "run_stop"]:
+        reverse_run_event(project_key, action.lower())
+    
+    # Append undo entry to chapter file
+    try:
+        await append_chapter_line(f"UNDO: {action}", project_key)
+    except Exception as e:
+        logging.warning(f"Failed to append undo to chapter file: {e}")
+    
+    # Update overlay to show current state
+    # Find the most recent action for this project to display
+    most_recent_action = None
+    most_recent_project = None
+    
+    # Look through action_counts to find what should be displayed
+    for (proj, act), count in action_counts.items():
+        if proj == project_key and count > 0:
+            most_recent_action = act
+            most_recent_project = proj
+            break
+    
+    if most_recent_action and most_recent_project:
+        # Update overlay with the current highest count action for this project
+        await update_overlay_from_counts(most_recent_action, most_recent_project)
+    else:
+        # No actions left for this project, clear overlay
+        async with state_lock:
+            last_overlay_output = "Undone"
+            last_action = "undo"
+            last_project = project_key
+            
+        logging.info(f"🧽 [undo] No actions remaining for project {project_key}, showing 'Undone' message")
+    
+    return True
+
+
+async def update_overlay_from_counts(action_key: str, project_key: str) -> None:
+    """
+    Update overlay display based on current action counts (used by undo).
+    """
+    count_key = (project_key, action_key.lower())
+    count = action_counts.get(count_key, 0)
+    
+    # Look up emoji for this game
+    game_conf = GAMES_CONFIG.get(project_key, {})
+    actions_map = (game_conf.get("actions") or {})
+    emoji = actions_map.get(action_key.lower(), "")
+    
+    output = f"{emoji} {action_key}".strip()
+    if count > 1:
+        output += f" x{count}"
+    
+    async with state_lock:
+        global last_overlay_output, last_action, last_project, last_sound, last_meme_url, last_video_url, last_video_duration, last_audio_duration
+        
+        last_overlay_output = output
+        last_action = action_key.lower()
+        last_project = project_key
+        
+        # Clear media for undo - no need to replay media
+        last_sound = None
+        last_meme_url = None 
+        last_video_url = None
+        last_video_duration = None
+        last_audio_duration = None
+    
+    logging.info(f"🔄 [undo] Updated overlay from counts: {output} for project {project_key}")
+
+
+# -----------------------------
 # OVERLAY STATE
 # -----------------------------
 async def update_live_overlay(action: str, project_key: str) -> None:
@@ -3023,6 +3187,9 @@ async def update_live_overlay(action: str, project_key: str) -> None:
 
             # Reset per-action overlay counts
             action_counts.clear()
+            
+            # Clear action history
+            action_history.clear()
 
             # Reset all run-related state
             run_counters.clear()
@@ -3054,6 +3221,10 @@ async def update_live_overlay(action: str, project_key: str) -> None:
         count_key = (project_key, key)
         count = action_counts.get(count_key, 0) + 1
         action_counts[count_key] = count
+        
+        # Add to undo history (only for actions that change counts, not special actions)
+        if key not in ["clear", "undo"]:
+            add_action_to_history(action, project_key)
 
         # look up emoji for this game
         game_conf = GAMES_CONFIG.get(project_key, {})
@@ -3179,6 +3350,23 @@ async def handle_action(action: str, project: Optional[str]) -> None:
 
     logging.info(f"🎯 [handler] Received action={action} for project={project_key}")
     lower = action.lower()
+
+    # ---- Undo action ----
+    if lower == "undo":
+        success = await undo_last_action()
+        if not success:
+            # Show message that there's nothing to undo
+            async with state_lock:
+                global last_overlay_output, last_action, last_project, last_sound, last_meme_url, last_video_url, last_video_duration, last_audio_duration
+                last_overlay_output = "Nothing to undo"
+                last_action = "undo"
+                last_project = project_key
+                last_sound = None
+                last_meme_url = None
+                last_video_url = None
+                last_video_duration = None
+                last_audio_duration = None
+        return
 
     # ---- Run control actions ----
     if lower == "run_start":

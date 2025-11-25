@@ -138,18 +138,23 @@ local function make_hotkey_callback(game_key, action_name)
 		local scene = normalize_name(scene_name)
 		local game = normalize_name(game_key)
 
-		-- Scene gating: only fire when this game matches the current scene
-		if scene ~= game then
-			log_info(
-				string.format(
-					"Ignoring [%s:%s] because scene '%s' != game '%s'",
-					game_key,
-					action_name,
-					scene_name,
-					game_key
+		-- System actions (undo, clear, start) work globally regardless of scene
+		local system_actions = {undo = true, clear = true, start = true}
+		
+		if not system_actions[action_name] then
+			-- Scene gating: only fire when this game matches the current scene for regular actions
+			if scene ~= game then
+				log_info(
+					string.format(
+						"Ignoring [%s:%s] because scene '%s' != game '%s'",
+						game_key,
+						action_name,
+						scene_name,
+						game_key
+					)
 				)
-			)
-			return
+				return
+			end
 		end
 
 		log_info(
@@ -280,6 +285,7 @@ end
 ----------------------------------------------------
 
 local function register_hotkeys()
+	-- Register game-specific actions
 	for game_key, g in pairs(GAMES) do
 		hotkey_ids[game_key] = hotkey_ids[game_key] or {}
 		for _, action_name in ipairs(g.actions or {}) do
@@ -293,6 +299,26 @@ local function register_hotkeys()
 				log_info("Registered hotkey: " .. label)
 			else
 				log_warn("Failed hotkey register: " .. internal_id)
+			end
+		end
+	end
+	
+	-- Register system actions for the first game (they work globally)
+	local first_game = next(GAMES)
+	if first_game then
+		local system_actions = {"undo", "clear", "start"}
+		for _, action_name in ipairs(system_actions) do
+			local internal_id = "socket_sentinel_system_" .. action_name
+			local label = string.format("Socket Sentinel [SYSTEM]: %s", action_name)
+
+			local id = obs.obs_hotkey_register_frontend(internal_id, label, make_hotkey_callback(first_game, action_name))
+
+			if id then
+				hotkey_ids[first_game] = hotkey_ids[first_game] or {}
+				hotkey_ids[first_game][action_name] = id
+				log_info("Registered system hotkey: " .. label)
+			else
+				log_warn("Failed system hotkey register: " .. internal_id)
 			end
 		end
 	end
@@ -365,7 +391,14 @@ function script_load(settings)
 	-- restore hotkey bindings
 	for game_key, actions in pairs(hotkey_ids) do
 		for action_name, id in pairs(actions) do
-			local internal_id = "socket_sentinel_" .. game_key .. "_" .. action_name
+			local system_actions = {undo = true, clear = true, start = true}
+			local internal_id
+			if system_actions[action_name] then
+				internal_id = "socket_sentinel_system_" .. action_name
+			else
+				internal_id = "socket_sentinel_" .. game_key .. "_" .. action_name
+			end
+			
 			local a = obs.obs_data_get_array(settings, internal_id)
 			if a then
 				obs.obs_hotkey_load(id, a)
@@ -380,7 +413,14 @@ end
 function script_save(settings)
 	for game_key, actions in pairs(hotkey_ids) do
 		for action_name, id in pairs(actions) do
-			local internal_id = "socket_sentinel_" .. game_key .. "_" .. action_name
+			local system_actions = {undo = true, clear = true, start = true}
+			local internal_id
+			if system_actions[action_name] then
+				internal_id = "socket_sentinel_system_" .. action_name
+			else
+				internal_id = "socket_sentinel_" .. game_key .. "_" .. action_name
+			end
+			
 			local a = obs.obs_hotkey_save(id)
 			obs.obs_data_set_array(settings, internal_id, a)
 			obs.obs_data_array_release(a)
