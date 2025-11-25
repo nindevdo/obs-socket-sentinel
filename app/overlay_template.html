@@ -517,6 +517,77 @@
       animation: achievementGlow 2.5s ease-in-out infinite;
     }
 
+    /* Playtime notification styles (top-left corner) */
+    #playtime-notification {
+      position: fixed;
+      top: 2vh;
+      left: 2vw;
+      transform: translateX(-100%);
+      opacity: 0;
+      pointer-events: none;
+      z-index: 14000;
+      
+      max-width: 400px;
+      min-width: 300px;
+      background: linear-gradient(135deg, rgba(30, 144, 255, 0.9), rgba(65, 105, 225, 0.9));
+      border: 3px solid rgba(255, 255, 255, 0.8);
+      border-radius: 12px;
+      box-shadow: 
+        0 6px 24px rgba(0, 0, 0, 0.5),
+        0 0 15px rgba(30, 144, 255, 0.3),
+        inset 0 2px 6px rgba(255, 255, 255, 0.2);
+      
+      font-family: "ProggyClean Nerd Font", "Noto Color Emoji", sans-serif;
+      color: #ffffff;
+      
+      transition: 
+        transform 0.5s cubic-bezier(0.22, 1, 0.36, 1),
+        opacity 0.3s ease-out;
+    }
+
+    #playtime-notification.visible {
+      transform: translateX(0%);
+      opacity: 1;
+    }
+
+    .playtime-header {
+      background: rgba(0, 0, 0, 0.2);
+      padding: 8px 16px;
+      border-radius: 12px 12px 0 0;
+      border-bottom: 2px solid rgba(255, 255, 255, 0.3);
+      font-size: 0.9rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      text-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
+    }
+
+    .playtime-content {
+      padding: 16px;
+    }
+
+    .playtime-game {
+      font-size: 1.1rem;
+      font-weight: 700;
+      margin: 0 0 8px 0;
+      text-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
+    }
+
+    .playtime-time {
+      font-size: 1.4rem;
+      font-weight: 800;
+      margin: 0 0 4px 0;
+      color: #ffeb3b;
+      text-shadow: 0 2px 4px rgba(0, 0, 0, 0.5);
+    }
+
+    .playtime-hours {
+      font-size: 0.9rem;
+      opacity: 0.8;
+      font-weight: 500;
+      text-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
+    }
+
   </style>
 </head>
 
@@ -554,6 +625,16 @@
     </div>
   </div>
 
+  <!-- Playtime notification (top-left corner) -->
+  <div id="playtime-notification">
+    <div class="playtime-header">⏰ PLAYTIME</div>
+    <div class="playtime-content">
+      <div class="playtime-game" id="playtime-game"></div>
+      <div class="playtime-time" id="playtime-time"></div>
+      <div class="playtime-hours" id="playtime-hours"></div>
+    </div>
+  </div>
+
   <script>
     const POLL_INTERVAL_MS = 500;
 
@@ -577,6 +658,12 @@
     const achievementDescription = document.getElementById("achievement-description");
     const achievementGame = document.getElementById("achievement-game");
 
+    // Playtime notification elements
+    const playtimeNotification = document.getElementById("playtime-notification");
+    const playtimeGame = document.getElementById("playtime-game");
+    const playtimeTime = document.getElementById("playtime-time");
+    const playtimeHours = document.getElementById("playtime-hours");
+
     let lastText = null;
     let lastAction = null;
     let lastSound = null;
@@ -592,6 +679,10 @@
     // Achievement notification state
     let lastAchievement = null;
     let achievementTimeoutId = null;
+
+    // Playtime notification state
+    let lastPlaytime = null;
+    let playtimeTimeoutId = null;
 
     // Web Audio for GIF+audio
     let audioCtx = null;
@@ -1001,6 +1092,46 @@
       }
       
       console.log(`[achievement] Hidden`);
+    }
+
+    function showPlaytime(playtime) {
+      if (!playtime) {
+        hidePlaytime();
+        return;
+      }
+
+      // Clear any existing timeout
+      if (playtimeTimeoutId) {
+        clearTimeout(playtimeTimeoutId);
+        playtimeTimeoutId = null;
+      }
+
+      // Populate playtime data
+      playtimeGame.textContent = playtime.game_name || 'Unknown Game';
+      playtimeTime.textContent = playtime.total_playtime_readable || '';
+      playtimeHours.textContent = `${playtime.total_playtime_hours || 0} hours total`;
+
+      // Show the notification
+      playtimeNotification.classList.add('visible');
+      
+      // Auto-hide after remaining time or default duration (5 minutes)
+      const remainingTime = (playtime.remaining_time || 300) * 1000;
+      playtimeTimeoutId = setTimeout(() => {
+        hidePlaytime();
+      }, remainingTime);
+      
+      console.log(`[playtime] Showing: ${playtime.total_playtime_readable} for ${playtime.game_name} (${remainingTime/1000}s remaining)`);
+    }
+
+    function hidePlaytime() {
+      playtimeNotification.classList.remove('visible');
+      
+      if (playtimeTimeoutId) {
+        clearTimeout(playtimeTimeoutId);
+        playtimeTimeoutId = null;
+      }
+      
+      console.log(`[playtime] Hidden`);
     }
 
     function playSoundAndAnimate(soundUrl, memeUrl, videoUrl, audioDuration = 0) {
@@ -1437,6 +1568,7 @@
         const audioDuration = data.audio_duration || 0;
         const runs = Array.isArray(data.runs) ? data.runs : [];
         const achievement = data.achievement || null;
+        const playtime = data.playtime || null;
 
         // Handle achievement notifications
         const achievementChanged = !lastAchievement && achievement || 
@@ -1448,6 +1580,18 @@
         if (achievementChanged) {
           showAchievement(achievement);
           lastAchievement = achievement;
+        }
+
+        // Handle playtime notifications
+        const playtimeChanged = !lastPlaytime && playtime || 
+                               lastPlaytime && !playtime ||
+                               lastPlaytime && playtime && 
+                               (lastPlaytime.game_name !== playtime.game_name ||
+                                lastPlaytime.timestamp !== playtime.timestamp);
+        
+        if (playtimeChanged) {
+          showPlaytime(playtime);
+          lastPlaytime = playtime;
         }
 
         const prevRunsLen = lastRunsSnapshot.length;
