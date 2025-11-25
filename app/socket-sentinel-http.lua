@@ -299,27 +299,32 @@ end
 ----------------------------------------------------
 
 local function register_hotkeys()
-	-- OBS handles hotkey persistence automatically across script reloads
-	-- We just need to register them and track them in our local table
-	-- OBS will ignore duplicate registrations with the same internal_id
+	-- Only register hotkeys that don't already exist in our tracking table
+	-- This prevents duplicates when refresh config is clicked
 	
 	-- Register game-specific actions
 	for game_key, g in pairs(GAMES) do
 		hotkey_ids[game_key] = hotkey_ids[game_key] or {}
 		for _, action_name in ipairs(g.actions or {}) do
+			-- Skip if hotkey already exists in our tracking table
+			if hotkey_ids[game_key][action_name] then
+				-- log_info(string.format("Skipping existing hotkey: %s.%s", game_key, action_name))
+				goto continue
+			end
+			
 			local internal_id = "socket_sentinel_" .. game_key .. "_" .. action_name
 			local label = string.format("Socket Sentinel [%s]: %s", game_key, action_name)
 
-			-- OBS will automatically handle duplicates - if hotkey with this internal_id
-			-- already exists, obs_hotkey_register_frontend returns the existing one
 			local id = obs.obs_hotkey_register_frontend(internal_id, label, make_hotkey_callback(game_key, action_name))
 
 			if id then
 				hotkey_ids[game_key][action_name] = id
-				log_info("Registered hotkey: " .. label)
+				log_info("Registered NEW hotkey: " .. label)
 			else
 				log_warn("Failed hotkey register: " .. internal_id)
 			end
+			
+			::continue::
 		end
 	end
 	
@@ -329,6 +334,12 @@ local function register_hotkeys()
 		hotkey_ids[first_game] = hotkey_ids[first_game] or {}
 		local system_actions = {"undo", "clear", "start"}
 		for _, action_name in ipairs(system_actions) do
+			-- Skip if system hotkey already exists in our tracking table
+			if hotkey_ids[first_game][action_name] then
+				-- log_info(string.format("Skipping existing system hotkey: %s", action_name))
+				goto continue_system
+			end
+			
 			local internal_id = "socket_sentinel_system_" .. action_name
 			local label = string.format("Socket Sentinel [SYSTEM]: %s", action_name)
 
@@ -336,10 +347,12 @@ local function register_hotkeys()
 
 			if id then
 				hotkey_ids[first_game][action_name] = id
-				log_info("Registered system hotkey: " .. label)
+				log_info("Registered NEW system hotkey: " .. label)
 			else
 				log_warn("Failed system hotkey register: " .. internal_id)
 			end
+			
+			::continue_system::
 		end
 	end
 end
