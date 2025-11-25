@@ -9,7 +9,8 @@ import os
 import random
 import subprocess
 import time
-from typing import Dict, List, Any, Optional
+import datetime
+from typing import Dict, List, Any, Optional, Set
 
 import aiohttp  # make sure this is installed in the container
 import yaml     # pip install pyyaml
@@ -76,6 +77,134 @@ DISCORD_VIDEO_CACHE_DIR = Path(
 DISCORD_MEME_CACHE_DIR = Path(
     os.getenv("DISCORD_MEME_CACHE_DIR", "/discord/discord_memes")
 )
+
+# Failed video tracking for faster startup
+FAILED_VIDEOS_LOG = DISCORD_VIDEO_CACHE_DIR / "failed_videos.json"
+failed_video_urls: Set[str] = set()
+failed_video_details: Dict[str, Dict[str, Any]] = {}
+
+async def load_failed_videos() -> None:
+    """Load the list of previously failed video URLs to skip on startup."""
+    global failed_video_urls, failed_video_details
+    
+    try:
+        if FAILED_VIDEOS_LOG.exists():
+            with open(FAILED_VIDEOS_LOG, 'r') as f:
+                data = json.load(f)
+                
+                # Backward compatibility - handle old format
+                if 'failed_urls' in data and isinstance(data['failed_urls'], list):
+                    failed_video_urls = set(data['failed_urls'])
+                    failed_video_details = {}
+                    for url in failed_video_urls:
+                        failed_video_details[url] = {
+                            'first_failed': '2025-11-25T00:00:00',  # Default for old entries
+                            'last_failed': data.get('last_updated', '2025-11-25T00:00:00'),
+                            'failure_count': 1,
+                            'error_type': 'legacy_unknown',
+                            'error_message': 'Migrated from old format'
+                        }
+                else:
+                    # New detailed format
+                    failed_video_details = data.get('failed_videos', {})
+                    failed_video_urls = set(failed_video_details.keys())
+                
+                logging.info(f"📋 [startup] Loaded {len(failed_video_urls)} failed video URLs to skip")
+        else:
+            failed_video_urls = set()
+            failed_video_details = {}
+            logging.info("📋 [startup] No failed video log found, starting fresh")
+    except Exception as e:
+        logging.error(f"❗ [startup] Error loading failed videos log: {e}")
+        failed_video_urls = set()
+        failed_video_details = {}
+
+async def save_failed_videos() -> None:
+    """Save the detailed list of failed video URLs to disk."""
+    global failed_video_urls, failed_video_details
+    
+    try:
+        DISCORD_VIDEO_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        
+        # Generate statistics
+        total_failures = sum(details.get('failure_count', 1) for details in failed_video_details.values())
+        error_types = {}
+        for details in failed_video_details.values():
+            error_type = details.get('error_type', 'unknown')
+            error_types[error_type] = error_types.get(error_type, 0) + 1
+        
+        # Most recent failures for display
+        recent_failures = []
+        for url, details in failed_video_details.items():
+            recent_failures.append({
+                'url': url,
+                'last_failed': details.get('last_failed', ''),
+                'error_type': details.get('error_type', 'unknown'),
+                'failure_count': details.get('failure_count', 1)
+            })
+        recent_failures.sort(key=lambda x: x['last_failed'], reverse=True)
+        recent_failures = recent_failures[:10]  # Keep top 10 most recent
+        
+        data = {
+            'failed_videos': failed_video_details,
+            'statistics': {
+                'total_failed_urls': len(failed_video_urls),
+                'total_failure_attempts': total_failures,
+                'error_type_breakdown': error_types,
+                'startup_skip_rate': f"{len(failed_video_urls)}/{len(failed_video_urls) + 100}",  # Estimated
+                'recent_failures': recent_failures
+            },
+            'metadata': {
+                'last_updated': datetime.datetime.now().isoformat(),
+                'format_version': '2.0',
+                'generator': 'obs-socket-sentinel'
+            }
+        }
+        
+        with open(FAILED_VIDEOS_LOG, 'w') as f:
+            json.dump(data, f, indent=2)
+        logging.info(f"💾 [startup] Saved {len(failed_video_urls)} failed video URLs with detailed stats to {FAILED_VIDEOS_LOG}")
+    except Exception as e:
+        logging.error(f"❗ [startup] Error saving failed videos log: {e}")
+
+async def add_failed_video(url: str, error_type: str = "unknown", error_message: str = "No details") -> None:
+    """Add a URL to the failed videos list with detailed error information."""
+    global failed_video_urls, failed_video_details
+    
+    now = datetime.datetime.now().isoformat()
+    
+    if url not in failed_video_urls:
+        failed_video_urls.add(url)
+        failed_video_details[url] = {
+            'first_failed': now,
+            'last_failed': now,
+            'failure_count': 1,
+            'error_type': error_type,
+            'error_message': error_message,
+            'video_id': url.split('/')[-1].split('?')[0] if 'youtube.com' in url else 'direct_video'
+        }
+        logging.warning(f"📝 [startup] Added failed video to skip list: {url[:50]}... (Type: {error_type})")
+    else:
+        # Update existing entry
+        details = failed_video_details[url]
+        details['last_failed'] = now
+        details['failure_count'] = details.get('failure_count', 1) + 1
+        details['error_type'] = error_type  # Update to most recent error
+        details['error_message'] = error_message
+        logging.warning(f"📝 [startup] Updated failed video ({details['failure_count']} failures): {url[:50]}... (Type: {error_type})")
+    
+    await save_failed_videos()
+
+async def remove_failed_video(url: str) -> None:
+    """Remove a URL from the failed videos list (if it works again)."""
+    global failed_video_urls, failed_video_details
+    
+    if url in failed_video_urls:
+        failed_video_urls.remove(url)
+        details = failed_video_details.pop(url, {})
+        failure_count = details.get('failure_count', 1)
+        logging.info(f"✅ [startup] Removed recovered video from skip list: {url[:50]}... (was {failure_count} failures)")
+        await save_failed_videos()
 
 # Loaded from YAML
 GAMES_CONFIG: Dict[str, Dict[str, Any]] = {}
@@ -717,6 +846,12 @@ async def warm_cache_all_media() -> None:
     
     for url in video_urls:
         try:
+            # Skip URLs that previously failed to download
+            if url in failed_video_urls:
+                video_skipped += 1
+                logging.debug(f"⏭️ [warm_cache] Skipping previously failed video: {url[:50]}...")
+                continue
+                
             h = hashlib.sha256(url.encode("utf-8")).hexdigest()[:32]
             fs_path = DISCORD_VIDEO_CACHE_DIR / f"{h}.mp4"
             
@@ -725,6 +860,9 @@ async def warm_cache_all_media() -> None:
                 duration = await get_video_duration_from_file(str(fs_path))
                 if duration is not None and duration > 0:  # Accept any positive duration
                     video_skipped += 1
+                    # Remove from failed list if it exists and works now
+                    if url in failed_video_urls:
+                        await remove_failed_video(url)
                     continue
                 else:
                     # Remove invalid cached video (corrupted, not short)
@@ -734,15 +872,22 @@ async def warm_cache_all_media() -> None:
                     except Exception:
                         pass
                 
-            result, duration = await cache_discord_video(url)
+            result, duration, error_type, error_message = await cache_discord_video(url)
             if result and duration is not None:
                 video_cached += 1
+                # Remove from failed list if it was there (video recovered)
+                if url in failed_video_urls:
+                    await remove_failed_video(url)
             else:
                 video_failed += 1
                 logging.warning(f"[warm_cache] Failed to cache video: {url}")
+                # Add to failed list for next startup with detailed error info
+                await add_failed_video(url, error_type or "unknown", error_message or "No details")
         except Exception as e:
             video_failed += 1
             logging.error(f"[warm_cache] Error caching video {url}: {e}")
+            # Add to failed list for next startup
+            await add_failed_video(url, "exception", str(e))
     
     logging.info(f"[warm_cache] Complete! Audio: {audio_cached} cached, {audio_skipped} skipped, {audio_failed} failed. Video: {video_cached} cached, {video_skipped} skipped, {video_failed} failed")
 
@@ -1953,7 +2098,7 @@ async def fetch_random_discord_video(action_key: str, project: Optional[str]) ->
                 f"action={action_key}: {url} (weight={w}, total={total_weight})"
             )
             # Cache the video before returning
-            local_url, duration = await cache_discord_video(url)
+            local_url, duration, _, _ = await cache_discord_video(url)
             if local_url:
                 logging.info(
                     f"📺 [discord] Using local cached video URL: {local_url} "
@@ -1971,7 +2116,7 @@ async def fetch_random_discord_video(action_key: str, project: Optional[str]) ->
         f"action={action_key}: {chosen}"
     )
     # Cache the fallback video
-    local_url, duration = await cache_discord_video(chosen)
+    local_url, duration, _, _ = await cache_discord_video(chosen)
     if local_url:
         logging.info(
             f"📺 [discord] Using fallback local cached video URL: {local_url} "
@@ -2137,7 +2282,7 @@ async def cache_discord_audio(url: str) -> Optional[str]:
     return None
 
 
-async def cache_discord_video(url: str) -> tuple[Optional[str], Optional[float]]:
+async def cache_discord_video(url: str) -> tuple[Optional[str], Optional[float], Optional[str], Optional[str]]:
     """
     Download a video URL (YouTube or direct) into an ephemeral cache directory and return
     a local HTTP path like /dvideos/<hashed>.mp4 that the overlay can play, plus duration.
@@ -2146,10 +2291,10 @@ async def cache_discord_video(url: str) -> tuple[Optional[str], Optional[float]]
     - Names are based on SHA256(url) + .mp4 extension
     - Uses yt-dlp for YouTube videos
     - Filters out videos shorter than 0.5 seconds (static images)
-    - Returns (local_path, duration_seconds)
+    - Returns (local_path, duration_seconds, error_type, error_message)
     """
     if not url:
-        return None, None
+        return None, None, "empty_url", "URL is empty"
 
     DISCORD_VIDEO_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -2175,7 +2320,7 @@ async def cache_discord_video(url: str) -> tuple[Optional[str], Optional[float]]
             except Exception:
                 pass
         else:
-            return f"/dvideos/{fname}", duration
+            return f"/dvideos/{fname}", duration, None, None
 
     # Check if it's a YouTube video
     is_youtube = bool(YOUTUBE_RE.search(url))
@@ -2200,10 +2345,10 @@ async def cache_discord_video(url: str) -> tuple[Optional[str], Optional[float]]
                         f"yt_dlp not installed; cannot download YouTube video {url[:50]}... "
                         f"Install it with 'pip install yt_dlp' to enable video caching."
                     )
-                    return None, None
+                    return None, None, "missing_ytdlp", "yt-dlp not installed"
 
-                async def _download_youtube(u: str) -> Optional[float]:
-                    def _inner() -> Optional[float]:
+                async def _download_youtube(u: str) -> tuple[Optional[float], Optional[str], Optional[str]]:
+                    def _inner() -> tuple[Optional[float], Optional[str], Optional[str]]:
                         ydl_opts = {
                             "format": "best[ext=mp4][height<=720]/best[height<=720]/best",
                             "outtmpl": str(fs_path),
@@ -2232,44 +2377,64 @@ async def cache_discord_video(url: str) -> tuple[Optional[str], Optional[float]]
                                 info = ydl.extract_info(u, download=True)
                                 if not info:
                                     logging.warning(f"❗ [yt-dlp] No info extracted for {u[:50]}...")
-                                    return None
+                                    return None, "no_info", "No info extracted"
                                     
                                 dur = info.get("duration")
                                 if dur is None:
                                     logging.warning(f"❗ [yt-dlp] No duration in info for {u[:50]}...")
-                                    return None
+                                    return None, "no_duration", "No duration in metadata"
                                 try:
                                     duration = float(dur)
                                     if duration > 0:
                                         logging.info(f"✅ [yt-dlp] Downloaded video: {u[:50]}... ({duration}s)")
-                                        return duration
+                                        return duration, None, None
                                     else:
                                         logging.warning(f"❗ [yt-dlp] Zero duration video: {u[:50]}...")
-                                        return None
+                                        return None, "zero_duration", f"Video has zero duration"
                                 except Exception as e:
                                     logging.error(f"❗ [yt-dlp] Duration parse error for {u[:50]}...: {e}")
-                                    return None
+                                    return None, "duration_parse_error", str(e)
                         except Exception as e:
+                            error_str = str(e)
                             logging.error(f"❗ [yt-dlp] Download failed for {u[:50]}...: {e}")
-                            return None
+                            
+                            # Categorize common yt-dlp errors
+                            if "Video unavailable" in error_str:
+                                if "private" in error_str.lower():
+                                    return None, "video_private", error_str
+                                elif "copyright" in error_str.lower():
+                                    return None, "copyright_claim", error_str
+                                elif "Terms of Service" in error_str or "ToS" in error_str:
+                                    return None, "tos_violation", error_str
+                                else:
+                                    return None, "video_unavailable", error_str
+                            elif "Sign in to confirm your age" in error_str:
+                                return None, "age_restricted", error_str
+                            elif "This video is no longer available" in error_str:
+                                return None, "video_removed", error_str
+                            else:
+                                return None, "ytdlp_error", error_str
 
                     return await asyncio.to_thread(_inner)
 
-                duration = await _download_youtube(url)
+                duration, error_type, error_message = await _download_youtube(url)
                 if duration is not None and fs_path.exists() and fs_path.stat().st_size > 0:
                     logging.info(f"📹 [warm_cache] Downloaded YouTube video {url[:50]}... -> {fs_path} (duration={duration}s, size={fs_path.stat().st_size} bytes)")
-                    return f"/dvideos/{fname}", duration
+                    return f"/dvideos/{fname}", duration, None, None
                 else:
                     if attempt < max_retries - 1:
                         continue
-                    logging.warning(f"❗ [discord] yt-dlp failed to download or video too short: {url[:50]}...")
+                    # Use captured error details or fallback
+                    final_error_type = error_type or "ytdlp_failed"
+                    final_error_message = error_message or "yt-dlp failed to download or video too short"
+                    logging.warning(f"❗ [discord] {final_error_message}: {url[:50]}...")
                     # Clean up failed download
                     if fs_path.exists():
                         try:
                             fs_path.unlink()
                         except Exception:
                             pass
-                    return None, None
+                    return None, None, final_error_type, final_error_message
 
             else:
                 # Direct video file - download it
@@ -2309,8 +2474,8 @@ async def cache_discord_video(url: str) -> tuple[Optional[str], Optional[float]]
                             pass
                         if attempt < max_retries - 1:
                             continue
-                        return None, None
-                    return f"/dvideos/{fname}", duration
+                        return None, None, "video_too_short", f"Video duration {duration}s is too short"
+                    return f"/dvideos/{fname}", duration, None, None
                 else:
                     logging.warning(f"❗ [discord] Empty video data for {url[:50]}...")
                     continue
@@ -2331,7 +2496,7 @@ async def cache_discord_video(url: str) -> tuple[Optional[str], Optional[float]]
             logging.debug(f"🧹 [discord] Cleaned up partial video file {fs_path}")
         except Exception:
             pass
-    return None, None
+    return None, None, "download_failed", "All download attempts failed"
 
 
 async def cache_discord_meme(url: str) -> Optional[str]:
@@ -4390,6 +4555,10 @@ async def main() -> None:
     # ---- Discord cache bootstrap ----
     if DISCORD_BOT_TOKEN and DISCORD_CHANNEL_ID:
         logging.info("[discord] Bot token + channel id present; building initial meme/sound cache...")
+        
+        # Load failed videos list before warm caching
+        await load_failed_videos()
+        
         await refresh_discord_messages_cache()
         # Warm cache ALL media files on startup for instant playback
         logging.info("[warm_cache] Starting initial warm cache of all media...")
