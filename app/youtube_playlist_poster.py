@@ -60,6 +60,11 @@ class YouTubePlaylistPoster:
             'ignoreerrors': True,  # Skip unavailable videos
         }
         
+        # Add cookies if available
+        cookies_file = "/app/cookies.txt"
+        if os.path.exists(cookies_file):
+            ydl_opts["cookiefile"] = cookies_file
+        
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(playlist_url, download=False)

@@ -2199,6 +2199,14 @@ async def cache_discord_video(url: str) -> tuple[Optional[str], Optional[float]]
                             "extract_flat": False,
                             "ignoreerrors": False,
                         }
+                        
+                        # Add cookies if available
+                        cookies_file = "/app/cookies.txt"
+                        if os.path.exists(cookies_file):
+                            ydl_opts["cookiefile"] = cookies_file
+                            logging.info(f"[yt-dlp] Using cookies from {cookies_file}")
+                        else:
+                            logging.debug(f"[yt-dlp] No cookies file found at {cookies_file}")
                         try:
                             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                                 logging.info(f"📹 [yt-dlp] Extracting info for {u[:50]}...")
