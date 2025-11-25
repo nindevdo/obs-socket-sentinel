@@ -299,32 +299,27 @@ end
 ----------------------------------------------------
 
 local function register_hotkeys()
-	-- Don't clear existing hotkeys - preserve user's key mappings!
-	-- Only register hotkeys that don't already exist
+	-- OBS handles hotkey persistence automatically across script reloads
+	-- We just need to register them and track them in our local table
+	-- OBS will ignore duplicate registrations with the same internal_id
 	
 	-- Register game-specific actions
 	for game_key, g in pairs(GAMES) do
 		hotkey_ids[game_key] = hotkey_ids[game_key] or {}
 		for _, action_name in ipairs(g.actions or {}) do
-			-- Skip if hotkey already exists (preserve user mappings)
-			if hotkey_ids[game_key][action_name] then
-				log_info(string.format("Skipping existing hotkey: %s.%s", game_key, action_name))
-				goto continue
-			end
-			
 			local internal_id = "socket_sentinel_" .. game_key .. "_" .. action_name
 			local label = string.format("Socket Sentinel [%s]: %s", game_key, action_name)
 
+			-- OBS will automatically handle duplicates - if hotkey with this internal_id
+			-- already exists, obs_hotkey_register_frontend returns the existing one
 			local id = obs.obs_hotkey_register_frontend(internal_id, label, make_hotkey_callback(game_key, action_name))
 
 			if id then
 				hotkey_ids[game_key][action_name] = id
-				log_info("Registered NEW hotkey: " .. label)
+				log_info("Registered hotkey: " .. label)
 			else
 				log_warn("Failed hotkey register: " .. internal_id)
 			end
-			
-			::continue::
 		end
 	end
 	
@@ -334,12 +329,6 @@ local function register_hotkeys()
 		hotkey_ids[first_game] = hotkey_ids[first_game] or {}
 		local system_actions = {"undo", "clear", "start"}
 		for _, action_name in ipairs(system_actions) do
-			-- Skip if system hotkey already exists
-			if hotkey_ids[first_game][action_name] then
-				log_info(string.format("Skipping existing system hotkey: %s", action_name))
-				goto continue_system
-			end
-			
 			local internal_id = "socket_sentinel_system_" .. action_name
 			local label = string.format("Socket Sentinel [SYSTEM]: %s", action_name)
 
@@ -347,12 +336,10 @@ local function register_hotkeys()
 
 			if id then
 				hotkey_ids[first_game][action_name] = id
-				log_info("Registered NEW system hotkey: " .. label)
+				log_info("Registered system hotkey: " .. label)
 			else
 				log_warn("Failed system hotkey register: " .. internal_id)
 			end
-			
-			::continue_system::
 		end
 	end
 end
@@ -426,12 +413,33 @@ local function refresh_config()
 		)
 	end
 
-	-- Clean up hotkeys for removed games/actions
+	-- Only clean up on manual refresh (not on script startup)
+	-- This preserves hotkeys across OBS restarts
 	cleanup_removed_hotkeys()
 	
-	-- Register new hotkeys (existing ones are preserved)
+	-- Register hotkeys (OBS handles duplicates automatically)
 	register_hotkeys()
 	log_info("✅ Configuration refresh complete")
+end
+
+local function initial_load_config()
+	log_info("🔄 Loading initial configuration from server...")
+	init_games_from_server()
+
+	log_info(string.format("Loaded %d games from server", table_length(GAMES)))
+	for game_key, game_config in pairs(GAMES) do
+		log_info(
+			string.format(
+				"  %s: %d actions",
+				game_key,
+				#(game_config.actions or {})
+			)
+		)
+	end
+
+	-- Don't cleanup on initial load - preserve existing hotkeys
+	register_hotkeys()
+	log_info("✅ Initial configuration loaded")
 end
 
 function table_length(t)
@@ -508,8 +516,48 @@ function script_load(settings)
 	log_info("📡 Using secure HTTP POST instead of insecure TCP")
 	log_info("🔒 Authentication: " .. (SS_TOKEN ~= "" and "Enabled" or "⚠️  DISABLED"))
 	
-	-- Auto-load config on startup
-	refresh_config()
+	-- Use initial load on startup (preserves existing hotkeys)
+	initial_load_config()
+	
+	-- Restore hotkey bindings from saved settings (THIS IS THE KEY!)
+	for game_key, actions in pairs(hotkey_ids) do
+		for action_name, id in pairs(actions) do
+			local system_actions = {undo = true, clear = true, start = true}
+			local internal_id
+			if system_actions[action_name] then
+				internal_id = "socket_sentinel_system_" .. action_name
+			else
+				internal_id = "socket_sentinel_" .. game_key .. "_" .. action_name
+			end
+			
+			local a = obs.obs_data_get_array(settings, internal_id)
+			if a then
+				obs.obs_hotkey_load(id, a)
+				obs.obs_data_array_release(a)
+			end
+		end
+	end
+	
+	log_info("✅ Script load complete with preserved hotkey bindings")
+end
+
+function script_save(settings)
+	-- Save hotkey bindings so they persist across OBS restarts
+	for game_key, actions in pairs(hotkey_ids) do
+		for action_name, id in pairs(actions) do
+			local system_actions = {undo = true, clear = true, start = true}
+			local internal_id
+			if system_actions[action_name] then
+				internal_id = "socket_sentinel_system_" .. action_name
+			else
+				internal_id = "socket_sentinel_" .. game_key .. "_" .. action_name
+			end
+			
+			local a = obs.obs_hotkey_save(id)
+			obs.obs_data_set_array(settings, internal_id, a)
+			obs.obs_data_array_release(a)
+		end
+	end
 end
 
 function script_unload()
