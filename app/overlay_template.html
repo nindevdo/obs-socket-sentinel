@@ -403,6 +403,117 @@
       }
     }
 
+    /* ============================= */
+    /* ACHIEVEMENT NOTIFICATION      */
+    /* ============================= */
+
+    #achievement-notification {
+      position: fixed;
+      top: 2vh;
+      left: 50%;
+      transform: translateX(-50%) translateY(-100%);
+      opacity: 0;
+      pointer-events: none;
+      z-index: 15000;
+      
+      max-width: 90vw;
+      min-width: 600px;
+      background: linear-gradient(135deg, rgba(255, 215, 0, 0.95), rgba(255, 165, 0, 0.95));
+      border: 3px solid rgba(255, 255, 255, 0.8);
+      border-radius: 12px;
+      box-shadow: 
+        0 8px 32px rgba(0, 0, 0, 0.6),
+        0 0 20px rgba(255, 215, 0, 0.4),
+        inset 0 2px 8px rgba(255, 255, 255, 0.3);
+      
+      font-family: "ProggyClean Nerd Font", "Noto Color Emoji", sans-serif;
+      color: #1a1a1a;
+      
+      transition: 
+        transform 0.6s cubic-bezier(0.22, 1, 0.36, 1),
+        opacity 0.4s ease-out;
+    }
+
+    #achievement-notification.visible {
+      transform: translateX(-50%) translateY(0%);
+      opacity: 1;
+    }
+
+    .achievement-header {
+      background: rgba(0, 0, 0, 0.1);
+      padding: 8px 16px;
+      border-radius: 12px 12px 0 0;
+      border-bottom: 2px solid rgba(255, 255, 255, 0.3);
+      font-size: 0.9rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    .achievement-content {
+      display: flex;
+      padding: 16px;
+      gap: 16px;
+      align-items: center;
+    }
+
+    .achievement-icon {
+      width: 64px;
+      height: 64px;
+      border-radius: 8px;
+      background: rgba(255, 255, 255, 0.2);
+      border: 2px solid rgba(255, 255, 255, 0.4);
+      object-fit: contain;
+      flex-shrink: 0;
+    }
+
+    .achievement-details {
+      flex: 1;
+      min-width: 0;
+    }
+
+    .achievement-title {
+      font-size: 1.4rem;
+      font-weight: 700;
+      margin: 0 0 4px 0;
+      line-height: 1.2;
+      text-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+    }
+
+    .achievement-description {
+      font-size: 1rem;
+      margin: 0 0 8px 0;
+      opacity: 0.85;
+      line-height: 1.3;
+    }
+
+    .achievement-game {
+      font-size: 0.85rem;
+      font-weight: 600;
+      opacity: 0.7;
+      text-transform: uppercase;
+      letter-spacing: 0.03em;
+    }
+
+    @keyframes achievementGlow {
+      0%, 100% {
+        box-shadow: 
+          0 8px 32px rgba(0, 0, 0, 0.6),
+          0 0 20px rgba(255, 215, 0, 0.4),
+          inset 0 2px 8px rgba(255, 255, 255, 0.3);
+      }
+      50% {
+        box-shadow: 
+          0 12px 48px rgba(0, 0, 0, 0.8),
+          0 0 40px rgba(255, 215, 0, 0.8),
+          inset 0 2px 8px rgba(255, 255, 255, 0.5);
+      }
+    }
+
+    #achievement-notification.visible {
+      animation: achievementGlow 2.5s ease-in-out infinite;
+    }
+
   </style>
 </head>
 
@@ -427,6 +538,19 @@
   <!-- runs -->
   <div id="runs-panel"></div>
 
+  <!-- achievement notification -->
+  <div id="achievement-notification">
+    <div class="achievement-header">🏆 ACHIEVEMENT UNLOCKED</div>
+    <div class="achievement-content">
+      <img class="achievement-icon" id="achievement-icon" src="" alt="Achievement">
+      <div class="achievement-details">
+        <div class="achievement-title" id="achievement-title"></div>
+        <div class="achievement-description" id="achievement-description"></div>
+        <div class="achievement-game" id="achievement-game"></div>
+      </div>
+    </div>
+  </div>
+
   <script>
     const POLL_INTERVAL_MS = 500;
 
@@ -442,6 +566,13 @@
     const marqueeBottom = document.getElementById("marquee-bottom");
 
     const runsPanel = document.getElementById("runs-panel");
+    
+    // Achievement notification elements
+    const achievementNotification = document.getElementById("achievement-notification");
+    const achievementIcon = document.getElementById("achievement-icon");
+    const achievementTitle = document.getElementById("achievement-title");
+    const achievementDescription = document.getElementById("achievement-description");
+    const achievementGame = document.getElementById("achievement-game");
 
     let lastText = null;
     let lastAction = null;
@@ -454,6 +585,10 @@
     let currentAudio = null;
     let currentVideo = null;
     let activeMemeId = 0;
+    
+    // Achievement notification state
+    let lastAchievement = null;
+    let achievementTimeoutId = null;
 
     // Web Audio for GIF+audio
     let audioCtx = null;
@@ -803,6 +938,52 @@
       lastRow.classList.remove("highlight");
       void lastRow.offsetWidth;
       lastRow.classList.add("highlight");
+    }
+
+    function showAchievement(achievement) {
+      if (!achievement) {
+        hideAchievement();
+        return;
+      }
+
+      // Clear any existing timeout
+      if (achievementTimeoutId) {
+        clearTimeout(achievementTimeoutId);
+        achievementTimeoutId = null;
+      }
+
+      // Populate achievement data
+      achievementTitle.textContent = achievement.achievement_title || 'Achievement Unlocked';
+      achievementDescription.textContent = achievement.description || '';
+      achievementGame.textContent = achievement.game_name || '';
+      
+      // Set icon with fallback
+      achievementIcon.src = achievement.icon || achievement.icon_gray || '';
+      achievementIcon.onerror = () => {
+        achievementIcon.src = 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNjQiIGhlaWdodD0iNjQiIHZpZXdCb3g9IjAgMCA2NCA2NCIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4KPHJlY3Qgd2lkdGg9IjY0IiBoZWlnaHQ9IjY0IiByeD0iOCIgZmlsbD0iIzMzMzMzMyIvPgo8dGV4dCB4PSIzMiIgeT0iMzgiIGZvbnQtZmFtaWx5PSJzYW5zLXNlcmlmIiBmb250LXNpemU9IjI0IiBmaWxsPSIjRkZGIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIj7wn48GPC90ZXh0Pgo8L3N2Zz4K';
+      };
+
+      // Show the notification
+      achievementNotification.classList.add('visible');
+      
+      // Auto-hide after remaining time or default duration
+      const remainingTime = (achievement.remaining_time || 10) * 1000;
+      achievementTimeoutId = setTimeout(() => {
+        hideAchievement();
+      }, remainingTime);
+      
+      console.log(`[achievement] Showing: ${achievement.achievement_title} from ${achievement.game_name} (${remainingTime/1000}s remaining)`);
+    }
+
+    function hideAchievement() {
+      achievementNotification.classList.remove('visible');
+      
+      if (achievementTimeoutId) {
+        clearTimeout(achievementTimeoutId);
+        achievementTimeoutId = null;
+      }
+      
+      console.log(`[achievement] Hidden`);
     }
 
     function playSoundAndAnimate(soundUrl, memeUrl, videoUrl, audioDuration = 0) {
@@ -1238,6 +1419,19 @@
         const videoDuration = data.video_duration || 0;
         const audioDuration = data.audio_duration || 0;
         const runs = Array.isArray(data.runs) ? data.runs : [];
+        const achievement = data.achievement || null;
+
+        // Handle achievement notifications
+        const achievementChanged = !lastAchievement && achievement || 
+                                 lastAchievement && !achievement ||
+                                 lastAchievement && achievement && 
+                                 (lastAchievement.achievement_title !== achievement.achievement_title ||
+                                  lastAchievement.unlock_time !== achievement.unlock_time);
+        
+        if (achievementChanged) {
+          showAchievement(achievement);
+          lastAchievement = achievement;
+        }
 
         const prevRunsLen = lastRunsSnapshot.length;
 

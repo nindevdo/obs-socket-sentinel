@@ -6,6 +6,7 @@ OBS overlay system with Discord integration that triggers videos, sounds, and me
 
 - **Real-time Overlay**: Display action counts with emojis (kills, deaths, etc.)
 - **Undo System**: Reverse accidental button presses with F11 undo hotkey
+- **Achievement Notifications**: Display Steam achievement unlocks via POST API
 - **Discord Integration**: Automatically fetch and cache media from Discord messages
 - **YouTube Video Support**: Play YouTube videos triggered by emoji reactions
 - **Run Tracking**: Track gaming session statistics with visual run panels
@@ -29,8 +30,8 @@ See [YOUTUBE-PLAYLIST-POSTER.md](YOUTUBE-PLAYLIST-POSTER.md) for complete docume
 
 ## Installation
 - clone repo 
-- update the yaml config file to match your games and emojis
-- copy lua script into scripts in obs
+- update the yaml config file in `app/config.yaml` to match your games and emojis
+- copy lua script from `app/socket-sentinel.lua` into scripts in obs
 - enter url and port into settings for the script
   - if console pops us then likely the server isn't up yet
   - this will create keybindings for all games and actions in obs

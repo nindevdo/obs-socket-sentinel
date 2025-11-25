@@ -96,6 +96,11 @@ last_project: str = ""                  # last project/game key used for overlay
 action_history: List[Dict[str, Any]] = []  # List of action records for undo
 MAX_UNDO_HISTORY = 50  # Maximum number of actions to keep in undo history
 
+# Achievement notification state
+current_achievement: Optional[Dict[str, Any]] = None
+achievement_display_until: Optional[float] = None
+ACHIEVEMENT_DISPLAY_DURATION = 10.0  # Show achievement for 10 seconds
+
 # Chapter file/session state
 current_chapter_file: Optional[Path] = None
 session_start_wall: Optional[float] = None  # time.time() when "start" was received
@@ -3173,6 +3178,62 @@ async def update_overlay_from_counts(action_key: str, project_key: str) -> None:
 
 
 # -----------------------------
+# ACHIEVEMENT NOTIFICATION HELPERS
+# -----------------------------
+async def display_achievement_notification(achievement_data: Dict[str, Any]) -> None:
+    """
+    Display a Steam achievement notification.
+    """
+    global current_achievement, achievement_display_until
+    
+    async with state_lock:
+        current_achievement = achievement_data.copy()
+        achievement_display_until = time.time() + ACHIEVEMENT_DISPLAY_DURATION
+        
+        logging.info(f"🏆 [achievement] Displaying notification: {achievement_data.get('achievement_title', 'Unknown')} from {achievement_data.get('game_name', 'Unknown Game')}")
+        
+        # Auto-clear after duration
+        asyncio.create_task(_auto_clear_achievement())
+
+
+async def _auto_clear_achievement() -> None:
+    """
+    Clear achievement notification after display duration.
+    """
+    global current_achievement, achievement_display_until
+    
+    try:
+        await asyncio.sleep(ACHIEVEMENT_DISPLAY_DURATION)
+        
+        async with state_lock:
+            current_achievement = None
+            achievement_display_until = None
+            
+        logging.info(f"🧽 [achievement] Auto-cleared notification after {ACHIEVEMENT_DISPLAY_DURATION}s")
+        
+    except asyncio.CancelledError:
+        logging.debug("⏳ [achievement] Auto-clear cancelled")
+        return
+
+
+def validate_achievement_data(data: Dict[str, Any]) -> bool:
+    """
+    Validate that achievement data contains required fields.
+    """
+    required_fields = [
+        "achievement_title", "api_name", "description", "icon", 
+        "game_name", "app_id", "unlock_time", "steam_id"
+    ]
+    
+    for field in required_fields:
+        if field not in data:
+            logging.warning(f"❌ [achievement] Missing required field: {field}")
+            return False
+    
+    return True
+
+
+# -----------------------------
 # OVERLAY STATE
 # -----------------------------
 async def update_live_overlay(action: str, project_key: str) -> None:
@@ -3559,8 +3620,9 @@ async def handle_http(reader: asyncio.StreamReader, writer: asyncio.StreamWriter
     """
     Simple HTTP server:
       - GET /             => serves the HTML template
-      - GET /overlay      => JSON with latest overlay text + action + sound + meme + project + runs
+      - GET /overlay      => JSON with latest overlay text + action + sound + meme + project + runs + achievements
       - GET /config       => serves raw YAML config
+      - POST /achievement => accepts Steam achievement notification data (requires auth)
       - GET /dsounds/<...> => serves cached Discord audio files
       - GET /dvideos/<...> => serves cached Discord video files
       - GET /dmemes/<...>  => serves cached Discord meme/image files
@@ -3596,6 +3658,77 @@ async def handle_http(reader: asyncio.StreamReader, writer: asyncio.StreamWriter
                 return
         else:
             logging.debug(f"🌍 [http] Public access: {method} {path}")
+
+        # Handle POST /achievement endpoint
+        if method == "POST" and path == "/achievement":
+            try:
+                # Read the full request body
+                content_length = 0
+                for line in req_text.split('\r\n'):
+                    if line.lower().startswith('content-length:'):
+                        content_length = int(line.split(':')[1].strip())
+                        break
+                
+                # Read JSON body
+                body_data = b""
+                if content_length > 0:
+                    # We may have already read part of the body in the initial read
+                    lines = req_text.split('\r\n\r\n', 1)
+                    if len(lines) > 1:
+                        body_start = lines[1].encode('utf-8')
+                        body_data += body_start
+                        remaining = content_length - len(body_start)
+                        if remaining > 0:
+                            additional_data = await reader.read(remaining)
+                            body_data += additional_data
+                    else:
+                        body_data = await reader.read(content_length)
+                
+                if not body_data:
+                    # Send error response
+                    resp = b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                    writer.write(resp)
+                    await writer.drain()
+                    return
+                
+                # Parse JSON
+                achievement_data = json.loads(body_data.decode('utf-8'))
+                
+                # Validate data
+                if not validate_achievement_data(achievement_data):
+                    resp = b"HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: 27\r\nConnection: close\r\n\r\n{\"error\":\"Invalid data\"}"
+                    writer.write(resp)
+                    await writer.drain()
+                    return
+                
+                # Display the achievement
+                await display_achievement_notification(achievement_data)
+                
+                # Send success response
+                response_body = json.dumps({"status": "success", "message": "Achievement displayed"}).encode('utf-8')
+                headers = (
+                    "HTTP/1.1 200 OK\r\n"
+                    "Content-Type: application/json\r\n"
+                    f"Content-Length: {len(response_body)}\r\n"
+                    "Connection: close\r\n"
+                    "\r\n"
+                )
+                writer.write(headers.encode("ascii") + response_body)
+                await writer.drain()
+                return
+                
+            except json.JSONDecodeError as e:
+                logging.warning(f"❌ [achievement] Invalid JSON in POST body: {e}")
+                resp = b"HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: 26\r\nConnection: close\r\n\r\n{\"error\":\"Invalid JSON\"}"
+                writer.write(resp)
+                await writer.drain()
+                return
+            except Exception as e:
+                logging.error(f"❗ [achievement] Error processing achievement: {e}", exc_info=True)
+                resp = b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                writer.write(resp)
+                await writer.drain()
+                return
 
         if path.startswith("/overlay"):
             async with state_lock:
@@ -3683,6 +3816,14 @@ async def handle_http(reader: asyncio.StreamReader, writer: asyncio.StreamWriter
                                 }
                             )
 
+                # ---- Build achievement notification data ----
+                achievement_notification = None
+                if current_achievement and achievement_display_until:
+                    if now < achievement_display_until:
+                        achievement_notification = current_achievement.copy()
+                        # Add remaining display time for frontend timing
+                        achievement_notification["remaining_time"] = max(0.0, achievement_display_until - now)
+
             body_obj = {
                 "text": text,
                 "action": action,
@@ -3693,6 +3834,7 @@ async def handle_http(reader: asyncio.StreamReader, writer: asyncio.StreamWriter
                 "audio_duration": audio_duration,
                 "project": project,
                 "runs": runs_for_overlay,
+                "achievement": achievement_notification,
             }
             body_bytes = json.dumps(body_obj).encode("utf-8")
             headers = (

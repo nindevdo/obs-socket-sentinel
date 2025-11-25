@@ -71,7 +71,7 @@ A secure Python replacement for the Lua script that connects OBS to Socket Senti
 
 3. **Run Hotkey Sender**:
    ```bash
-   python3 obs-hotkey-sender.py
+   python3 app/obs-hotkey-sender.py
    ```
 
 ## 🔑 Default Hotkey Mappings

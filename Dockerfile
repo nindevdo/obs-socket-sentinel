@@ -11,7 +11,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Set working directory
 WORKDIR /app
 
-# Copy the application code
+# Copy the application code (everything is now in app/)
 COPY app/ /app/
 
 # Make sure Docker secrets are available to the app
