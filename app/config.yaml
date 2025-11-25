@@ -33,7 +33,12 @@ games:
     emoji: ["🧙", "🪄"]
     actions:
       clear: "🧹"
+      death: "☠️"
+      fire: "🔥"
+      drowned: "🤽"
+      fish: "🐟"
       kill: "💀"
+      mining: "⛏️"
       magic: "🧝"
       revive: "✨"
       teleport: "🌀"
