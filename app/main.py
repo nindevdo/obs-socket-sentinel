@@ -3442,6 +3442,8 @@ async def display_achievement_percentages(achievement_data: Dict[str, Any]) -> N
     
     async with state_lock:
         current_achievement_percentages = achievement_data.copy()
+        # Add sound to the notification
+        current_achievement_percentages["sound"] = "/sounds/achievement-unlocked-xbox.mp3"
         achievement_percentages_display_until = time.time() + ACHIEVEMENT_PERCENTAGES_DISPLAY_DURATION
         
         # Log what we're displaying

@@ -868,6 +868,7 @@
     // Achievement percentages notification state
     let lastAchievementPercentages = null;
     let achievementPercentagesTimeoutId = null;
+    let achievementPercentagesSoundPlayed = false;
 
     // Web Audio for GIF+audio
     let audioCtx = null;
@@ -1355,6 +1356,12 @@
           iconElement = document.createElement('img');
           iconElement.className = 'achievement-percentages-icon';
           iconElement.src = achievement.icon;
+          iconElement.style.opacity = '0';
+          iconElement.style.transition = 'opacity 0.3s ease';
+          iconElement.onload = () => {
+            iconElement.style.opacity = '1';
+            iconElement.onerror = null;
+          };
           iconElement.onerror = () => {
             // Replace with fallback if icon fails to load
             iconElement.style.display = 'none';
@@ -1362,10 +1369,6 @@
             fallback.className = 'achievement-percentages-icon-fallback';
             fallback.textContent = '🏆';
             item.insertBefore(fallback, iconElement);
-          };
-          // Prevent additional load attempts
-          iconElement.onload = () => {
-            iconElement.onerror = null;
           };
         } else {
           // No icon provided, use fallback directly
@@ -1422,17 +1425,35 @@
       });
 
       // Show the notification
+      const isFirstShow = !achievementPercentagesNotification.classList.contains('visible');
       achievementPercentagesNotification.classList.add('visible');
       
-      // Auto-hide after remaining time or default duration (5 minutes)
-      const remainingTime = (achievementPercentages.remaining_time || achievements[0]?.remaining_time || 300) * 1000;
-      achievementPercentagesTimeoutId = setTimeout(() => {
-        hideAchievementPercentages();
-      }, remainingTime);
+      // Play achievement percentages sound only once when first showing
+      if (isFirstShow && achievementPercentages.sound && !achievementPercentagesSoundPlayed) {
+        try {
+          const audio = new Audio(achievementPercentages.sound);
+          audio.volume = 0.7;
+          audio.play().catch(e => {
+            console.log(`[achievement_percentages] Could not play sound: ${e.message}`);
+          });
+          console.log(`[achievement_percentages] Playing sound: ${achievementPercentages.sound}`);
+          achievementPercentagesSoundPlayed = true;
+        } catch (e) {
+          console.log(`[achievement_percentages] Error creating audio: ${e.message}`);
+        }
+      }
       
-      const achievementNames = achievements.map(a => `${a.display_name || a.name || a.achievement_name} (${parseFloat(a.percent || a.percent_complete || 0)}%)`).join(', ');
-      const gameNames = [...new Set(achievements.map(a => a.game_name || achievementPercentages.game_name))].filter(Boolean);
-      console.log(`[achievement_percentages] Showing ${achievements.length} achievements for ${gameNames.join(', ')}: ${achievementNames} (${remainingTime/1000}s remaining)`);
+      // Auto-hide after remaining time or default duration (5 minutes)
+      if (isFirstShow) {
+        const remainingTime = (achievementPercentages.remaining_time || achievements[0]?.remaining_time || 300) * 1000;
+        achievementPercentagesTimeoutId = setTimeout(() => {
+          hideAchievementPercentages();
+        }, remainingTime);
+        
+        const achievementNames = achievements.map(a => `${a.display_name || a.name || a.achievement_name} (${parseFloat(a.percent || a.percent_complete || 0)}%)`).join(', ');
+        const gameNames = [...new Set(achievements.map(a => a.game_name || achievementPercentages.game_name))].filter(Boolean);
+        console.log(`[achievement_percentages] Showing ${achievements.length} achievements for ${gameNames.join(', ')}: ${achievementNames} (${remainingTime/1000}s remaining)`);
+      }
     }
 
     function hideAchievementPercentages() {
@@ -1442,6 +1463,9 @@
         clearTimeout(achievementPercentagesTimeoutId);
         achievementPercentagesTimeoutId = null;
       }
+      
+      // Reset sound flag so it can play again for new notifications
+      achievementPercentagesSoundPlayed = false;
       
       console.log(`[achievement_percentages] Hidden`);
     }
