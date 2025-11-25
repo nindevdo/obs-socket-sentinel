@@ -527,22 +527,22 @@
       pointer-events: none;
       z-index: 14000;
       
-      max-width: 400px;
-      min-width: 300px;
-      background: linear-gradient(135deg, rgba(30, 144, 255, 0.9), rgba(65, 105, 225, 0.9));
-      border: 3px solid rgba(255, 255, 255, 0.8);
-      border-radius: 12px;
+      max-width: 500px;
+      min-width: 400px;
+      background: rgba(20, 20, 30, 0.85);
+      border: 3px solid rgba(100, 100, 120, 0.7);
+      border-radius: 16px;
       box-shadow: 
-        0 6px 24px rgba(0, 0, 0, 0.5),
-        0 0 15px rgba(30, 144, 255, 0.3),
-        inset 0 2px 6px rgba(255, 255, 255, 0.2);
+        0 8px 32px rgba(0, 0, 0, 0.6),
+        0 0 20px rgba(100, 100, 120, 0.3),
+        inset 0 2px 8px rgba(255, 255, 255, 0.1);
       
       font-family: "ProggyClean Nerd Font", "Noto Color Emoji", sans-serif;
       color: #ffffff;
       
       transition: 
-        transform 0.5s cubic-bezier(0.22, 1, 0.36, 1),
-        opacity 0.3s ease-out;
+        transform 0.6s cubic-bezier(0.22, 1, 0.36, 1),
+        opacity 0.4s ease-out;
     }
 
     #playtime-notification.visible {
@@ -551,41 +551,44 @@
     }
 
     .playtime-header {
-      background: rgba(0, 0, 0, 0.2);
-      padding: 8px 16px;
-      border-radius: 12px 12px 0 0;
-      border-bottom: 2px solid rgba(255, 255, 255, 0.3);
-      font-size: 0.9rem;
+      background: rgba(10, 10, 15, 0.8);
+      padding: 12px 20px;
+      border-radius: 16px 16px 0 0;
+      border-bottom: 2px solid rgba(120, 120, 140, 0.5);
+      font-size: 1.0rem;
       font-weight: 700;
       text-transform: uppercase;
-      letter-spacing: 0.05em;
-      text-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
+      letter-spacing: 0.08em;
+      text-shadow: 0 2px 4px rgba(0, 0, 0, 0.8);
+      color: #e0e0e0;
     }
 
     .playtime-content {
-      padding: 16px;
+      padding: 20px;
     }
 
     .playtime-game {
-      font-size: 1.1rem;
+      font-size: 1.4rem;
       font-weight: 700;
-      margin: 0 0 8px 0;
-      text-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
+      margin: 0 0 12px 0;
+      text-shadow: 0 2px 4px rgba(0, 0, 0, 0.8);
+      color: #ffffff;
     }
 
     .playtime-time {
-      font-size: 1.4rem;
+      font-size: 1.8rem;
       font-weight: 800;
-      margin: 0 0 4px 0;
-      color: #ffeb3b;
-      text-shadow: 0 2px 4px rgba(0, 0, 0, 0.5);
+      margin: 0 0 8px 0;
+      color: #90cdf4;
+      text-shadow: 0 2px 6px rgba(0, 0, 0, 0.8);
     }
 
     .playtime-hours {
-      font-size: 0.9rem;
-      opacity: 0.8;
+      font-size: 1.1rem;
+      opacity: 0.9;
       font-weight: 500;
-      text-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
+      text-shadow: 0 1px 3px rgba(0, 0, 0, 0.8);
+      color: #d1d5db;
     }
 
   </style>
