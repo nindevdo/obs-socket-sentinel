@@ -1683,8 +1683,8 @@
         newsContent.appendChild(item);
       });
 
-      // Play news sound only once when first showing
-      if (!newsSoundPlayed && news.sound) {
+      // Play news sound - always play (no flag check)
+      if (news.sound) {
         try {
           const audio = new Audio(news.sound);
           audio.volume = 0.7;
@@ -1695,11 +1695,14 @@
         } catch (e) {
           console.log(`[news] Error creating audio: ${e.message}`);
         }
-        newsSoundPlayed = true;
       }
 
-      // Show the notification
+      // Show the notification - FORCE VISIBLE
+      console.log(`[news] FORCING notification visible - adding 'visible' class`);
+      newsNotification.style.display = 'block';
       newsNotification.classList.add('visible');
+      console.log(`[news] Notification classes after show:`, newsNotification.className);
+      console.log(`[news] Notification style display:`, newsNotification.style.display);
 
       // Auto-hide after remaining time or default duration (30 seconds)
       const remainingTime = news.remaining_time || 30000;
@@ -2203,18 +2206,16 @@
           lastAchievementPercentages = achievement_percentages;
         }
 
-        // Handle news notifications  
-        if (news) {
-          console.log(`[news] News data received:`, news);
-          
-          // Always show news when received - no caching logic
-          console.log(`[news] Showing news notification (no caching)`);
+        // Handle news notifications
+        const newsChanged = !lastNews && news || 
+                           lastNews && !news ||
+                           lastNews && news && 
+                           (lastNews.game_name !== news.game_name ||
+                            lastNews.timestamp !== news.timestamp);
+        
+        if (newsChanged) {
           showNews(news);
-          
-        } else if (lastNews) {
-          console.log(`[news] No news data but had lastNews - hiding`);
-          hideNews();
-          lastNews = null;
+          lastNews = news;
         }
 
         const prevRunsLen = lastRunsSnapshot.length;

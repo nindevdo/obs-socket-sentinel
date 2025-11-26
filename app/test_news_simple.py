@@ -46,7 +46,7 @@ def send_news():
                 "appid": 440
             }
         ],
-        "timestamp": 1732575635,
+        "timestamp": int(time.time()),  # Use current timestamp for change detection
         "timestamp_iso": "2025-11-25T22:00:35.626Z",
         "new_items_count": 2,
         "total_items_fetched": 5
