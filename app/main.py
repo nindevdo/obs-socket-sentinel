@@ -228,17 +228,17 @@ MAX_UNDO_HISTORY = 50  # Maximum number of actions to keep in undo history
 # Achievement notification state
 current_achievement: Optional[Dict[str, Any]] = None
 achievement_display_until: Optional[float] = None
-ACHIEVEMENT_DISPLAY_DURATION = 10.0  # Show achievement for 10 seconds
+ACHIEVEMENT_DISPLAY_DURATION = 30.0  # Show achievement for 10 seconds
 
 # Playtime display state
 current_playtime: Optional[Dict[str, Any]] = None
 playtime_display_until: Optional[float] = None
-PLAYTIME_DISPLAY_DURATION = 300.0  # Show playtime for 5 minutes (300 seconds)
+PLAYTIME_DISPLAY_DURATION = 30  # Show playtime for 5 minutes (300 seconds)
 
 # Achievement percentages display state
 current_achievement_percentages: Optional[Dict[str, Any]] = None
 achievement_percentages_display_until: Optional[float] = None
-ACHIEVEMENT_PERCENTAGES_DISPLAY_DURATION = 300.0  # Show achievement percentages for 5 minutes (300 seconds)
+ACHIEVEMENT_PERCENTAGES_DISPLAY_DURATION = 30.0  # Show achievement percentages for 5 minutes (300 seconds)
 
 # News notification state
 current_news: Optional[Dict[str, Any]] = None
@@ -276,7 +276,7 @@ run_stats_by_project: Dict[tuple[str, int], Dict[str, Any]] = {}
 run_history_by_project: Dict[str, List[Dict[str, Any]]] = {}
 
 # How long we show the run recap panel after a run ends
-RUN_PANEL_DURATION_SECONDS = 180  # 3 minutes
+RUN_PANEL_DURATION_SECONDS = 30  # 3 minutes
 run_panel_visible_until: Optional[float] = None
 
 # Max number of runs to *display* in the panel (backend-side visual cap)
@@ -3499,7 +3499,7 @@ def validate_achievement_data(data: Dict[str, Any]) -> bool:
 
 # News notification globals
 news_display_until = None
-NEWS_DISPLAY_DURATION = 60  # 1 minute
+NEWS_DISPLAY_DURATION = 30  # 1 minute
 
 async def display_news(news_data: Dict[str, Any]) -> None:
     """
@@ -3514,16 +3514,16 @@ async def display_news(news_data: Dict[str, Any]) -> None:
         current_news = news_data.copy()
         news_display_until = time.time() + NEWS_DISPLAY_DURATION
         
-        # Play sound
-        sounds_dir = Path("/sounds")
-        sound_file = sounds_dir / "xbox_achievement_unlocked.wav"
-        if sound_file.exists():
-            try:
-                import subprocess
-                subprocess.run(['aplay', str(sound_file)], check=False, capture_output=True)
-                logging.info("🎵 [news] Played notification sound")
-            except Exception as e:
-                logging.warning(f"🎵 [news] Failed to play sound: {e}")
+        # Remove backend sound playing - let frontend handle it
+        # sounds_dir = Path("/sounds")
+        # sound_file = sounds_dir / "achievement-unlocked-xbox.mp3"
+        # if sound_file.exists():
+        #     try:
+        #         import subprocess
+        #         subprocess.run(['aplay', str(sound_file)], check=False, capture_output=True)
+        #         logging.info("🎵 [news] Played notification sound")
+        #     except Exception as e:
+        #         logging.warning(f"🎵 [news] Failed to play sound: {e}")
         
         # No WebSocket needed - HTTP POST only
         
@@ -4559,7 +4559,7 @@ async def handle_http(reader: asyncio.StreamReader, writer: asyncio.StreamWriter
                         # Add remaining display time for frontend timing
                         news_notification["remaining_time"] = max(0.0, news_display_until - now)
                         # Add sound for frontend
-                        news_notification["sound"] = "/sounds/xbox_achievement_unlocked.wav"
+                        news_notification["sound"] = "/sounds/achievement-unlocked-xbox.mp3"
 
             body_obj = {
                 "text": text,

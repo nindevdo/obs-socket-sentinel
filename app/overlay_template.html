@@ -762,7 +762,6 @@
       position: fixed;
       bottom: 30px;
       left: 50%;
-      transform: translateX(-50%);
       background: rgba(12, 12, 23, 0.95);
       border: 2px solid #ffd700;
       border-radius: 12px;
@@ -776,7 +775,7 @@
       opacity: 0;
       transform: translateX(-50%) translateY(50px);
       transition: all 0.6s cubic-bezier(0.23, 1, 0.32, 1);
-      z-index: 1000;
+      z-index: 10000;
       color: #ffffff;
       font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
     }
@@ -1593,13 +1592,24 @@
     let newsSoundPlayed = false;
 
     function showNews(news) {
-      if (!news || !news.news_items || news.news_items.length === 0) {
+      console.log(`[news] showNews called with:`, news);
+      
+      if (!news) {
+        console.log(`[news] No news data, hiding`);
+        hideNews();
+        return;
+      }
+      
+      if (!news.news_items || news.news_items.length === 0) {
+        console.log(`[news] No news items, hiding`);
         hideNews();
         return;
       }
 
       const newsItems = news.news_items;
       const gameName = news.game_name || 'Unknown Game';
+      
+      console.log(`[news] Processing ${newsItems.length} news items for ${gameName}`);
 
       // Clear previous content
       newsContent.innerHTML = '';
@@ -1669,7 +1679,13 @@
       }
 
       // Show the notification
-      newsNotification.classList.add('visible');
+      console.log(`[news] Adding visible class to news notification`);
+      newsNotification.style.display = 'block';
+      setTimeout(() => {
+        newsNotification.classList.add('visible');
+      }, 10); // Small delay to ensure display change takes effect
+      console.log(`[news] News notification classes:`, newsNotification.classList.toString());
+      console.log(`[news] News notification computed style:`, window.getComputedStyle(newsNotification).opacity, window.getComputedStyle(newsNotification).transform);
 
       // Clear any existing timeout
       if (newsTimeoutId) {
@@ -1688,6 +1704,11 @@
 
     function hideNews() {
       newsNotification.classList.remove('visible');
+      
+      // Hide completely after animation
+      setTimeout(() => {
+        newsNotification.style.display = 'none';
+      }, 600); // Match the CSS transition duration
       
       if (newsTimeoutId) {
         clearTimeout(newsTimeoutId);
@@ -2173,15 +2194,26 @@
           lastAchievementPercentages = achievement_percentages;
         }
 
-        // Handle news notifications
-        const newsChanged = !lastNews && news || 
-                           lastNews && !news ||
-                           lastNews && news && 
-                           JSON.stringify(lastNews) !== JSON.stringify(news);
+        // Handle news notifications  
+        const newsChanged = (!lastNews && news) || 
+                           (lastNews && !news) ||
+                           (lastNews && news && 
+                            (lastNews.game_name !== news.game_name ||
+                             !lastNews.news_items ||
+                             !news.news_items ||
+                             lastNews.news_items.length !== news.news_items.length ||
+                             lastNews.news_items.some((item, i) => 
+                               !news.news_items[i] || 
+                               item.title !== news.news_items[i].title ||
+                               item.contents !== news.news_items[i].contents)));
         
         if (newsChanged) {
+          console.log(`[news] News changed - showing new notification`);
           showNews(news);
-          lastNews = news;
+          lastNews = news ? {
+            game_name: news.game_name,
+            news_items: news.news_items ? [...news.news_items] : []
+          } : null;
         }
 
         const prevRunsLen = lastRunsSnapshot.length;
