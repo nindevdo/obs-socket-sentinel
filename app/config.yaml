@@ -3,11 +3,14 @@ games:
   hunt_showdown:
     emoji: ["🤠"]
     actions:
+      run_start: "▶️"
+      run_end: "⏹️"
       alert: "🔔"
       ammo: "💣"
       assist: "🤝"
       banish: "👹"
       bleed: "🩸"
+      clear: "🧹"
       death: "☠️"
       downed: "🤬"
       extract: "⛵"
@@ -29,6 +32,7 @@ games:
   enshrouded:
     emoji: ["🧙", "🪄"]
     actions:
+      clear: "🧹"
       death: "☠️"
       fire: "🔥"
       drowned: "🤽"
@@ -41,16 +45,23 @@ games:
   chivalry2:
     emoji: ["🤺"]
     actions:
+      clear: "🧹"
       death: "🩸"
       kill: "☠️"
   fortnite:
     emoji: ["🍆"]
     actions:
+      clear: "🧹"
       death: "☠️"
       kill: "💀"
+      run_end: "⏹️"
+      run_start: "▶️"
   hell_divers_2:
     emoji: ["🪖"]
     actions:
+      run_end: "⏹️"
+      run_start: "▶️"
+      clear: "🧹"
       death: "☠️"
       kill: "💀"
       bots: "🤖"
@@ -59,3 +70,4 @@ games:
       terminids: "🪲"
       veterans: "🎖️"
       rookies: "👶"
+

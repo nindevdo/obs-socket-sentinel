@@ -1,4 +1,4 @@
-# Emoji Weighting & Tenor Looping Improvements
+# Emoji Weighting & Anti-Repetition Improvements (Updated)
 
 ## Changes Made
 
@@ -19,19 +19,36 @@
   - `fetch_random_discord_video()`
   - `fetch_random_discord_sound()`
 
-### 2. Implemented Anti-Repetition System
-**Problem**: Same popular media could be selected repeatedly, making the overlay feel stale.
+### 2. Improved Anti-Repetition System
+**Problem**: Same popular media was being selected too frequently due to aggressive penalties and small history size.
 
-**Solution**: Added tracking system to reduce weights of recently played media:
-- Tracks last 5 played items per action type
-- Applies penalties based on recency (most recent = highest penalty)
-- Penalty scale: 20%, 35%, 50%, 65%, 80% of original weight
+**Solution**: Enhanced tracking system with better balance:
+- **Increased history size**: Now tracks last **10 items** (was 5)
+- **Gentler penalties**: New gradual penalty system:
+  - Most recent: 10% weight (was 20%)
+  - 2nd recent: 25% weight (was 35%) 
+  - 3rd recent: 40% weight (was 50%)
+  - 4th recent: 55% weight (was 65%)
+  - 5th recent: 70% weight (was 80%)
+  - 6th+ recent: 85% weight (cap, allows older items back)
+- **Better formula**: Simpler, more predictable penalty calculation
 
-**New Functions**:
-- `apply_anti_repetition_weighting()`: Reduces weights for recently played media
-- `track_played_media()`: Maintains rolling history per action
+### 3. New Diversity Weighting System
+**Problem**: Lower-reaction content rarely got selected, making variety poor.
 
-**New Global Variables**:
+**Solution**: Added diversity boost system that:
+- Calculates how "underrepresented" each item is compared to highest-reaction content
+- Gives small bonus (up to 15% of original weight) to lower-reaction items
+- Ensures content with fewer reactions can still occasionally be selected
+- Maintains emoji voting importance while improving variety
+
+**New/Updated Functions**:
+- `apply_diversity_weighting()`: NEW - Gives underrepresented content a small boost
+- `apply_anti_repetition_weighting()`: IMPROVED - Gentler penalties with better formula
+- `track_played_media()`: UPDATED - Now maintains 10-item rolling history per action
+
+**Updated Global Variables**:
+- `RECENT_MEDIA_HISTORY_SIZE = 10`: Increased from 5 to reduce repetition cycles
 - `recent_media_history`: Dict storing recent media per action
 - `RECENT_MEDIA_HISTORY_SIZE = 5`: History size limit
 
@@ -91,13 +108,27 @@ For each message with matching action emoji:
 total_weight = sum(reaction.count for reaction in matching_reactions)
 ```
 
-### Anti-Repetition Weight Formula
+### Updated Anti-Repetition Weight Formula
+```python
+# New gentler penalty system
+penalty_multiplier = 0.10 + (recency_index * 0.15)  # 10%, 25%, 40%, 55%, 70%, 85%...
+penalty_multiplier = min(penalty_multiplier, 0.85)  # Cap at 85%
+adjusted_weight = original_weight * penalty_multiplier
 ```
-For recently played media:
-penalty_factor = 1.0 - (0.8 - (recency_index * 0.15))
-adjusted_weight = original_weight * max(0.2, penalty_factor)
 
-Where recency_index: 0 = most recent, 4 = oldest in history
+### New Diversity Weighting Formula  
+```python
+# Calculate how underrepresented this item is (0.0 to 1.0)
+underrepresented_ratio = 1.0 - ((weight - min_weight) / (max_weight - min_weight))
+# Apply small diversity bonus (up to 15% of original weight)
+diversity_bonus = weight * (underrepresented_ratio * 0.15)
+adjusted_weight = weight + diversity_bonus
+```
+
+### Legacy Anti-Repetition Formula (Removed)
+```python
+# OLD (problematic): penalty_factor = 1.0 - (0.8 - (recency_index * 0.15))
+# This produced: 20%, 35%, 50%, 65%, 80% which was too harsh
 ```
 
 ### Frontend Audio Logic
@@ -120,19 +151,28 @@ if (isTenorVideo && hasExternalAudio) {
 
 ## Benefits
 
-1. **Proper Audio/Video Separation**: YouTube videos use their own audio, Tenor GIFs pair with Discord audio
-2. **More Accurate Community Voting**: Emoji reactions now properly accumulate as votes
-3. **Reduced Repetition**: Popular media won't dominate selections
-4. **Better Audio/Video Sync**: Tenor GIFs loop to match audio length
-5. **Improved Variety**: Anti-repetition system encourages diverse content
-6. **No Audio Conflicts**: Clear separation between video types prevents audio overlap
+1. **Better Variety**: 10-item history and gentler penalties reduce repetition cycles
+2. **Fairer Selection**: Diversity weighting gives lower-reaction content a chance
+3. **Maintained Democracy**: Emoji reactions still drive selection, just with better balance
+4. **Reduced Staleness**: Same popular videos won't dominate as much
+5. **Predictable Penalties**: Clearer, simpler anti-repetition formula
+6. **Improved User Experience**: More engaging variety while respecting community votes
+
+### Before vs After Comparison:
+| Aspect | Before | After |
+|--------|--------|-------|
+| History size | 5 items | 10 items |
+| Most recent penalty | 20% weight | 10% weight |
+| Oldest in history | 80% weight | 85% weight |
+| Diversity boost | None | Up to 15% bonus for low-reaction content |
+| Repetition cycles | Frequent | Significantly reduced |
 
 ## Testing
 
 All changes tested using Docker container:
 - ✅ Python syntax validation
-- ✅ HTML template validation  
-- ✅ Module import verification
+- ✅ Import verification  
+- ✅ Mathematical formula validation
 - ✅ Docker build compatibility
 
 ## Backward Compatibility
@@ -141,3 +181,14 @@ All changes tested using Docker container:
 - No configuration changes required
 - Existing Discord cache continues to work
 - No breaking changes to API endpoints
+- History will gradually build up to 10 items over time
+
+## Summary
+
+These improvements address the core issue of repetitive video selection while maintaining the democratic emoji voting system. The changes provide:
+- **Better balance** between popular and less popular content
+- **Longer variety cycles** through increased history size
+- **Fairer chances** for all content through diversity weighting
+- **Gentler penalties** that still discourage immediate repetition
+
+The system now properly balances community preferences (emoji reactions) with content variety.

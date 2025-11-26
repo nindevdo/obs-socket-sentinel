@@ -32,7 +32,7 @@ last_audio_duration: Optional[float] = None  # Audio duration for proper timing
 
 # Recently played media tracking to avoid repetition
 recent_media_history: Dict[str, List[str]] = {}  # action_key -> list of recent URLs
-RECENT_MEDIA_HISTORY_SIZE = 5  # Remember last 5 items per action
+RECENT_MEDIA_HISTORY_SIZE = 10  # Remember last 10 items per action
 
 # Where we consider the "recordings/markers" root
 WATCH_DIR = Path(os.getenv("WATCH_DIR", "/markers"))
@@ -293,7 +293,7 @@ YOUTUBE_RE = re.compile(r"(youtube\.com|youtu\.be)", re.IGNORECASE)
 def apply_anti_repetition_weighting(weighted_candidates: Dict[str, float], action_key: str) -> Dict[str, float]:
     """
     Apply anti-repetition weighting to reduce chances of recently played media.
-    Items played more recently get higher penalty.
+    Items played more recently get higher penalty, but still remain selectable.
     """
     if not weighted_candidates:
         return weighted_candidates
@@ -308,13 +308,46 @@ def apply_anti_repetition_weighting(weighted_candidates: Dict[str, float], actio
         
         # Check if this URL was recently played
         if url in recent_list:
-            # Apply penalty based on recency (most recent = highest penalty)
+            # Apply penalty based on recency - more gradual than before
+            # Most recent gets 10% weight, second gets 25%, third gets 40%, etc.
             recency_index = recent_list.index(url)  # 0 = most recent
-            penalty_factor = 1.0 - (0.8 - (recency_index * 0.15))  # 20%, 35%, 50%, 65%, 80% weight
-            adjusted_weight = weight * max(0.2, penalty_factor)
+            penalty_multiplier = 0.10 + (recency_index * 0.15)  # 0.10, 0.25, 0.40, 0.55, 0.70, 0.85, 1.0+
+            penalty_multiplier = min(penalty_multiplier, 0.85)  # Cap at 85% for older items
+            adjusted_weight = weight * penalty_multiplier
             
         adjusted_candidates[url] = adjusted_weight
         
+    return adjusted_candidates
+
+
+def apply_diversity_weighting(weighted_candidates: Dict[str, float]) -> Dict[str, float]:
+    """
+    Apply diversity weighting to give lower-weighted items a small boost.
+    This ensures that content with fewer reactions can still occasionally be selected.
+    """
+    if not weighted_candidates or len(weighted_candidates) <= 1:
+        return weighted_candidates
+    
+    # Calculate base stats
+    weights = list(weighted_candidates.values())
+    min_weight = min(weights)
+    max_weight = max(weights)
+    
+    # If all weights are the same, no diversity needed
+    if max_weight == min_weight:
+        return weighted_candidates
+    
+    # Add a small diversity bonus that's inversely proportional to weight
+    # This gives lower-weighted items a small chance bump
+    adjusted_candidates = {}
+    for url, weight in weighted_candidates.items():
+        # Calculate how "underrepresented" this item is (0.0 to 1.0)
+        underrepresented_ratio = 1.0 - ((weight - min_weight) / (max_weight - min_weight))
+        # Apply a small diversity bonus (up to 15% of the original weight)
+        diversity_bonus = weight * (underrepresented_ratio * 0.15)
+        adjusted_weight = weight + diversity_bonus
+        adjusted_candidates[url] = adjusted_weight
+    
     return adjusted_candidates
 
 
@@ -1044,6 +1077,9 @@ async def get_cached_discord_sound(action_key: str, project: Optional[str]) -> O
 
     # Apply anti-repetition weighting to avoid playing same sounds repeatedly
     weighted_candidates = apply_anti_repetition_weighting(weighted_candidates, action_key)
+    
+    # Apply diversity weighting to give lower-reaction content a chance
+    weighted_candidates = apply_diversity_weighting(weighted_candidates)
 
     # Weighted random choice from cached candidates
     items = list(weighted_candidates.items())
@@ -1151,6 +1187,9 @@ async def get_cached_discord_meme(action_key: str, project: Optional[str]) -> Op
 
     # Apply anti-repetition weighting to avoid playing same memes repeatedly  
     weighted_candidates = apply_anti_repetition_weighting(weighted_candidates, action_key)
+    
+    # Apply diversity weighting to give lower-reaction content a chance
+    weighted_candidates = apply_diversity_weighting(weighted_candidates)
 
     # Weighted random choice
     items = list(weighted_candidates.items())
@@ -1331,6 +1370,7 @@ async def get_cached_discord_video(action_key: str, project: Optional[str]) -> t
     # Convert tuple format to simple format for anti-repetition processing
     simple_candidates = {url: weight for url, (weight, _, _) in weighted_candidates.items()}
     simple_candidates = apply_anti_repetition_weighting(simple_candidates, action_key)
+    simple_candidates = apply_diversity_weighting(simple_candidates)
     # Convert back to tuple format
     adjusted_candidates = {url: (simple_candidates[url], weighted_candidates[url][1], weighted_candidates[url][2]) for url in simple_candidates}
 
@@ -1453,6 +1493,7 @@ async def get_cached_discord_sound_with_weight(action_key: str, project: Optiona
 
     # Apply anti-repetition and weighted selection
     weighted_candidates = apply_anti_repetition_weighting(weighted_candidates, action_key)
+    weighted_candidates = apply_diversity_weighting(weighted_candidates)
     
     # Weighted random choice
     items = list(weighted_candidates.items())
@@ -1559,6 +1600,7 @@ async def get_cached_discord_meme_with_weight(action_key: str, project: Optional
 
     # Apply anti-repetition and weighted selection
     weighted_candidates = apply_anti_repetition_weighting(weighted_candidates, action_key)
+    weighted_candidates = apply_diversity_weighting(weighted_candidates)
     
     # Weighted random choice
     items = list(weighted_candidates.items())
@@ -1684,6 +1726,7 @@ async def get_cached_discord_video_with_weight(action_key: str, project: Optiona
     # Apply anti-repetition weighting
     simple_candidates = {url: weight for url, (weight, _, _) in weighted_candidates.items()}
     simple_candidates = apply_anti_repetition_weighting(simple_candidates, action_key)
+    simple_candidates = apply_diversity_weighting(simple_candidates)
     adjusted_candidates = {url: (simple_candidates[url], weighted_candidates[url][1], weighted_candidates[url][2]) for url in simple_candidates}
 
     # Weighted random choice
@@ -1897,6 +1940,7 @@ async def fetch_random_discord_meme(action_key: str, project: Optional[str]) -> 
 
     # Apply anti-repetition weighting to avoid playing same memes repeatedly
     weighted_candidates = apply_anti_repetition_weighting(weighted_candidates, action_key)
+    weighted_candidates = apply_diversity_weighting(weighted_candidates)
 
     # Weighted random choice from cached candidates
     items = list(weighted_candidates.items())
