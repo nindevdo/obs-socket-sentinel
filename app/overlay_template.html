@@ -1697,12 +1697,23 @@
         }
       }
 
-      // Show the notification - FORCE VISIBLE
+      // Show the notification - FORCE VISIBLE AND DEBUG POSITION
       console.log(`[news] FORCING notification visible - adding 'visible' class`);
       newsNotification.style.display = 'block';
+      newsNotification.style.visibility = 'visible';
+      newsNotification.style.opacity = '1';
+      newsNotification.style.zIndex = '99999';
       newsNotification.classList.add('visible');
       console.log(`[news] Notification classes after show:`, newsNotification.className);
       console.log(`[news] Notification style display:`, newsNotification.style.display);
+      console.log(`[news] Notification computed style:`, window.getComputedStyle(newsNotification));
+      console.log(`[news] Notification position:`, {
+        top: newsNotification.style.top,
+        bottom: newsNotification.style.bottom,
+        left: newsNotification.style.left,
+        right: newsNotification.style.right,
+        position: window.getComputedStyle(newsNotification).position
+      });
 
       // Auto-hide after remaining time or default duration (30 seconds)
       const remainingTime = news.remaining_time || 30000;
