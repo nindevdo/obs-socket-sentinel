@@ -240,6 +240,10 @@ current_achievement_percentages: Optional[Dict[str, Any]] = None
 achievement_percentages_display_until: Optional[float] = None
 ACHIEVEMENT_PERCENTAGES_DISPLAY_DURATION = 300.0  # Show achievement percentages for 5 minutes (300 seconds)
 
+# News notification state
+current_news: Optional[Dict[str, Any]] = None
+news_display_until: Optional[float] = None
+
 # Chapter file/session state
 current_chapter_file: Optional[Path] = None
 session_start_wall: Optional[float] = None  # time.time() when "start" was received
@@ -3493,6 +3497,60 @@ def validate_achievement_data(data: Dict[str, Any]) -> bool:
     return True
 
 
+# News notification globals
+news_display_until = None
+NEWS_DISPLAY_DURATION = 60  # 1 minute
+
+async def display_news(news_data: Dict[str, Any]) -> None:
+    """
+    Display news notification at the bottom of the screen.
+    """
+    global current_news, news_display_until
+    
+    try:
+        logging.info(f"📰 [news] Displaying news for {news_data['game_name']} with {len(news_data['news_items'])} items")
+        
+        # Set current news and display timeout
+        current_news = news_data.copy()
+        news_display_until = time.time() + NEWS_DISPLAY_DURATION
+        
+        # Play sound
+        sounds_dir = Path("/sounds")
+        sound_file = sounds_dir / "xbox_achievement_unlocked.wav"
+        if sound_file.exists():
+            try:
+                import subprocess
+                subprocess.run(['aplay', str(sound_file)], check=False, capture_output=True)
+                logging.info("🎵 [news] Played notification sound")
+            except Exception as e:
+                logging.warning(f"🎵 [news] Failed to play sound: {e}")
+        
+        # No WebSocket needed - HTTP POST only
+        
+        # Auto-clear after duration
+        asyncio.create_task(auto_clear_news())
+        
+    except Exception as e:
+        logging.error(f"❗ [news] Error in display_news: {e}", exc_info=True)
+
+async def auto_clear_news():
+    """Auto-clear news notification after timeout."""
+    global current_news, news_display_until
+    
+    try:
+        await asyncio.sleep(NEWS_DISPLAY_DURATION)
+        
+        async with state_lock:
+            current_news = None
+            news_display_until = None
+            
+        logging.info(f"🧽 [news] Auto-cleared notification after {NEWS_DISPLAY_DURATION}s")
+        
+    except asyncio.CancelledError:
+        logging.debug("⏳ [news] Auto-clear cancelled")
+        return
+
+
 # -----------------------------
 # OVERLAY STATE
 # -----------------------------
@@ -4163,6 +4221,122 @@ async def handle_http(reader: asyncio.StreamReader, writer: asyncio.StreamWriter
                 await writer.drain()
                 return
 
+        # Handle POST /news endpoint
+        if method == "POST" and path == "/news":
+            try:
+                # Read the full request body
+                content_length = 0
+                for line in req_text.split('\r\n'):
+                    if line.lower().startswith('content-length:'):
+                        content_length = int(line.split(':')[1].strip())
+                        break
+                
+                # Read JSON body
+                body_data = b""
+                if content_length > 0:
+                    # We may have already read part of the body in the initial read
+                    lines = req_text.split('\r\n\r\n', 1)
+                    if len(lines) > 1:
+                        body_start = lines[1].encode('utf-8')
+                        body_data += body_start
+                        remaining = content_length - len(body_start)
+                        if remaining > 0:
+                            more_data = await reader.read(remaining)
+                            body_data += more_data
+
+                # Parse JSON
+                news_data = json.loads(body_data.decode('utf-8'))
+                
+                logging.info("📰 [news] News endpoint called")
+                
+                # Validate auth token
+                if not check_auth_header(req_text):
+                    logging.warning("❌ [news] Unauthorized request")
+                    error_msg = "Unauthorized"
+                    response_body = json.dumps({"error": error_msg}).encode('utf-8')
+                    resp_headers = (
+                        "HTTP/1.1 401 Unauthorized\r\n"
+                        "Content-Type: application/json\r\n"
+                        f"Content-Length: {len(response_body)}\r\n"
+                        "Connection: close\r\n"
+                        "\r\n"
+                    )
+                    writer.write(resp_headers.encode("ascii") + response_body)
+                    await writer.drain()
+                    return
+                
+                # Log the received data
+                logging.info(f"📰 [news] Received news data: {json.dumps(news_data, indent=2)}")
+                
+                # Validate required fields
+                required_fields = ["steam_id", "app_id", "game_name", "news_items", "timestamp", "timestamp_iso", "new_items_count", "total_items_fetched"]
+                missing_fields = [field for field in required_fields if field not in news_data]
+                
+                if missing_fields:
+                    logging.warning(f"❌ [news] Missing required fields: {missing_fields}")
+                    error_msg = f"Missing required fields: {', '.join(missing_fields)}"
+                    response_body = json.dumps({"error": error_msg}).encode('utf-8')
+                    resp_headers = (
+                        "HTTP/1.1 400 Bad Request\r\n"
+                        "Content-Type: application/json\r\n"
+                        f"Content-Length: {len(response_body)}\r\n"
+                        "Connection: close\r\n"
+                        "\r\n"
+                    )
+                    writer.write(resp_headers.encode("ascii") + response_body)
+                    await writer.drain()
+                    return
+                
+                # Validate each news item in the array
+                news_list = news_data['news_items']
+                for i, news_item in enumerate(news_list):
+                    required_news_fields = ["gid", "title", "url", "author", "contents", "feedlabel", "date", "feedname", "feed_type", "appid"]
+                    missing_news_fields = [field for field in required_news_fields if field not in news_item]
+                    
+                    if missing_news_fields:
+                        logging.warning(f"❌ [news] News item {i}: Missing required fields: {missing_news_fields}")
+                        error_msg = f"News item {i}: Missing required fields: {', '.join(missing_news_fields)}"
+                        response_body = json.dumps({"error": error_msg}).encode('utf-8')
+                        resp_headers = (
+                            "HTTP/1.1 400 Bad Request\r\n"
+                            "Content-Type: application/json\r\n"
+                            f"Content-Length: {len(response_body)}\r\n"
+                            "Connection: close\r\n"
+                            "\r\n"
+                        )
+                        writer.write(resp_headers.encode("ascii") + response_body)
+                        await writer.drain()
+                        return
+
+                # Display the news notification
+                await display_news(news_data)
+                
+                # Send success response
+                response_body = json.dumps({"status": "success", "message": "News displayed"}).encode('utf-8')
+                headers = (
+                    "HTTP/1.1 200 OK\r\n"
+                    "Content-Type: application/json\r\n"
+                    f"Content-Length: {len(response_body)}\r\n"
+                    "Connection: close\r\n"
+                    "\r\n"
+                )
+                writer.write(headers.encode("ascii") + response_body)
+                await writer.drain()
+                return
+                
+            except json.JSONDecodeError as e:
+                logging.warning(f"❌ [news] Invalid JSON in POST body: {e}")
+                resp = b"HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: 26\r\nConnection: close\r\n\r\n{\"error\":\"Invalid JSON\"}"
+                writer.write(resp)
+                await writer.drain()
+                return
+            except Exception as e:
+                logging.error(f"❗ [news] Error processing news: {e}", exc_info=True)
+                resp = b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                writer.write(resp)
+                await writer.drain()
+                return
+
         # Handle POST /action endpoint (replaces TCP server)
         if method == "POST" and path == "/action":
             try:
@@ -4377,6 +4551,16 @@ async def handle_http(reader: asyncio.StreamReader, writer: asyncio.StreamWriter
                             # For single achievement, add directly
                             achievement_percentages_notification["remaining_time"] = remaining_time
 
+                # ---- Build news notification data ----
+                news_notification = None
+                if current_news and news_display_until:
+                    if now < news_display_until:
+                        news_notification = current_news.copy()
+                        # Add remaining display time for frontend timing
+                        news_notification["remaining_time"] = max(0.0, news_display_until - now)
+                        # Add sound for frontend
+                        news_notification["sound"] = "/sounds/xbox_achievement_unlocked.wav"
+
             body_obj = {
                 "text": text,
                 "action": action,
@@ -4390,6 +4574,7 @@ async def handle_http(reader: asyncio.StreamReader, writer: asyncio.StreamWriter
                 "achievement": achievement_notification,
                 "playtime": playtime_notification,
                 "achievement_percentages": achievement_percentages_notification,
+                "news": news_notification,
             }
             body_bytes = json.dumps(body_obj).encode("utf-8")
             headers = (

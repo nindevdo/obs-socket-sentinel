@@ -757,6 +757,111 @@
       letter-spacing: 0.05em;
     }
 
+    /* News notification styles (bottom of screen) */
+    #news-notification {
+      position: fixed;
+      bottom: 30px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: rgba(12, 12, 23, 0.95);
+      border: 2px solid #ffd700;
+      border-radius: 12px;
+      padding: 20px;
+      max-width: 80%;
+      min-width: 600px;
+      box-shadow: 
+        0 4px 20px rgba(0, 0, 0, 0.8),
+        inset 0 1px 0 rgba(255, 215, 0, 0.3);
+      backdrop-filter: blur(8px);
+      opacity: 0;
+      transform: translateX(-50%) translateY(50px);
+      transition: all 0.6s cubic-bezier(0.23, 1, 0.32, 1);
+      z-index: 1000;
+      color: #ffffff;
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    }
+
+    #news-notification.visible {
+      opacity: 1;
+      transform: translateX(-50%) translateY(0);
+    }
+
+    .news-header {
+      color: #ffd700;
+      font-size: 1.6rem;
+      font-weight: 800;
+      text-align: center;
+      margin-bottom: 15px;
+      text-shadow: 
+        0 2px 4px rgba(0, 0, 0, 0.8),
+        0 0 10px rgba(255, 215, 0, 0.6);
+      letter-spacing: 0.1em;
+    }
+
+    .news-content {
+      display: flex;
+      flex-direction: column;
+      gap: 15px;
+    }
+
+    .news-item {
+      background: rgba(20, 20, 35, 0.8);
+      border: 1px solid rgba(255, 215, 0, 0.4);
+      border-radius: 8px;
+      padding: 15px;
+      transition: all 0.3s ease;
+    }
+
+    .news-item:hover {
+      border-color: rgba(255, 215, 0, 0.7);
+      background: rgba(25, 25, 40, 0.9);
+    }
+
+    .news-game {
+      color: #ffd700;
+      font-size: 1.1rem;
+      font-weight: 700;
+      margin-bottom: 8px;
+      text-shadow: 0 1px 3px rgba(0, 0, 0, 0.8);
+    }
+
+    .news-title {
+      color: #ffffff;
+      font-size: 1.3rem;
+      font-weight: 600;
+      margin-bottom: 8px;
+      line-height: 1.4;
+      text-shadow: 0 1px 2px rgba(0, 0, 0, 0.6);
+    }
+
+    .news-description {
+      color: #e0e0e0;
+      font-size: 1rem;
+      line-height: 1.5;
+      margin-bottom: 10px;
+      text-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
+    }
+
+    .news-meta {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      color: #b0b0b0;
+      font-size: 0.9rem;
+      margin-top: 8px;
+      padding-top: 8px;
+      border-top: 1px solid rgba(255, 215, 0, 0.2);
+    }
+
+    .news-author {
+      font-weight: 500;
+    }
+
+    .news-source {
+      font-style: italic;
+      opacity: 0.8;
+    }
+
   </style>
 </head>
 
@@ -809,6 +914,14 @@
     <div class="achievement-percentages-header">🏆 ACHIEVEMENT PROGRESS</div>
     <div class="achievement-percentages-content" id="achievement-percentages-content">
       <!-- Achievements will be dynamically populated here -->
+    </div>
+  </div>
+
+  <!-- News notification (bottom of screen) -->
+  <div id="news-notification">
+    <div class="news-header">📰 GAME NEWS</div>
+    <div class="news-content" id="news-content">
+      <!-- News items will be dynamically populated here -->
     </div>
   </div>
 
@@ -869,6 +982,9 @@
     let lastAchievementPercentages = null;
     let achievementPercentagesTimeoutId = null;
     let achievementPercentagesSoundPlayed = false;
+
+    // News notification state
+    let lastNews = null;
 
     // Web Audio for GIF+audio
     let audioCtx = null;
@@ -1470,6 +1586,120 @@
       console.log(`[achievement_percentages] Hidden`);
     }
 
+    // News notification variables
+    const newsNotification = document.getElementById("news-notification");
+    const newsContent = document.getElementById("news-content");
+    let newsTimeoutId = null;
+    let newsSoundPlayed = false;
+
+    function showNews(news) {
+      if (!news || !news.news_items || news.news_items.length === 0) {
+        hideNews();
+        return;
+      }
+
+      const newsItems = news.news_items;
+      const gameName = news.game_name || 'Unknown Game';
+
+      // Clear previous content
+      newsContent.innerHTML = '';
+
+      // Create news items
+      newsItems.forEach((newsItem, index) => {
+        const item = document.createElement('div');
+        item.className = 'news-item';
+
+        // Create title
+        const title = document.createElement('div');
+        title.className = 'news-title';
+        title.textContent = newsItem.title || 'Untitled';
+
+        // Create game name (only show once for all items)
+        if (index === 0) {
+          const game = document.createElement('div');
+          game.className = 'news-game';
+          game.textContent = `🎮 ${gameName}`;
+          item.appendChild(game);
+        }
+
+        // Create description
+        const description = document.createElement('div');
+        description.className = 'news-description';
+        // Truncate long descriptions
+        const content = newsItem.contents || '';
+        const truncatedContent = content.length > 200 ? content.substring(0, 200) + '...' : content;
+        description.textContent = truncatedContent;
+
+        // Create meta info
+        const meta = document.createElement('div');
+        meta.className = 'news-meta';
+        
+        const author = document.createElement('span');
+        author.className = 'news-author';
+        author.textContent = `By: ${newsItem.author || 'Unknown'}`;
+        
+        const source = document.createElement('span');
+        source.className = 'news-source';
+        source.textContent = newsItem.feedlabel || 'News';
+        
+        meta.appendChild(author);
+        meta.appendChild(source);
+
+        // Assemble the item
+        item.appendChild(title);
+        item.appendChild(description);
+        item.appendChild(meta);
+        
+        newsContent.appendChild(item);
+      });
+
+      // Play news sound only once when first showing
+      if (!newsSoundPlayed && news.sound) {
+        try {
+          const audio = new Audio(news.sound);
+          audio.volume = 0.7;
+          audio.play().catch(e => {
+            console.log(`[news] Could not play sound: ${e.message}`);
+          });
+          console.log(`[news] Playing sound: ${news.sound}`);
+        } catch (e) {
+          console.log(`[news] Error creating audio: ${e.message}`);
+        }
+        newsSoundPlayed = true;
+      }
+
+      // Show the notification
+      newsNotification.classList.add('visible');
+
+      // Clear any existing timeout
+      if (newsTimeoutId) {
+        clearTimeout(newsTimeoutId);
+      }
+
+      // Auto-hide after 60 seconds (1 minute)
+      const remainingTime = news.remaining_time || 60000;
+      newsTimeoutId = setTimeout(() => {
+        hideNews();
+      }, remainingTime);
+
+      const itemNames = newsItems.map(item => item.title || 'Untitled').slice(0, 3);
+      console.log(`[news] Showing ${newsItems.length} news items for ${gameName}: ${itemNames.join(', ')} (${remainingTime/1000}s remaining)`);
+    }
+
+    function hideNews() {
+      newsNotification.classList.remove('visible');
+      
+      if (newsTimeoutId) {
+        clearTimeout(newsTimeoutId);
+        newsTimeoutId = null;
+      }
+      
+      // Reset sound flag so it can play again for new notifications
+      newsSoundPlayed = false;
+      
+      console.log(`[news] Hidden`);
+    }
+
     function playSoundAndAnimate(soundUrl, memeUrl, videoUrl, audioDuration = 0) {
       const hasVideo = !!videoUrl;
       const hasMeme = !!memeUrl;
@@ -1906,6 +2136,7 @@
         const achievement = data.achievement || null;
         const playtime = data.playtime || null;
         const achievement_percentages = data.achievement_percentages || null;
+        const news = data.news || null;
 
         // Handle achievement notifications
         const achievementChanged = !lastAchievement && achievement || 
@@ -1940,6 +2171,17 @@
         if (achievementPercentagesChanged) {
           showAchievementPercentages(achievement_percentages);
           lastAchievementPercentages = achievement_percentages;
+        }
+
+        // Handle news notifications
+        const newsChanged = !lastNews && news || 
+                           lastNews && !news ||
+                           lastNews && news && 
+                           JSON.stringify(lastNews) !== JSON.stringify(news);
+        
+        if (newsChanged) {
+          showNews(news);
+          lastNews = news;
         }
 
         const prevRunsLen = lastRunsSnapshot.length;
