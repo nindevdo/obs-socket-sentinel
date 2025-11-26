@@ -3510,22 +3510,16 @@ async def display_news(news_data: Dict[str, Any]) -> None:
     try:
         logging.info(f"📰 [news] Displaying news for {news_data['game_name']} with {len(news_data['news_items'])} items")
         
+        # Clear any existing news first
+        current_news = None
+        news_display_until = None
+        
+        # Small delay to ensure clearing takes effect
+        await asyncio.sleep(0.1)
+        
         # Set current news and display timeout
         current_news = news_data.copy()
         news_display_until = time.time() + NEWS_DISPLAY_DURATION
-        
-        # Remove backend sound playing - let frontend handle it
-        # sounds_dir = Path("/sounds")
-        # sound_file = sounds_dir / "achievement-unlocked-xbox.mp3"
-        # if sound_file.exists():
-        #     try:
-        #         import subprocess
-        #         subprocess.run(['aplay', str(sound_file)], check=False, capture_output=True)
-        #         logging.info("🎵 [news] Played notification sound")
-        #     except Exception as e:
-        #         logging.warning(f"🎵 [news] Failed to play sound: {e}")
-        
-        # No WebSocket needed - HTTP POST only
         
         # Auto-clear after duration
         asyncio.create_task(auto_clear_news())
@@ -3540,9 +3534,9 @@ async def auto_clear_news():
     try:
         await asyncio.sleep(NEWS_DISPLAY_DURATION)
         
-        async with state_lock:
-            current_news = None
-            news_display_until = None
+        # Don't use state_lock here to avoid blocking
+        current_news = None
+        news_display_until = None
             
         logging.info(f"🧽 [news] Auto-cleared notification after {NEWS_DISPLAY_DURATION}s")
         
