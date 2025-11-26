@@ -762,27 +762,33 @@
       position: fixed;
       bottom: 30px;
       left: 50%;
+      transform: translateX(-50%) translateY(50px);
+      opacity: 0;
+      pointer-events: none;
+      z-index: 15000;
+      
+      max-width: 80%;
+      min-width: 600px;
       background: rgba(12, 12, 23, 0.95);
       border: 2px solid #ffd700;
       border-radius: 12px;
       padding: 20px;
-      max-width: 80%;
-      min-width: 600px;
       box-shadow: 
         0 4px 20px rgba(0, 0, 0, 0.8),
         inset 0 1px 0 rgba(255, 215, 0, 0.3);
       backdrop-filter: blur(8px);
-      opacity: 0;
-      transform: translateX(-50%) translateY(50px);
-      transition: all 0.6s cubic-bezier(0.23, 1, 0.32, 1);
-      z-index: 10000;
-      color: #ffffff;
+      
       font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      color: #ffffff;
+      
+      transition: 
+        transform 0.6s cubic-bezier(0.22, 1, 0.36, 1),
+        opacity 0.4s ease-out;
     }
 
     #news-notification.visible {
       opacity: 1;
-      transform: translateX(-50%) translateY(0);
+      transform: translateX(-50%) translateY(0%);
     }
 
     .news-header {
@@ -1679,21 +1685,10 @@
       }
 
       // Show the notification
-      console.log(`[news] Adding visible class to news notification`);
-      newsNotification.style.display = 'block';
-      setTimeout(() => {
-        newsNotification.classList.add('visible');
-      }, 10); // Small delay to ensure display change takes effect
-      console.log(`[news] News notification classes:`, newsNotification.classList.toString());
-      console.log(`[news] News notification computed style:`, window.getComputedStyle(newsNotification).opacity, window.getComputedStyle(newsNotification).transform);
+      newsNotification.classList.add('visible');
 
-      // Clear any existing timeout
-      if (newsTimeoutId) {
-        clearTimeout(newsTimeoutId);
-      }
-
-      // Auto-hide after 60 seconds (1 minute)
-      const remainingTime = news.remaining_time || 60000;
+      // Auto-hide after remaining time or default duration (30 seconds)
+      const remainingTime = news.remaining_time || 30000;
       newsTimeoutId = setTimeout(() => {
         hideNews();
       }, remainingTime);
@@ -2195,25 +2190,34 @@
         }
 
         // Handle news notifications  
-        const newsChanged = (!lastNews && news) || 
-                           (lastNews && !news) ||
-                           (lastNews && news && 
-                            (lastNews.game_name !== news.game_name ||
-                             !lastNews.news_items ||
-                             !news.news_items ||
-                             lastNews.news_items.length !== news.news_items.length ||
-                             lastNews.news_items.some((item, i) => 
-                               !news.news_items[i] || 
-                               item.title !== news.news_items[i].title ||
-                               item.contents !== news.news_items[i].contents)));
-        
-        if (newsChanged) {
-          console.log(`[news] News changed - showing new notification`);
-          showNews(news);
-          lastNews = news ? {
-            game_name: news.game_name,
-            news_items: news.news_items ? [...news.news_items] : []
-          } : null;
+        if (news) {
+          console.log(`[news] News data received:`, news);
+          const newsChanged = (!lastNews && news) || 
+                             (lastNews && !news) ||
+                             (lastNews && news && 
+                              (lastNews.game_name !== news.game_name ||
+                               !lastNews.news_items ||
+                               !news.news_items ||
+                               lastNews.news_items.length !== news.news_items.length ||
+                               lastNews.news_items.some((item, i) => 
+                                 !news.news_items[i] || 
+                                 item.title !== news.news_items[i].title ||
+                                 item.contents !== news.news_items[i].contents)));
+          
+          console.log(`[news] newsChanged: ${newsChanged}, lastNews:`, lastNews);
+          
+          if (newsChanged) {
+            console.log(`[news] News changed - showing new notification`);
+            showNews(news);
+            lastNews = news ? {
+              game_name: news.game_name,
+              news_items: news.news_items ? [...news.news_items] : []
+            } : null;
+          }
+        } else if (lastNews) {
+          console.log(`[news] No news data but had lastNews - hiding`);
+          hideNews();
+          lastNews = null;
         }
 
         const prevRunsLen = lastRunsSnapshot.length;

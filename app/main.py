@@ -3499,7 +3499,7 @@ def validate_achievement_data(data: Dict[str, Any]) -> bool:
 
 # News notification globals
 news_display_until = None
-NEWS_DISPLAY_DURATION = 30  # 1 minute
+NEWS_DISPLAY_DURATION = 30  # 30 seconds like other notifications
 
 async def display_news(news_data: Dict[str, Any]) -> None:
     """
@@ -4554,10 +4554,11 @@ async def handle_http(reader: asyncio.StreamReader, writer: asyncio.StreamWriter
                 # ---- Build news notification data ----
                 news_notification = None
                 if current_news and news_display_until:
-                    if now < news_display_until:
+                    remaining = max(0.0, news_display_until - now)
+                    if remaining > 0.1:  # Only show if more than 0.1 seconds remaining
                         news_notification = current_news.copy()
                         # Add remaining display time for frontend timing
-                        news_notification["remaining_time"] = max(0.0, news_display_until - now)
+                        news_notification["remaining_time"] = remaining * 1000  # Convert to milliseconds
                         # Add sound for frontend
                         news_notification["sound"] = "/sounds/achievement-unlocked-xbox.mp3"
 
