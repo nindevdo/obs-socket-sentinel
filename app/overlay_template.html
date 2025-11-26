@@ -1418,6 +1418,20 @@
       playtimeTime.textContent = playtime.total_playtime_readable || '';
       playtimeHours.textContent = `${playtime.total_playtime_hours || 0} hours total`;
 
+      // Play playtime sound
+      if (playtime.sound) {
+        try {
+          const audio = new Audio(playtime.sound);
+          audio.volume = 0.7;
+          audio.play().catch(e => {
+            console.warn('[playtime] Sound play failed:', e);
+          });
+          console.log(`[playtime] Playing sound: ${playtime.sound}`);
+        } catch (e) {
+          console.warn('[playtime] Sound loading failed:', e);
+        }
+      }
+
       // Show the notification
       playtimeNotification.classList.add('visible');
       
@@ -2192,28 +2206,11 @@
         // Handle news notifications  
         if (news) {
           console.log(`[news] News data received:`, news);
-          const newsChanged = (!lastNews && news) || 
-                             (lastNews && !news) ||
-                             (lastNews && news && 
-                              (lastNews.game_name !== news.game_name ||
-                               !lastNews.news_items ||
-                               !news.news_items ||
-                               lastNews.news_items.length !== news.news_items.length ||
-                               lastNews.news_items.some((item, i) => 
-                                 !news.news_items[i] || 
-                                 item.title !== news.news_items[i].title ||
-                                 item.contents !== news.news_items[i].contents)));
           
-          console.log(`[news] newsChanged: ${newsChanged}, lastNews:`, lastNews);
+          // Always show news when received - no caching logic
+          console.log(`[news] Showing news notification (no caching)`);
+          showNews(news);
           
-          if (newsChanged) {
-            console.log(`[news] News changed - showing new notification`);
-            showNews(news);
-            lastNews = news ? {
-              game_name: news.game_name,
-              news_items: news.news_items ? [...news.news_items] : []
-            } : null;
-          }
         } else if (lastNews) {
           console.log(`[news] No news data but had lastNews - hiding`);
           hideNews();

@@ -3507,36 +3507,30 @@ async def display_news(news_data: Dict[str, Any]) -> None:
     """
     global current_news, news_display_until
     
-    try:
-        logging.info(f"📰 [news] Displaying news for {news_data['game_name']} with {len(news_data['news_items'])} items")
-        
-        # Clear any existing news first
-        current_news = None
-        news_display_until = None
-        
-        # Small delay to ensure clearing takes effect
-        await asyncio.sleep(0.1)
-        
-        # Set current news and display timeout
+    async with state_lock:
         current_news = news_data.copy()
         news_display_until = time.time() + NEWS_DISPLAY_DURATION
         
-        # Auto-clear after duration
-        asyncio.create_task(auto_clear_news())
+        game_name = news_data.get('game_name', 'Unknown Game')
+        item_count = len(news_data.get('news_items', []))
         
-    except Exception as e:
-        logging.error(f"❗ [news] Error in display_news: {e}", exc_info=True)
+        logging.info(f"📰 [news] Displaying news: {item_count} items for {game_name}")
+        
+        # Auto-clear after duration
+        asyncio.create_task(_auto_clear_news())
 
-async def auto_clear_news():
-    """Auto-clear news notification after timeout."""
+async def _auto_clear_news():
+    """
+    Clear news notification after display duration.
+    """
     global current_news, news_display_until
     
     try:
         await asyncio.sleep(NEWS_DISPLAY_DURATION)
         
-        # Don't use state_lock here to avoid blocking
-        current_news = None
-        news_display_until = None
+        async with state_lock:
+            current_news = None
+            news_display_until = None
             
         logging.info(f"🧽 [news] Auto-cleared notification after {NEWS_DISPLAY_DURATION}s")
         
@@ -4528,6 +4522,8 @@ async def handle_http(reader: asyncio.StreamReader, writer: asyncio.StreamWriter
                         playtime_notification = current_playtime.copy()
                         # Add remaining display time for frontend timing
                         playtime_notification["remaining_time"] = max(0.0, playtime_display_until - now)
+                        # Add sound for frontend
+                        playtime_notification["sound"] = "/sounds/ticking-clock.mp3"
 
                 # ---- Build achievement percentages notification data ----
                 achievement_percentages_notification = None
@@ -4544,17 +4540,18 @@ async def handle_http(reader: asyncio.StreamReader, writer: asyncio.StreamWriter
                         else:
                             # For single achievement, add directly
                             achievement_percentages_notification["remaining_time"] = remaining_time
+                        # Add sound for frontend
+                        achievement_percentages_notification["sound"] = "/sounds/achievements-progress.mp3"
 
                 # ---- Build news notification data ----
                 news_notification = None
                 if current_news and news_display_until:
-                    remaining = max(0.0, news_display_until - now)
-                    if remaining > 0.1:  # Only show if more than 0.1 seconds remaining
+                    if now < news_display_until:
                         news_notification = current_news.copy()
                         # Add remaining display time for frontend timing
-                        news_notification["remaining_time"] = remaining * 1000  # Convert to milliseconds
+                        news_notification["remaining_time"] = max(0.0, news_display_until - now) * 1000  # Convert to milliseconds
                         # Add sound for frontend
-                        news_notification["sound"] = "/sounds/achievement-unlocked-xbox.mp3"
+                        news_notification["sound"] = "/sounds/news.mp3"
 
             body_obj = {
                 "text": text,
