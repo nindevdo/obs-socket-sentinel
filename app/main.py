@@ -3042,7 +3042,7 @@ async def fetch_random_discord_sound(action_key: str, project: Optional[str]) ->
 async def pick_media_for_action(
     action_key: str,
     project_key: str,
-) -> tuple[Optional[str], Optional[str], Optional[str], Optional[float]]:
+) -> tuple[Optional[str], Optional[float]]:
     """
     Decide which media to use for a given action based on EMOJI VOTE WEIGHTS ONLY.
     
@@ -4204,6 +4204,8 @@ async def handle_http(reader: asyncio.StreamReader, writer: asyncio.StreamWriter
                         if remaining > 0:
                             more_data = await reader.read(remaining)
                             body_data += more_data
+                    else:
+                        body_data = await reader.read(content_length)
 
                 # Parse JSON
                 playtime_data = json.loads(body_data.decode('utf-8'))
@@ -4278,6 +4280,8 @@ async def handle_http(reader: asyncio.StreamReader, writer: asyncio.StreamWriter
                         if remaining > 0:
                             more_data = await reader.read(remaining)
                             body_data += more_data
+                    else:
+                        body_data = await reader.read(content_length)
 
                 # Parse JSON
                 achievement_data = json.loads(body_data.decode('utf-8'))
@@ -4373,6 +4377,8 @@ async def handle_http(reader: asyncio.StreamReader, writer: asyncio.StreamWriter
                         if remaining > 0:
                             more_data = await reader.read(remaining)
                             body_data += more_data
+                    else:
+                        body_data = await reader.read(content_length)
 
                 # Parse JSON
                 news_data = json.loads(body_data.decode('utf-8'))
@@ -4597,10 +4603,20 @@ async def handle_http(reader: asyncio.StreamReader, writer: asyncio.StreamWriter
                         content_length = int(line.split(':', 1)[1].strip())
                         break
                 
+                body_data = b""
                 if content_length > 0:
-                    body = await reader.read(content_length)
-                    body_str = body.decode('utf-8')
-                    
+                    # We may have already read part of the body in the initial read
+                    lines = req_text.split('\r\n\r\n', 1)
+                    if len(lines) > 1:
+                        body_start = lines[1].encode('utf-8')
+                        body_data += body_start
+                        remaining = content_length - len(body_start)
+                        if remaining > 0:
+                            more_data = await reader.read(remaining)
+                            body_data += more_data
+                
+                if body_data:
+                    body_str = body_data.decode('utf-8')
                     try:
                         data = json.loads(body_str)
                         provided_token = data.get('token', '').strip()
@@ -4636,7 +4652,7 @@ async def handle_http(reader: asyncio.StreamReader, writer: asyncio.StreamWriter
                         return
                         
                     except json.JSONDecodeError:
-                        resp = b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                        resp = b"HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: 26\r\nConnection: close\r\n\r\n{\"error\":\"Invalid JSON\"}"
                         writer.write(resp)
                         await writer.drain()
                         return
@@ -4675,6 +4691,8 @@ async def handle_http(reader: asyncio.StreamReader, writer: asyncio.StreamWriter
                         if remaining > 0:
                             more_data = await reader.read(remaining)
                             body_data += more_data
+                    else:
+                        body_data = await reader.read(content_length)
 
                 # Parse JSON
                 action_data = json.loads(body_data.decode('utf-8'))

@@ -177,9 +177,16 @@ local function send_http_action(game_key, action_name)
 		auth_header = string.format("-H 'Authorization: Bearer %s'", SS_TOKEN)
 	end
 	
+	local url
+	if (HOST:find("^http://") or HOST:find("^https://")) then
+		url = HOST .. "/action"
+	else
+		url = "http://" .. HOST .. ":" .. HTTP_PORT .. "/action"
+	end
+	
 	local cmd = string.format(
-		"curl -s -X POST http://%s:%d/action -H 'Content-Type: application/json' %s -d %s >/dev/null 2>&1 &",
-		HOST, HTTP_PORT, auth_header, shell_escape(json_payload)
+		"curl -s -X POST %s -H 'Content-Type: application/json' %s -d %s >/dev/null 2>&1 &",
+		url, auth_header, shell_escape(json_payload)
 	)
 
 	log_info("Executing: " .. cmd)
@@ -356,9 +363,16 @@ local function http_get(host, port, path, token)
 		auth_header = string.format("-H 'Authorization: Bearer %s'", token)
 	end
 	
+	local url
+	if (host:find("^http://") or host:find("^https://")) then
+		url = host .. path
+	else
+		url = "http://" .. host .. ":" .. port .. path
+	end
+
 	local cmd = string.format(
-		"curl -s http://%s:%d%s %s",
-		host, port, path, auth_header
+		"curl -s %s %s",
+		url, auth_header
 	)
 	
 	local handle = io.popen(cmd)
@@ -373,7 +387,13 @@ local function http_get(host, port, path, token)
 end
 
 local function load_yaml_from_server()
-	log_info(string.format("Fetching YAML from http://%s:%d/config ...", HOST, HTTP_PORT))
+	local url
+	if (HOST:find("^http://") or HOST:find("^https://")) then
+		url = HOST .. "/config"
+	else
+		url = "http://" .. HOST .. ":" .. HTTP_PORT .. "/config"
+	end
+	log_info(string.format("Fetching YAML from %s ...", url))
 	local text = http_get(HOST, HTTP_PORT, "/config", SS_TOKEN)
 	if not text or text == "" then
 		log_error("YAML fetch failed or empty. Check token and server connectivity.")
