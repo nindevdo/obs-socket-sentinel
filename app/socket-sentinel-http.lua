@@ -290,9 +290,16 @@ local function send_hotkey_mappings()
 		auth_header = string.format("-H 'Authorization: Bearer %s'", SS_TOKEN)
 	end
 	
+	local url
+	if (HOST:find("^http://") or HOST:find("^https://")) then
+		url = HOST .. "/hotkeys"
+	else
+		url = "http://" .. HOST .. ":" .. HTTP_PORT .. "/hotkeys"
+	end
+
 	local cmd = string.format(
-		"curl -s -X POST http://%s:%d/hotkeys -H 'Content-Type: application/json' %s -d %s >/dev/null 2>&1 &",
-		HOST, HTTP_PORT, auth_header, shell_escape(json_payload)
+		"curl -s -X POST %s -H 'Content-Type: application/json' %s -d %s >/dev/null 2>&1 &",
+		url, auth_header, shell_escape(json_payload)
 	)
 
 	log_info("Executing: " .. cmd)
@@ -371,10 +378,12 @@ local function http_get(host, port, path, token)
 	end
 
 	local cmd = string.format(
-		"curl -s %s %s",
+		"curl -s -v %s %s 2>&1", -- Added -v for verbose output and 2>&1 to capture stderr
 		url, auth_header
 	)
 	
+	log_info("Executing curl command: " .. cmd)
+
 	local handle = io.popen(cmd)
 	if not handle then
 		log_error("Failed to execute curl command")
@@ -383,6 +392,22 @@ local function http_get(host, port, path, token)
 	
 	local data = handle:read("*a")
 	handle:close()
+
+	-- Check for curl errors or empty data and log everything for debugging
+	if not data or data == "" then
+		log_error("curl command returned no data.")
+		return nil
+	else
+		-- Log the full output from curl for debugging purposes
+		log_info("curl output: " .. data)
+	end
+
+	-- A simple check to see if the output looks like a YAML file vs an error page
+	if not data:find("games:") then
+		log_warn("Fetched data does not appear to be a valid config file.")
+		-- We still return the data to see what the server is actually sending
+	end
+
 	return data
 end
 
@@ -396,7 +421,7 @@ local function load_yaml_from_server()
 	log_info(string.format("Fetching YAML from %s ...", url))
 	local text = http_get(HOST, HTTP_PORT, "/config", SS_TOKEN)
 	if not text or text == "" then
-		log_error("YAML fetch failed or empty. Check token and server connectivity.")
+		log_error("YAML fetch failed. See curl output in logs above for details. Check host, port, token, and server connectivity.")
 		return nil
 	end
 	return text
