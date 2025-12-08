@@ -4124,7 +4124,7 @@ async def handle_http(reader: asyncio.StreamReader, writer: asyncio.StreamWriter
     # Declare global variables at function start to avoid scope issues  
     global current_hotkey_mappings, last_hotkey_update
     
-    logging.debug(f"🌐 [http] Request from {addr}")
+    logging.info(f"🌐 [http] Request from {addr}")
     try:
         request = await reader.read(1024)
         if not request:
@@ -4143,7 +4143,9 @@ async def handle_http(reader: asyncio.StreamReader, writer: asyncio.StreamWriter
             raw_path = "/"
 
         path = raw_path.split("?", 1)[0]  # strip query params
-        logging.debug(f"🌐 [http] {method} {path}")
+        logging.info(f"🌐 [http] {method} {path}")
+        request_head = req_text.split('\r\n\r\n')[0]
+        logging.info(f"🌐 [http] Raw request headers from {addr}:\n---\n{request_head}\n---")
 
         # Selective authentication - only protect certain endpoints
         if requires_auth(path, method):
