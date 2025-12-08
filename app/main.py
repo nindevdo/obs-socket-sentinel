@@ -4058,6 +4058,50 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
         logging.info(f"🔌 [tcp] Connection from {addr} closed.")
 
 
+async def _read_http_body(req_text: str, request_bytes: bytes, reader: asyncio.StreamReader) -> bytes:
+    """Helper to robustly read the body of an HTTP request."""
+    content_length = 0
+    for line in req_text.split('\r\n'):
+        if line.lower().startswith('content-length:'):
+            try:
+                content_length = int(line.split(':', 1)[1].strip())
+            except (ValueError, IndexError):
+                content_length = 0
+            break
+
+    if content_length == 0:
+        return b""
+
+    separator = b'\r\n\r\n'
+    
+    body_fragment = b''
+    header_end_pos = request_bytes.find(separator)
+
+    if header_end_pos != -1:
+        body_start_pos = header_end_pos + len(separator)
+        body_fragment = request_bytes[body_start_pos:]
+    
+    body_data = bytearray(body_fragment)
+    
+    # Check if we need to read more data from the stream
+    if len(body_data) < content_length:
+        try:
+            # Loop until all bytes are read
+            while len(body_data) < content_length:
+                remaining_bytes = content_length - len(body_data)
+                chunk = await reader.read(remaining_bytes)
+                if not chunk:
+                    logging.warning(f"Connection closed prematurely while reading request body. Expected {content_length}, got {len(body_data)}.")
+                    # Return what we have, the JSON parser will likely fail, which is handled downstream
+                    return bytes(body_data)
+                body_data.extend(chunk)
+        except asyncio.TimeoutError:
+            logging.error("Timeout while reading request body.")
+            return b"" # Return empty on timeout
+
+    return bytes(body_data)
+
+
 # -----------------------------
 # HTTP SERVER
 # -----------------------------
@@ -4114,27 +4158,7 @@ async def handle_http(reader: asyncio.StreamReader, writer: asyncio.StreamWriter
         # Handle POST /achievement endpoint
         if method == "POST" and path == "/achievement":
             try:
-                # Read the full request body
-                content_length = 0
-                for line in req_text.split('\r\n'):
-                    if line.lower().startswith('content-length:'):
-                        content_length = int(line.split(':')[1].strip())
-                        break
-                
-                # Read JSON body
-                body_data = b""
-                if content_length > 0:
-                    # We may have already read part of the body in the initial read
-                    lines = req_text.split('\r\n\r\n', 1)
-                    if len(lines) > 1:
-                        body_start = lines[1].encode('utf-8')
-                        body_data += body_start
-                        remaining = content_length - len(body_start)
-                        if remaining > 0:
-                            additional_data = await reader.read(remaining)
-                            body_data += additional_data
-                    else:
-                        body_data = await reader.read(content_length)
+                body_data = await _read_http_body(req_text, request, reader)
                 
                 if not body_data:
                     # Send error response
@@ -4185,27 +4209,12 @@ async def handle_http(reader: asyncio.StreamReader, writer: asyncio.StreamWriter
         # Handle POST /playtime endpoint
         if method == "POST" and path == "/playtime":
             try:
-                # Read the full request body
-                content_length = 0
-                for line in req_text.split('\r\n'):
-                    if line.lower().startswith('content-length:'):
-                        content_length = int(line.split(':')[1].strip())
-                        break
-                
-                # Read JSON body
-                body_data = b""
-                if content_length > 0:
-                    # We may have already read part of the body in the initial read
-                    lines = req_text.split('\r\n\r\n', 1)
-                    if len(lines) > 1:
-                        body_start = lines[1].encode('utf-8')
-                        body_data += body_start
-                        remaining = content_length - len(body_start)
-                        if remaining > 0:
-                            more_data = await reader.read(remaining)
-                            body_data += more_data
-                    else:
-                        body_data = await reader.read(content_length)
+                body_data = await _read_http_body(req_text, request, reader)
+                if not body_data:
+                    resp = b"HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: 29\r\nConnection: close\r\n\r\n{\"error\":\"Request body is empty\"}"
+                    writer.write(resp)
+                    await writer.drain()
+                    return
 
                 # Parse JSON
                 playtime_data = json.loads(body_data.decode('utf-8'))
@@ -4261,27 +4270,12 @@ async def handle_http(reader: asyncio.StreamReader, writer: asyncio.StreamWriter
         # Handle POST /global-achievement-percentages endpoint
         if method == "POST" and path == "/global-achievement-percentages":
             try:
-                # Read the full request body
-                content_length = 0
-                for line in req_text.split('\r\n'):
-                    if line.lower().startswith('content-length:'):
-                        content_length = int(line.split(':')[1].strip())
-                        break
-                
-                # Read JSON body
-                body_data = b""
-                if content_length > 0:
-                    # We may have already read part of the body in the initial read
-                    lines = req_text.split('\r\n\r\n', 1)
-                    if len(lines) > 1:
-                        body_start = lines[1].encode('utf-8')
-                        body_data += body_start
-                        remaining = content_length - len(body_start)
-                        if remaining > 0:
-                            more_data = await reader.read(remaining)
-                            body_data += more_data
-                    else:
-                        body_data = await reader.read(content_length)
+                body_data = await _read_http_body(req_text, request, reader)
+                if not body_data:
+                    resp = b"HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: 29\r\nConnection: close\r\n\r\n{\"error\":\"Request body is empty\"}"
+                    writer.write(resp)
+                    await writer.drain()
+                    return
 
                 # Parse JSON
                 achievement_data = json.loads(body_data.decode('utf-8'))
@@ -4358,27 +4352,12 @@ async def handle_http(reader: asyncio.StreamReader, writer: asyncio.StreamWriter
         # Handle POST /news endpoint
         if method == "POST" and path == "/news":
             try:
-                # Read the full request body
-                content_length = 0
-                for line in req_text.split('\r\n'):
-                    if line.lower().startswith('content-length:'):
-                        content_length = int(line.split(':')[1].strip())
-                        break
-                
-                # Read JSON body
-                body_data = b""
-                if content_length > 0:
-                    # We may have already read part of the body in the initial read
-                    lines = req_text.split('\r\n\r\n', 1)
-                    if len(lines) > 1:
-                        body_start = lines[1].encode('utf-8')
-                        body_data += body_start
-                        remaining = content_length - len(body_start)
-                        if remaining > 0:
-                            more_data = await reader.read(remaining)
-                            body_data += more_data
-                    else:
-                        body_data = await reader.read(content_length)
+                body_data = await _read_http_body(req_text, request, reader)
+                if not body_data:
+                    resp = b"HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: 29\r\nConnection: close\r\n\r\n{\"error\":\"Request body is empty\"}"
+                    writer.write(resp)
+                    await writer.drain()
+                    return
 
                 # Parse JSON
                 news_data = json.loads(body_data.decode('utf-8'))
@@ -4478,27 +4457,8 @@ async def handle_http(reader: asyncio.StreamReader, writer: asyncio.StreamWriter
             global current_hotkey_mappings, last_hotkey_update
             logging.info("[hotkeys] POST /hotkeys endpoint hit")
             try:
-                # Read the full request body
-                content_length = 0
-                for line in req_text.split('\r\n'):
-                    if line.lower().startswith('content-length:'):
-                        content_length = int(line.split(':', 1)[1].strip())
-                        break
-                
-                if content_length > 0:
-                    # We may have already read part of the body in the initial read
-                    lines = req_text.split('\r\n\r\n', 1)
-                    body_data = b""
-                    if len(lines) > 1:
-                        body_start = lines[1].encode('utf-8')
-                        body_data += body_start
-                        remaining = content_length - len(body_start)
-                        if remaining > 0:
-                            more_data = await reader.read(remaining)
-                            body_data += more_data
-                    else:
-                        body_data = await reader.read(content_length)
-                        
+                body_data = await _read_http_body(req_text, request, reader)
+                if body_data:
                     body_str = body_data.decode('utf-8')
                     
                     try:
@@ -4596,24 +4556,7 @@ async def handle_http(reader: asyncio.StreamReader, writer: asyncio.StreamWriter
         # Handle POST /auth endpoint (token validation)
         if method == "POST" and path == "/auth":
             try:
-                # Read the full request body
-                content_length = 0
-                for line in req_text.split('\r\n'):
-                    if line.lower().startswith('content-length:'):
-                        content_length = int(line.split(':', 1)[1].strip())
-                        break
-                
-                body_data = b""
-                if content_length > 0:
-                    # We may have already read part of the body in the initial read
-                    lines = req_text.split('\r\n\r\n', 1)
-                    if len(lines) > 1:
-                        body_start = lines[1].encode('utf-8')
-                        body_data += body_start
-                        remaining = content_length - len(body_start)
-                        if remaining > 0:
-                            more_data = await reader.read(remaining)
-                            body_data += more_data
+                body_data = await _read_http_body(req_text, request, reader)
                 
                 if body_data:
                     body_str = body_data.decode('utf-8')
@@ -4672,27 +4615,12 @@ async def handle_http(reader: asyncio.StreamReader, writer: asyncio.StreamWriter
         # Handle POST /action endpoint (replaces TCP server)
         if method == "POST" and path == "/action":
             try:
-                # Read the full request body
-                content_length = 0
-                for line in req_text.split('\r\n'):
-                    if line.lower().startswith('content-length:'):
-                        content_length = int(line.split(':')[1].strip())
-                        break
-                
-                # Read JSON body
-                body_data = b""
-                if content_length > 0:
-                    # We may have already read part of the body in the initial read
-                    lines = req_text.split('\r\n\r\n', 1)
-                    if len(lines) > 1:
-                        body_start = lines[1].encode('utf-8')
-                        body_data += body_start
-                        remaining = content_length - len(body_start)
-                        if remaining > 0:
-                            more_data = await reader.read(remaining)
-                            body_data += more_data
-                    else:
-                        body_data = await reader.read(content_length)
+                body_data = await _read_http_body(req_text, request, reader)
+                if not body_data:
+                    resp = b"HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: 29\r\nConnection: close\r\n\r\n{\"error\":\"Request body is empty\"}"
+                    writer.write(resp)
+                    await writer.drain()
+                    return
 
                 # Parse JSON
                 action_data = json.loads(body_data.decode('utf-8'))
