@@ -1,5 +1,29 @@
 project_name: hunt_showdown
 games:
+  arc_raiders:
+    emoji: ["🚀"]
+    actions:
+      alarm: "📢"
+      boss: "🔥"
+      clear: "🧹"
+      death: "☠️"
+      downed: "🤬"
+      elite: "👑"
+      explosion: "💥"
+      extract: "⛵"
+      fire: "🔥"
+      funny: "😂"
+      damage: "⚡"
+      kill: "💀"
+      multi_kill: "🎆"
+      perfect: "💫"
+      yeet: "🌀"
+      rare_loot: "💎"
+      revive: "❤️"
+      run_end: "⏹️"
+      run_start: "▶️"
+      stealth: "🕵️"
+      team_wipe: "💣"
   hunt_showdown:
     emoji: ["🤠"]
     actions:

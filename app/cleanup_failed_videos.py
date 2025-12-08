@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/local/bin/python
 """
 Discord Failed Video Cleanup Script
 
@@ -139,11 +139,6 @@ async def delete_messages(messages: List[tuple[discord.Message, str, str]], dry_
             deleted_count += 1
             logging.info(f"✅ Deleted message {i+1}/{len(messages)}: {message.id} (contained {failed_url[:40]}..., {error_type})")
             
-            # Rate limiting - Discord allows ~50 deletes per minute
-            if (i + 1) % 10 == 0:
-                logging.info(f"⏸️ Rate limiting: sleeping 5 seconds after {i+1} deletes...")
-                await asyncio.sleep(5)
-                
         except discord.NotFound:
             logging.warning(f"⚠️ Message {message.id} already deleted")
             deleted_count += 1  # Count as success
@@ -153,6 +148,9 @@ async def delete_messages(messages: List[tuple[discord.Message, str, str]], dry_
         except Exception as e:
             logging.error(f"❌ Error deleting message {message.id}: {e}")
             failed_count += 1
+        
+        # Add 2 second delay after each delete for gentler rate limiting
+        await asyncio.sleep(1)
     
     logging.info(f"🏁 Deletion complete: {deleted_count} deleted, {failed_count} failed")
 

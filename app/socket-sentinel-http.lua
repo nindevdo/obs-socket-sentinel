@@ -1,7 +1,7 @@
 -- socket-sentinel-http.lua  
 -- OBS Lua script: send hotkey events over HTTP POST (secure replacement for TCP)
 -- Fetch YAML config from http://HOST:HTTP_PORT/config
--- Per-game hotkeys and scene-based gating.
+-- Per-game hotkeys with auto-detection and manual selection.
 
 local obs = obslua
 
@@ -15,6 +15,12 @@ local SS_TOKEN = "" -- Security token for authentication
 
 local GAMES = {} -- populated from YAML
 local hotkey_ids = {} -- [game][action] = id
+
+-- Game detection and selection
+local AUTO_DETECT_GAME = true -- whether to auto-detect based on window title
+local MANUAL_GAME_SELECTION = "" -- manually selected game key
+local DETECTED_GAME = "" -- auto-detected game from window title
+local CURRENT_WINDOW_TITLE = "" -- last detected window title for display
 
 ----------------------------------------------------
 -- LOGGING
@@ -83,17 +89,75 @@ local function shell_escape(s)
 end
 
 ----------------------------------------------------
--- CURRENT SCENE NAME
+-- GAME DETECTION
 ----------------------------------------------------
 
-local function get_current_scene_name()
-	local src = obs.obs_frontend_get_current_scene()
-	if not src then
+-- Game detection patterns - maps window titles to game keys
+local GAME_DETECTION_PATTERNS = {
+	["hunt"] = "hunt_showdown",
+	["hunt: showdown"] = "hunt_showdown",
+	["enshrouded"] = "enshrouded",
+	["chivalry"] = "chivalry2",
+	["chivalry 2"] = "chivalry2",
+	["fortnite"] = "fortnite",
+	["helldivers"] = "hell_divers_2",
+	["hell divers"] = "hell_divers_2"
+}
+
+local function get_active_window_title()
+	-- Use xdotool to get active window title on Linux
+	local cmd = "xdotool getwindowfocus getwindowname 2>/dev/null"
+	local f = io.popen(cmd, "r")
+	if not f then
 		return nil
 	end
-	local name = obs.obs_source_get_name(src)
-	obs.obs_source_release(src)
-	return name
+	local title = f:read("*a")
+	f:close()
+	if title then
+		return trim(title)
+	end
+	return nil
+end
+
+local function detect_game_from_window()
+	local title = get_active_window_title()
+	CURRENT_WINDOW_TITLE = title or "No window detected"
+	
+	if not title or title == "" then
+		return nil
+	end
+	
+	local title_lower = title:lower()
+	log_info("Checking window title: " .. title)
+	
+	for pattern, game_key in pairs(GAME_DETECTION_PATTERNS) do
+		if title_lower:find(pattern, 1, true) then -- plain text search
+			log_info("✓ Detected game: " .. game_key .. " from window title: " .. title)
+			return game_key
+		end
+	end
+	
+	log_info("✗ No game pattern matched for window: " .. title)
+	return nil
+end
+
+local function get_current_game_key()
+	-- Priority: Manual selection > Auto-detection > First available game
+	if MANUAL_GAME_SELECTION ~= "" and GAMES[MANUAL_GAME_SELECTION] then
+		return MANUAL_GAME_SELECTION
+	end
+	
+	if AUTO_DETECT_GAME then
+		local detected = detect_game_from_window()
+		if detected and GAMES[detected] then
+			DETECTED_GAME = detected
+			return detected
+		end
+	end
+	
+	-- Fallback to first available game
+	local first_game = next(GAMES)
+	return first_game
 end
 
 ----------------------------------------------------
@@ -126,47 +190,159 @@ local function send_http_action(game_key, action_name)
 end
 
 ----------------------------------------------------
+-- HELPER FUNCTIONS
+----------------------------------------------------
+-- Helper function to extract readable hotkey string from OBS hotkey data
+local function extract_hotkey_string(hotkey_id)
+	-- Use OBS scripting API to get the actual hotkey combination
+	if not hotkey_id then
+		return "Not Set"
+	end
+	
+	-- Try to get key combination from hotkey save data
+	local hotkey_save_array = obs.obs_hotkey_save(hotkey_id)
+	if hotkey_save_array then
+		local count = obs.obs_data_array_count(hotkey_save_array)
+		if count > 0 then
+			local binding_data = obs.obs_data_array_item(hotkey_save_array, 0)
+			local binding_data = obs.obs_data_array_item(hotkey_save_array, 0)
+			if binding_data then
+				local key = obs.obs_data_get_string(binding_data, "key")
+				local modifiers = obs.obs_data_get_obj(binding_data, "modifiers")
+				
+				local key_str = ""
+				if modifiers then
+					local shift = obs.obs_data_get_bool(modifiers, "shift")
+					local ctrl = obs.obs_data_get_bool(modifiers, "control") 
+					local alt = obs.obs_data_get_bool(modifiers, "alt")
+					local cmd = obs.obs_data_get_bool(modifiers, "command")
+					
+					if ctrl then key_str = key_str .. "Ctrl+" end
+					if alt then key_str = key_str .. "Alt+" end
+					if shift then key_str = key_str .. "Shift+" end
+					if cmd then key_str = key_str .. "Cmd+" end
+					
+					obs.obs_data_release(modifiers)
+				end
+				
+				key_str = key_str .. (key or "")
+				obs.obs_data_release(binding_data)
+				obs.obs_data_array_release(hotkey_save_array)
+				
+				return key_str ~= "" and key_str or "Not Set"
+			end
+		end
+		obs.obs_data_array_release(hotkey_save_array)
+	end
+	
+	return "Not Set"
+end
+
+----------------------------------------------------
+-- HOTKEY MAPPINGS SYNC VIA CURL
+----------------------------------------------------
+local function send_hotkey_mappings()
+	log_info("🔑 Syncing hotkey mappings to server...")
+	
+	-- Build hotkey mappings from all registered hotkeys
+	local mappings = {}
+	
+	for game_key, actions_map in pairs(hotkey_ids) do
+		for action_name, hotkey_id in pairs(actions_map) do
+			-- Get a simplified hotkey representation
+			local hotkey_str = extract_hotkey_string(hotkey_id)
+			if hotkey_str and hotkey_str ~= "" then
+				mappings[action_name] = hotkey_str
+				log_info(string.format("  %s: %s", action_name, hotkey_str))
+			end
+		end
+	end
+	
+	if next(mappings) == nil then
+		log_info("📭 No hotkey mappings to send")
+		return
+	end
+	
+	-- Create JSON payload
+	local mappings_json = "{"
+	local first = true
+	for action, hotkey in pairs(mappings) do
+		if not first then
+			mappings_json = mappings_json .. ","
+		end
+		mappings_json = mappings_json .. string.format('"%s":"%s"', action, hotkey)
+		first = false
+	end
+	mappings_json = mappings_json .. "}"
+	
+	local json_payload = string.format('{"mappings":%s}', mappings_json)
+	
+	-- Prepare curl command with proper authentication
+	local auth_header = ""
+	if SS_TOKEN and SS_TOKEN ~= "" then
+		auth_header = string.format("-H 'Authorization: Bearer %s'", SS_TOKEN)
+	end
+	
+	local cmd = string.format(
+		"curl -s -X POST http://%s:%d/hotkeys -H 'Content-Type: application/json' %s -d %s >/dev/null 2>&1 &",
+		HOST, HTTP_PORT, auth_header, shell_escape(json_payload)
+	)
+
+	log_info("Executing: " .. cmd)
+	os.execute(cmd)
+	log_info(string.format("📤 Sent %d hotkey mappings to server", table_length(mappings)))
+end
+
+----------------------------------------------------
 -- HOTKEY CALLBACK
 ----------------------------------------------------
-local function make_hotkey_callback(game_key, action_name)
+local function make_hotkey_callback(hotkey_game_key, action_name)
 	return function(pressed)
 		if not pressed then
 			return
 		end
 
-		local scene_name = get_current_scene_name()
-		if not scene_name then
+		-- Get the current active game
+		local current_game = get_current_game_key()
+		if not current_game then
+			log_warn("No game detected or configured - ignoring hotkey")
 			return
 		end
 
-		local scene = normalize_name(scene_name)
-		local game = normalize_name(game_key)
-
-		-- System actions (undo, clear, start) work globally regardless of scene
+		-- System actions (undo, clear, start) work globally regardless of game
 		local system_actions = {undo = true, clear = true, start = true}
 		
 		if not system_actions[action_name] then
-			-- Scene gating: only fire when this game matches the current scene for regular actions
-			if scene ~= game then
+			-- Game gating: only fire when this hotkey's game matches the current active game
+			if normalize_name(current_game) ~= normalize_name(hotkey_game_key) then
 				log_info(
 					string.format(
-						"Ignoring [%s:%s] because scene '%s' != game '%s'",
-						game_key,
+						"Ignoring [%s:%s] because current game '%s' != hotkey game '%s'",
+						hotkey_game_key,
 						action_name,
-						scene_name,
-						game_key
+						current_game,
+						hotkey_game_key
 					)
 				)
 				return
 			end
 		end
 
+		local detection_method = "manual"
+		if AUTO_DETECT_GAME and current_game == DETECTED_GAME then
+			detection_method = "auto-detected"
+		elseif MANUAL_GAME_SELECTION ~= "" then
+			detection_method = "manual selection"
+		else
+			detection_method = "fallback"
+		end
+
 		log_info(
-			string.format("Hotkey triggered → game=%s action=%s (scene '%s')", game_key, action_name, scene_name)
+			string.format("Hotkey triggered → game=%s action=%s (%s)", current_game, action_name, detection_method)
 		)
 
-		-- send both game and action via HTTP
-		send_http_action(game_key, action_name)
+		-- send current game and action via HTTP
+		send_http_action(current_game, action_name)
 	end
 end
 
@@ -355,6 +531,14 @@ local function register_hotkeys()
 			::continue_system::
 		end
 	end
+	
+	-- Send hotkey mappings to server after registration
+	log_info("🔄 Sending updated hotkey mappings to server...")
+	-- Use a small delay to ensure hotkeys are fully registered
+	obs.timer_add(function()
+		send_hotkey_mappings()
+		obs.remove_current_callback()
+	end, 1000)
 end
 
 ----------------------------------------------------
@@ -475,12 +659,13 @@ function script_description()
 <ul>
 <li>🔒 Secure HTTP POST with authentication</li>
 <li>⚡ Real-time game action tracking</li>
-<li>🎯 Scene-based action gating</li>
+<li>🎯 Game-based action gating with auto-detection</li>
 <li>🔄 Dynamic config loading</li>
 </ul>
 <p><strong>Setup:</strong></p>
 <ol>
 <li>Enter your server host/port and authentication token</li>
+<li>Configure game detection or manual selection</li>
 <li>Click "Refresh Config" to load game configurations</li>
 <li>Assign hotkeys to your game actions</li>
 </ol>
@@ -494,6 +679,27 @@ function script_properties()
 	obs.obs_properties_add_int(props, "http_port", "HTTP Port", 1, 65535, 1)
 	obs.obs_properties_add_text(props, "ss_token", "Authentication Token", obs.OBS_TEXT_PASSWORD)
 	
+	-- Game detection options
+	obs.obs_properties_add_bool(props, "auto_detect", "Auto-detect game from window title")
+	
+	local game_list = obs.obs_properties_add_list(props, "manual_game", "Manual game selection", obs.OBS_COMBO_TYPE_LIST, obs.OBS_COMBO_FORMAT_STRING)
+	obs.obs_property_list_add_string(game_list, "Auto-detect / First Available", "")
+	
+	-- Populate with games from config
+	for game_key, _ in pairs(GAMES) do
+		obs.obs_property_list_add_string(game_list, game_key, game_key)
+	end
+	
+	-- Status display (read-only text fields)
+	obs.obs_properties_add_text(props, "status_window", "Current Window Title", obs.OBS_TEXT_INFO)
+	obs.obs_properties_add_text(props, "status_detected", "Detected Game", obs.OBS_TEXT_INFO) 
+	obs.obs_properties_add_text(props, "status_active", "Active Game", obs.OBS_TEXT_INFO)
+	
+	obs.obs_properties_add_button(props, "test_detection", "🔍 Test Detection Now", function()
+		test_game_detection()
+		return true
+	end)
+	
 	obs.obs_properties_add_button(props, "refresh_config", "🔄 Refresh Config", function()
 		refresh_config()
 		return true
@@ -506,6 +712,8 @@ function script_defaults(settings)
 	obs.obs_data_set_default_string(settings, "host", HOST)
 	obs.obs_data_set_default_int(settings, "http_port", HTTP_PORT)
 	obs.obs_data_set_default_string(settings, "ss_token", SS_TOKEN)
+	obs.obs_data_set_default_bool(settings, "auto_detect", AUTO_DETECT_GAME)
+	obs.obs_data_set_default_string(settings, "manual_game", MANUAL_GAME_SELECTION)
 end
 
 function script_update(settings)
@@ -517,9 +725,55 @@ function script_update(settings)
 	end
 
 	SS_TOKEN = obs.obs_data_get_string(settings, "ss_token") or ""
+	AUTO_DETECT_GAME = obs.obs_data_get_bool(settings, "auto_detect")
+	MANUAL_GAME_SELECTION = obs.obs_data_get_string(settings, "manual_game") or ""
 
-	log_info(string.format("Updated settings → HTTP=%s:%d Token=%s", HOST, HTTP_PORT, 
-		SS_TOKEN ~= "" and "***SET***" or "NOT_SET"))
+	local detection_info = ""
+	if MANUAL_GAME_SELECTION ~= "" then
+		detection_info = "Manual: " .. MANUAL_GAME_SELECTION
+	elseif AUTO_DETECT_GAME then
+		detection_info = "Auto-detect enabled"
+	else
+		detection_info = "Fallback to first game"
+	end
+
+	-- Update status fields
+	update_status_display(settings)
+
+	log_info(string.format("Updated settings → HTTP=%s:%d Token=%s Game=%s", HOST, HTTP_PORT, 
+		SS_TOKEN ~= "" and "***SET***" or "NOT_SET", detection_info))
+end
+
+-- Function to test game detection and update status display
+function test_game_detection()
+	local detected = detect_game_from_window()
+	DETECTED_GAME = detected or ""
+	local active_game = get_current_game_key()
+	
+	log_info("=== GAME DETECTION TEST ===")
+	log_info("Window Title: " .. (CURRENT_WINDOW_TITLE or "None"))
+	log_info("Detected Game: " .. (DETECTED_GAME ~= "" and DETECTED_GAME or "None"))
+	log_info("Active Game: " .. (active_game or "None"))
+	log_info("Auto-detect: " .. (AUTO_DETECT_GAME and "Enabled" or "Disabled"))
+	log_info("Manual selection: " .. (MANUAL_GAME_SELECTION ~= "" and MANUAL_GAME_SELECTION or "None"))
+	log_info("==========================")
+end
+
+-- Function to update status display in properties
+function update_status_display(settings)
+	if not settings then
+		return
+	end
+	
+	-- Force a detection check
+	local detected = detect_game_from_window()
+	DETECTED_GAME = detected or ""
+	local active_game = get_current_game_key()
+	
+	-- Update the status fields
+	obs.obs_data_set_string(settings, "status_window", CURRENT_WINDOW_TITLE or "No window detected")
+	obs.obs_data_set_string(settings, "status_detected", DETECTED_GAME ~= "" and DETECTED_GAME or "No game detected")
+	obs.obs_data_set_string(settings, "status_active", active_game or "No game active")
 end
 
 function script_load(settings)
@@ -552,6 +806,15 @@ function script_load(settings)
 	end
 	
 	log_info("✅ Script load complete with preserved hotkey bindings")
+	
+	-- Start periodic hotkey mapping sync (every 30 seconds)
+	obs.timer_add(send_hotkey_mappings, 30000)
+	
+	-- Send initial hotkey mappings after a short delay
+	obs.timer_add(function()
+		send_hotkey_mappings()
+		obs.remove_current_callback()
+	end, 3000)
 end
 
 function script_save(settings)
@@ -574,6 +837,8 @@ function script_save(settings)
 end
 
 function script_unload()
+	-- Remove timer
+	obs.timer_remove(send_hotkey_mappings)
 	clear_hotkeys()
 	log_info("Socket Sentinel HTTP Client unloaded")
 end

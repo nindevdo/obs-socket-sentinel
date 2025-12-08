@@ -444,6 +444,10 @@ def get_action_emoji(action_key: str, project: Optional[str]) -> str:
     return emoji or ""
 
 
+# Global variables for hotkey mappings
+current_hotkey_mappings = {}
+last_hotkey_update = 0
+
 # -----------------------------
 # SECURITY HELPERS
 # -----------------------------
@@ -479,6 +483,7 @@ def requires_auth(path: str, method: str = "GET") -> bool:
     
     Public endpoints (no auth required):
     - GET / (main HTML page for browser overlay)
+    - GET /ui (action control UI driver)
     - GET /overlay (JSON data for browser overlay)  
     - GET /config (configuration for hotkey scripts)
     - GET /dsounds/* (cached audio files for overlay)
@@ -489,14 +494,19 @@ def requires_auth(path: str, method: str = "GET") -> bool:
     - POST requests (if any)
     - Other endpoints not explicitly listed as public
     """
-    # All POST requests require auth
+    # All POST requests require auth EXCEPT the /auth and /hotkeys endpoints
     if method.upper() not in ("GET", "HEAD"):
+        # Exceptions: endpoints that don't require auth
+        if path == "/auth" or path == "/hotkeys":
+            return False
         return True
     
     # Public GET endpoints for browser overlay and scripts
     if (path == "/" or 
+        path == "/ui" or
         path.startswith("/overlay") or 
         path.startswith("/config") or
+        path.startswith("/hotkeys") or
         path.startswith("/dsounds/") or 
         path.startswith("/dvideos/") or 
         path.startswith("/dmemes/") or
@@ -705,6 +715,7 @@ def _build_game_caches_from_messages(messages: List[dict]) -> Dict[str, List[dic
 async def refresh_discord_messages_cache() -> None:
     """
     Fetch messages from the configured Discord channel and cache them in memory.
+    Now with pagination support to fetch ALL messages from the channel.
     Also builds per-game caches using GAME_EMOJI_MAP.
     """
     global discord_messages_cache, discord_game_caches
@@ -714,38 +725,80 @@ async def refresh_discord_messages_cache() -> None:
         return
 
     async with discord_cache_lock:
-        api_url = (
-            f"https://discord.com/api/v10/channels/"
-            f"{DISCORD_CHANNEL_ID}/messages?limit={DISCORD_MESSAGES_LIMIT}"
-        )
         headers = {
             "Authorization": f"Bot {DISCORD_BOT_TOKEN}",
             "User-Agent": "obs-socket-sentinel (emoji-meme/sound fetcher, cached)",
         }
 
-        logging.info(
-            f"[discord] Refreshing message cache from channel {DISCORD_CHANNEL_ID} "
-            f"(limit={DISCORD_MESSAGES_LIMIT})"
-        )
+        # Reset caches
+        discord_messages_cache = []
+        discord_game_caches.clear()
+
+        total_messages = 0
+        before_id = None  # For pagination
+        page = 1
+        max_pages = 200  # Safety limit - should handle ~20,000 messages
+
+        logging.info(f"[discord] Starting paginated message fetch from channel {DISCORD_CHANNEL_ID}")
 
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.get(api_url, headers=headers, timeout=10) as resp:
-                    if resp.status != 200:
-                        text = await resp.text()
-                        logging.warning(
-                            f"[discord] Cache refresh got non-200 response {resp.status}: {text[:200]}"
-                        )
-                        return
-                    messages = await resp.json()
+                while page <= max_pages:
+                    # Build URL with pagination
+                    api_url = f"https://discord.com/api/v10/channels/{DISCORD_CHANNEL_ID}/messages?limit=100"
+                    if before_id:
+                        api_url += f"&before={before_id}"
+                    
+                    logging.info(f"[discord] Fetching page {page}" + (f" (before={before_id})" if before_id else " (latest)"))
+                    
+                    async with session.get(api_url, headers=headers, timeout=15) as resp:
+                        if resp.status == 429:  # Rate limited
+                            retry_after = int(resp.headers.get('retry-after', 5))
+                            logging.warning(f"[discord] Rate limited, waiting {retry_after} seconds...")
+                            await asyncio.sleep(retry_after)
+                            continue
+                            
+                        if resp.status != 200:
+                            text = await resp.text()
+                            logging.warning(
+                                f"[discord] Page {page} got non-200 response {resp.status}: {text[:200]}"
+                            )
+                            break
+
+                        messages = await resp.json()
+                        
+                        if not messages:  # No more messages
+                            logging.info(f"[discord] No more messages found on page {page}, stopping")
+                            break
+                            
+                        page_count = len(messages)
+                        total_messages += page_count
+                        
+                        logging.info(f"[discord] Page {page}: got {page_count} messages (total so far: {total_messages})")
+
+                        # Add messages from this page
+                        discord_messages_cache.extend(messages)
+                        before_id = messages[-1]["id"]  # Last message ID for next page
+
+                        # If we got less than 100, we've reached the end
+                        if page_count < 100:
+                            logging.info(f"[discord] Reached end of messages (got {page_count} < 100 on page {page})")
+                            break
+                            
+                        page += 1
+                        
+                        # Small delay to be nice to Discord API
+                        await asyncio.sleep(0.5)
+
         except Exception as e:
-            logging.error(f"[discord] Error refreshing message cache: {e}", exc_info=True)
+            logging.error(f"❗ [discord] Error during paginated fetch: {e}", exc_info=True)
             return
 
-        discord_messages_cache = messages or []
-        logging.info(
-            f"[discord] Cache refresh complete: {len(discord_messages_cache)} messages cached."
-        )
+        if total_messages == 0:
+            logging.warning("[discord] No messages fetched!")
+            return
+
+        logging.info(f"[discord] Paginated fetch complete: {total_messages} total messages from {page-1} pages")
 
         # Rebuild per-game caches (used by memes; sounds may ignore this)
         discord_game_caches = _build_game_caches_from_messages(discord_messages_cache)
@@ -2402,23 +2455,58 @@ async def cache_discord_video(url: str) -> tuple[Optional[str], Optional[float],
 
                 async def _download_youtube(u: str) -> tuple[Optional[float], Optional[str], Optional[str]]:
                     def _inner() -> tuple[Optional[float], Optional[str], Optional[str]]:
+                        # Random delay between 1-10 seconds to appear more human-like
+                        import random
+                        import time
+                        delay = random.uniform(1, 10)
+                        logging.info(f"⏸️ [yt-dlp] Random anti-bot delay: {delay:.1f}s for {u[:50]}...")
+                        time.sleep(delay)
+                        
                         ydl_opts = {
-                            "format": "best[ext=mp4][height<=720]/best[height<=720]/best",
+                            # Don't specify format at all - let yt-dlp pick whatever works!
                             "outtmpl": str(fs_path),
-                            "quiet": False,  # Enable logging to see what's happening
-                            "no_warnings": False,  # Enable warnings
-                            "writesubtitles": False,
+                            "quiet": True,
+                            "no_warnings": False,
                             "writeautomaticsub": False,
-                            "writeinfojson": False,
+                            "writesubtitles": False,
                             "writethumbnail": False,
-                            "socket_timeout": 30,
-                            "retries": 3,
+                            "embed_subs": False,
+                            # No extractor_args - use yt-dlp defaults like command line
+                            # Built-in yt-dlp anti-blocking options
+                            "socket_timeout": 60,  # Longer timeout
+                            "retries": 5,  # More retries
+                            "fragment_retries": 10,  # Retry fragments more
                             "extract_flat": False,
                             "ignoreerrors": False,
+                            "no_check_certificate": True,
+                            # Anti-blocking sleep settings
+                            "sleep_requests": random.uniform(3, 8),  # Longer sleep between requests
+                            "sleep_subtitles": random.uniform(1, 3),
+                            "sleep_formats": random.uniform(1, 5),  # Sleep between format attempts
+                            "sleep_fragments": random.uniform(0.5, 2),  # Sleep between fragments
+                            # Throttle download speed to appear less bot-like
+                            "ratelimit": random.randint(500000, 2000000),  # 500KB-2MB/s limit
+                            # User-agent rotation with more realistic agents
+                            "http_headers": {
+                                "User-Agent": random.choice([
+                                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
+                                    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/121.0"
+                                ])
+                            },
+                            # Additional anti-detection options
+                            "skip_unavailable_fragments": True,
+                            "keep_fragments": False,
+                            "abort_on_unavailable_fragment": False,
+                            # Force IPv4 to avoid IPv6 detection
+                            "force_ipv4": True,
+                            # Add some randomness to avoid pattern detection
+                            "http_chunk_size": random.randint(1024, 10240),  # Random chunk size
                         }
                         
                         # Add cookies if available
-                        cookies_file = "/app/cookies.txt"
+                        cookies_file = "/app/youtube/cookies.txt"
                         if os.path.exists(cookies_file):
                             ydl_opts["cookiefile"] = cookies_file
                             logging.info(f"[yt-dlp] Using cookies from {cookies_file}")
@@ -2678,6 +2766,13 @@ async def get_video_duration_from_file(file_path: str) -> Optional[float]:
                     "quiet": True,
                     "skip_download": True,
                     "no_warnings": True,
+                    # JavaScript execution for YouTube
+                    "extractor_args": {
+                        "youtube": {
+                            "player_client": ["web", "ios", "android_embedded"],
+                            "skip": ["hls", "dash"]
+                        }
+                    }
                 }
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                     info = ydl.extract_info(f"file://{path}", download=False)
@@ -3982,6 +4077,9 @@ async def handle_http(reader: asyncio.StreamReader, writer: asyncio.StreamWriter
       - GET /dmemes/<...>  => serves cached Discord meme/image files
     """
     addr = writer.get_extra_info("peername")
+    # Declare global variables at function start to avoid scope issues  
+    global current_hotkey_mappings, last_hotkey_update
+    
     logging.debug(f"🌐 [http] Request from {addr}")
     try:
         request = await reader.read(1024)
@@ -4369,6 +4467,192 @@ async def handle_http(reader: asyncio.StreamReader, writer: asyncio.StreamWriter
                 await writer.drain()
                 return
 
+        # Handle POST /hotkeys endpoint (hotkey mapping updates)
+        if method == "POST" and path == "/hotkeys":
+            global current_hotkey_mappings, last_hotkey_update
+            logging.info("[hotkeys] POST /hotkeys endpoint hit")
+            try:
+                # Read the full request body
+                content_length = 0
+                for line in req_text.split('\r\n'):
+                    if line.lower().startswith('content-length:'):
+                        content_length = int(line.split(':', 1)[1].strip())
+                        break
+                
+                if content_length > 0:
+                    # We may have already read part of the body in the initial read
+                    lines = req_text.split('\r\n\r\n', 1)
+                    body_data = b""
+                    if len(lines) > 1:
+                        body_start = lines[1].encode('utf-8')
+                        body_data += body_start
+                        remaining = content_length - len(body_start)
+                        if remaining > 0:
+                            more_data = await reader.read(remaining)
+                            body_data += more_data
+                    else:
+                        body_data = await reader.read(content_length)
+                        
+                    body_str = body_data.decode('utf-8')
+                    
+                    try:
+                        hotkey_data = json.loads(body_str)
+                        
+                        # Update global hotkey mappings
+                        current_hotkey_mappings = hotkey_data.get('mappings', {})
+                        last_hotkey_update = time.time()
+                        
+                        logging.info(f"[hotkeys] Updated hotkey mappings: {len(current_hotkey_mappings)} actions")
+                        
+                        response_data = {"status": "success", "message": "Hotkey mappings updated"}
+                        body_bytes = json.dumps(response_data).encode('utf-8')
+                        resp = (
+                            "HTTP/1.1 200 OK\r\n"
+                            "Content-Type: application/json\r\n"
+                            "Content-Length: " + str(len(body_bytes)) + "\r\n"
+                            "Access-Control-Allow-Origin: *\r\n"
+                            "Access-Control-Allow-Methods: POST, OPTIONS\r\n"
+                            "Access-Control-Allow-Headers: Content-Type, Authorization\r\n"
+                            "Connection: close\r\n"
+                            "\r\n"
+                        ).encode('ascii') + body_bytes
+                        
+                        writer.write(resp)
+                        await writer.drain()
+                        return
+                        
+                    except json.JSONDecodeError:
+                        resp = b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                        writer.write(resp)
+                        await writer.drain()
+                        return
+                else:
+                    resp = b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                    writer.write(resp)
+                    await writer.drain()
+                    return
+                    
+            except Exception as e:
+                logging.error(f"❗ [http] Error in hotkeys endpoint: {e}", exc_info=True)
+                resp = b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                writer.write(resp)
+                await writer.drain()
+                return
+
+        # Handle GET /hotkeys endpoint (get current hotkey mappings)
+        elif method == "GET" and path == "/hotkeys":
+            try:
+                response_data = {
+                    "mappings": current_hotkey_mappings,
+                    "last_updated": last_hotkey_update,
+                    "status": "success"
+                }
+                
+                body_bytes = json.dumps(response_data).encode('utf-8')
+                resp = (
+                    "HTTP/1.1 200 OK\r\n"
+                    "Content-Type: application/json\r\n"
+                    "Content-Length: " + str(len(body_bytes)) + "\r\n"
+                    "Access-Control-Allow-Origin: *\r\n"
+                    "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n"
+                    "Access-Control-Allow-Headers: Content-Type, Authorization\r\n"
+                    "Connection: close\r\n"
+                    "\r\n"
+                ).encode('ascii') + body_bytes
+                
+                writer.write(resp)
+                await writer.drain()
+                return
+                
+            except Exception as e:
+                logging.error(f"❗ [http] Error in GET hotkeys endpoint: {e}", exc_info=True)
+                resp = b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                writer.write(resp)
+                await writer.drain()
+                return
+
+        # Handle OPTIONS for CORS preflight
+        if method == "OPTIONS":
+            if path == "/auth" or path == "/action" or path == "/hotkeys":
+                resp = (
+                    "HTTP/1.1 200 OK\r\n"
+                    "Access-Control-Allow-Origin: *\r\n"
+                    "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n"
+                    "Access-Control-Allow-Headers: Content-Type, Authorization\r\n"
+                    "Content-Length: 0\r\n"
+                    "Connection: close\r\n"
+                    "\r\n"
+                ).encode('ascii')
+                writer.write(resp)
+                await writer.drain()
+                return
+
+        # Handle POST /auth endpoint (token validation)
+        if method == "POST" and path == "/auth":
+            try:
+                # Read the full request body
+                content_length = 0
+                for line in req_text.split('\r\n'):
+                    if line.lower().startswith('content-length:'):
+                        content_length = int(line.split(':', 1)[1].strip())
+                        break
+                
+                if content_length > 0:
+                    body = await reader.read(content_length)
+                    body_str = body.decode('utf-8')
+                    
+                    try:
+                        data = json.loads(body_str)
+                        provided_token = data.get('token', '').strip()
+                        
+                        # Debug logging
+                        logging.info(f"[auth] Provided token: '{provided_token}' (len={len(provided_token)})")
+                        logging.info(f"[auth] Server SS_TOKEN: '{SS_TOKEN}' (len={len(SS_TOKEN) if SS_TOKEN else 0})")
+                        logging.info(f"[auth] Tokens match: {provided_token == SS_TOKEN}")
+                        
+                        # Validate token
+                        if not SS_TOKEN:
+                            # If no token is configured, allow access
+                            response_data = {"valid": True, "message": "No authentication required"}
+                        elif provided_token == SS_TOKEN:
+                            response_data = {"valid": True, "message": "Token valid"}
+                        else:
+                            response_data = {"valid": False, "message": "Invalid token"}
+                        
+                        body_bytes = json.dumps(response_data).encode('utf-8')
+                        resp = (
+                            "HTTP/1.1 200 OK\r\n"
+                            "Content-Type: application/json\r\n"
+                            "Content-Length: " + str(len(body_bytes)) + "\r\n"
+                            "Access-Control-Allow-Origin: *\r\n"
+                            "Access-Control-Allow-Methods: POST, OPTIONS\r\n"
+                            "Access-Control-Allow-Headers: Content-Type\r\n"
+                            "Connection: close\r\n"
+                            "\r\n"
+                        ).encode('ascii') + body_bytes
+                        
+                        writer.write(resp)
+                        await writer.drain()
+                        return
+                        
+                    except json.JSONDecodeError:
+                        resp = b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                        writer.write(resp)
+                        await writer.drain()
+                        return
+                else:
+                    resp = b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                    writer.write(resp)
+                    await writer.drain()
+                    return
+                    
+            except Exception as e:
+                logging.error(f"❗ [http] Error in auth endpoint: {e}", exc_info=True)
+                resp = b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                writer.write(resp)
+                await writer.drain()
+                return
+
         # Handle POST /action endpoint (replaces TCP server)
         if method == "POST" and path == "/action":
             try:
@@ -4635,6 +4919,39 @@ async def handle_http(reader: asyncio.StreamReader, writer: asyncio.StreamWriter
             headers = (
                 "HTTP/1.1 200 OK\r\n"
                 "Content-Type: text/yaml; charset=utf-8\r\n"
+                f"Content-Length: {len(body_bytes)}\r\n"
+                "Connection: close\r\n"
+                "\r\n"
+            )
+            writer.write(headers.encode("ascii") + body_bytes)
+            await writer.drain()
+
+        elif path == "/ui":
+            # Serve the UI driver HTML
+            from pathlib import Path as PathLib
+            UI_DRIVER_FILE = PathLib(__file__).parent / "ui_driver_template.html"
+            try:
+                if UI_DRIVER_FILE.exists():
+                    body_str = UI_DRIVER_FILE.read_text(encoding="utf-8")
+                else:
+                    logging.warning("⚠️ UI_DRIVER_FILE missing; using fallback.")
+                    body_str = """<!DOCTYPE html>
+<html><head><title>OBS Socket Sentinel UI</title></head>
+<body>
+<h1>UI Driver Not Found</h1>
+<p>The UI driver template is missing. Please check the installation.</p>
+<p><a href="/">Back to Overlay</a></p>
+</body></html>"""
+            except Exception as e:
+                logging.error(f"❗ [http] Failed to read UI_DRIVER_FILE: {e}", exc_info=True)
+                body_str = """<!DOCTYPE html>
+<html><head><title>Error</title></head>
+<body><h1>Error</h1><p>Failed to load UI driver.</p></body></html>"""
+
+            body_bytes = body_str.encode("utf-8")
+            headers = (
+                "HTTP/1.1 200 OK\r\n"
+                "Content-Type: text/html; charset=utf-8\r\n"
                 f"Content-Length: {len(body_bytes)}\r\n"
                 "Connection: close\r\n"
                 "\r\n"
@@ -4929,7 +5246,8 @@ async def main() -> None:
 
     # Security configuration logging
     if SS_TOKEN:
-        logging.info("🔐 Security: Token authentication ENABLED")
+        logging.info(f"🔐 Security: Token authentication ENABLED (token length: {len(SS_TOKEN)})")
+        logging.info(f"🔐 Security: Token starts with: '{SS_TOKEN[:10]}...'")
     else:
         logging.warning("⚠️ Security: Token authentication DISABLED - set SS_TOKEN for security!")
 
