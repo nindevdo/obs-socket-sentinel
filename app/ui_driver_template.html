@@ -771,7 +771,19 @@
                 this.AUTH_TIMEOUT = 30 * 60 * 1000; // 30 minutes
                 
                 this.initAuth();
+                this.setupDelegatedEventListeners(); // New: setup delegated listeners
             }
+
+            setupDelegatedEventListeners() {
+                this.contentEl.addEventListener('click', (e) => {
+                    let targetButton = e.target.closest('.action-btn');
+                    if (targetButton) {
+                        e.preventDefault();
+                        const action = targetButton.dataset.action;
+                        const game = targetButton.dataset.game;
+                        this.triggerAction(action, game, targetButton);
+                    }
+                });
 
             initAuth() {
                 // Check if we have a stored token first
@@ -1095,7 +1107,7 @@
                     // Re-render UI if hotkeys were updated
                     if (this.isAuthenticated && this.config && this.currentGame) {
                         this.render();
-                        this.attachEventListeners();
+        
                     }
                 }, 30000);
             }
@@ -1231,7 +1243,7 @@
                 html += '</div>';
 
                 this.contentEl.innerHTML = html;
-                this.attachEventListeners();
+
             }
 
             createActionButton(action, emoji, hotkey, isSystem = false) {
@@ -1275,17 +1287,7 @@
                 return '';
             }
 
-            attachEventListeners() {
-                const buttons = this.contentEl.querySelectorAll('.action-btn');
-                buttons.forEach(button => {
-                    button.addEventListener('click', (e) => {
-                        e.preventDefault();
-                        const action = button.dataset.action;
-                        const game = button.dataset.game;
-                        this.triggerAction(action, game, button);
-                    });
-                });
-            }
+
 
             async triggerAction(action, game, buttonEl) {
                 try {
