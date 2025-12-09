@@ -1794,7 +1794,29 @@ async def get_cached_discord_video_with_weight(action_key: str, project: Optiona
         reactions = msg.get("reactions") or []
         match_weight = 0
 
+        # Check if this message has video content
+        has_video_content = False
+        for att in msg.get("attachments", []):
+            url = (att.get("url") or "").strip()
+            fname = (att.get("filename") or "").lower()
+            ctype = (att.get("content_type") or "").lower()
+            if (ctype.startswith("video/") or 
+                fname.endswith(VIDEO_EXTS) or 
+                any(ext in url.lower() for ext in VIDEO_EXTS)):
+                has_video_content = True
+                break
+        
+        for emb in msg.get("embeds", []):
+            emb_url = (emb.get("url") or "").strip()
+            if emb_url and (any(ext in emb_url.lower() for ext in VIDEO_EXTS) or YOUTUBE_RE.search(emb_url)):
+                has_video_content = True
+                break
+        
+        if has_video_content:
+            messages_with_videos += 1
+
         # Calculate emoji weight for this message
+        has_target_emoji = False
         for r in reactions:
             emoji_obj = r.get("emoji") or {}
             name = emoji_obj.get("name") or ""
@@ -1809,12 +1831,20 @@ async def get_cached_discord_video_with_weight(action_key: str, project: Optiona
                 norm_name = normalize_emoji(name)
                 if norm_name == normalized_target:
                     matched = True
+                    has_target_emoji = True
             else:
                 if name.lower() == action_key.lower():
                     matched = True
+                    has_target_emoji = True
 
             if matched:
                 match_weight += count
+
+        if has_target_emoji:
+            messages_with_target_emoji += 1
+            
+        if has_video_content and has_target_emoji:
+            messages_with_both += 1
 
         if match_weight <= 0:
             continue
