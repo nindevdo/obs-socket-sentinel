@@ -380,7 +380,7 @@ def track_played_media(url: str, action_key: str) -> None:
 # LOGGING
 # -----------------------------
 logging.basicConfig(
-    level=logging.INFO,  # set to DEBUG while tuning if you want more logs
+    level=logging.DEBUG,  # set to DEBUG while tuning if you want more logs
     format="%(asctime)s [%(levelname)s] %(message)s",
     handlers=[
         logging.StreamHandler(),
