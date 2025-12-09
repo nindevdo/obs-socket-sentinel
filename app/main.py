@@ -2424,19 +2424,25 @@ async def cache_discord_video(url: str) -> tuple[Optional[str], Optional[float],
     logging.info(f"[cache] Target file path: {fs_path}")
 
     # Check for existing valid cached file
+    logging.debug(f"🔍 [video_cache] Checking cache for {fs_path.name}. Exists: {fs_path.exists()}, Size: {fs_path.stat().st_size if fs_path.exists() else 0}")
     if fs_path.exists() and fs_path.stat().st_size > 0:
         logging.debug(f"📺 [discord] Using cached video for {url[:50]}... -> {fs_path}")
         # Try to get duration from existing file
         duration = await get_video_duration_from_file(str(fs_path))
+        logging.debug(f"🔍 [video_cache] get_video_duration_from_file returned: {duration} for {fs_path.name}")
         if duration is None:
+            logging.warning(f"🗑️ [video] Cached video {fs_path.name} is invalid (no duration or zero duration). Removing and re-downloading.")
             # File is invalid (too short or corrupted), remove it
             try:
                 fs_path.unlink()
                 logging.info(f"🗑️ [video] Removed invalid cached video: {fs_path}")
-            except Exception:
-                pass
+            except Exception as e:
+                logging.error(f"❗ [video] Error removing invalid cached video {fs_path}: {e}")
         else:
+            logging.info(f"✅ [video] Using valid cached video {fs_path.name} (duration: {duration}s).")
             return f"/dvideos/{fname}", duration, None, None
+    else:
+        logging.info(f"⬇️ [video] Cached file {fs_path.name} not found or empty. Downloading...")
 
     # Check if it's a YouTube video
     is_youtube = bool(YOUTUBE_RE.search(url))
@@ -2744,6 +2750,7 @@ async def get_video_duration_from_file(file_path: str) -> Optional[float]:
     Get duration from a local video file using ffprobe or similar.
     Returns None if the file is corrupted or unreadable, but accepts short durations for GIFs.
     """
+    logging.debug(f"🔍 [video_duration] Checking duration for file: {file_path}")
     try:
         # Try ffprobe first (more reliable for local files)
         import subprocess
@@ -2752,23 +2759,29 @@ async def get_video_duration_from_file(file_path: str) -> Optional[float]:
              '-of', 'default=noprint_wrappers=1:nokey=1', file_path
         ], capture_output=True, text=True, timeout=10)
         
+        logging.debug(f"🔍 [video_duration] ffprobe result for {file_path}: ReturnCode={result.returncode}, Stdout='{result.stdout.strip()}', Stderr='{result.stderr.strip()}'")
+
         if result.returncode == 0:
             duration_str = result.stdout.strip()
             if duration_str:
                 duration = float(duration_str)
-                # Accept any positive duration - GIFs can be very short (0.1s+)
                 if duration > 0:
                     logging.debug(f"[video] Valid video duration: {file_path} ({duration}s)")
                     return duration
                 else:
-                    logging.warning(f"[video] Zero duration video: {file_path}")
+                    logging.warning(f"[video] Zero duration video detected by ffprobe: {file_path}")
                     return None
-    except Exception:
-        pass
+            else:
+                logging.warning(f"[video] ffprobe returned empty duration string for {file_path}")
+                return None
+    except Exception as e:
+        logging.warning(f"❗ [video_duration] ffprobe failed for {file_path}: {e}")
+        pass # Try yt-dlp fallback
 
     # Fallback: try yt-dlp on local file
     try:
         import yt_dlp  # type: ignore
+        logging.debug(f"🔍 [video_duration] Falling back to yt-dlp for {file_path}")
         
         async def _get_duration_yt_dlp(path: str) -> Optional[float]:
             def _inner() -> Optional[float]:
@@ -2776,7 +2789,6 @@ async def get_video_duration_from_file(file_path: str) -> Optional[float]:
                     "quiet": True,
                     "skip_download": True,
                     "no_warnings": True,
-                    # JavaScript execution for YouTube
                     "extractor_args": {
                         "youtube": {
                             "player_client": ["web", "ios", "android_embedded"],
@@ -2787,23 +2799,26 @@ async def get_video_duration_from_file(file_path: str) -> Optional[float]:
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                     info = ydl.extract_info(f"file://{path}", download=False)
                     dur = info.get("duration")
+                    logging.debug(f"🔍 [video_duration] yt-dlp info for {path}: Duration={dur}")
                     if dur is None:
+                        logging.warning(f"[video] yt-dlp found no duration metadata for {path}")
                         return None
                     try:
                         duration = float(dur)
-                        # Accept any positive duration - GIFs can be very short
                         if duration > 0:
                             logging.debug(f"[video] Valid video duration (yt-dlp): {path} ({duration}s)")
                             return duration
                         else:
-                            logging.warning(f"[video] Zero duration video (yt-dlp): {path}")
+                            logging.warning(f"[video] Zero duration video detected by yt-dlp: {path}")
                             return None
-                    except Exception:
+                    except Exception as e:
+                        logging.warning(f"❗ [video_duration] yt-dlp duration parse error for {path}: {e}")
                         return None
             return await asyncio.to_thread(_inner)
         
         return await _get_duration_yt_dlp(file_path)
-    except Exception:
+    except Exception as e:
+        logging.warning(f"❗ [video_duration] yt-dlp fallback failed for {file_path}: {e}")
         pass
 
     # If we can't determine duration, assume it's corrupted
@@ -5196,10 +5211,10 @@ async def main() -> None:
         # Load failed videos list before warm caching
         await load_failed_videos()
         
-        await refresh_discord_messages_cache()
+        asyncio.create_task(refresh_discord_messages_cache())
         # Warm cache ALL media files on startup for instant playback
         logging.info("[warm_cache] Starting initial warm cache of all media...")
-        await warm_cache_all_media()
+        asyncio.create_task(warm_cache_all_media())
         # Start periodic background refresh (every 10 minutes) which includes warm caching
         asyncio.create_task(discord_cache_refresher_task(interval_seconds=600))
         # Start cache cleanup task
