@@ -382,7 +382,17 @@ def track_played_media(url: str, action_key: str) -> None:
 logging.basicConfig(
     level=logging.INFO,  # set to DEBUG while tuning if you want more logs
     format="%(asctime)s [%(levelname)s] %(message)s",
+    handlers=[
+        logging.StreamHandler(),
+    ]
 )
+
+# Silence the http logger specifically to prevent excessive request logging
+logging.getLogger("http").setLevel(logging.WARNING)
+
+# Silence aiohttp's internal client logger
+logging.getLogger("aiohttp.client").setLevel(logging.WARNING)
+
 
 
 # -----------------------------
@@ -4102,6 +4112,50 @@ async def _read_http_body(req_text: str, request_bytes: bytes, reader: asyncio.S
     return bytes(body_data)
 
 
+async def _read_http_body(req_text: str, request_bytes: bytes, reader: asyncio.StreamReader) -> bytes:
+    """Helper to robustly read the body of an HTTP request."""
+    content_length = 0
+    for line in req_text.split('\r\n'):
+        if line.lower().startswith('content-length:'):
+            try:
+                content_length = int(line.split(':', 1)[1].strip())
+            except (ValueError, IndexError):
+                content_length = 0
+            break
+
+    if content_length == 0:
+        return b""
+
+    separator = b'\r\n\r\n'
+    
+    body_fragment = b''
+    header_end_pos = request_bytes.find(separator)
+
+    if header_end_pos != -1:
+        body_start_pos = header_end_pos + len(separator)
+        body_fragment = request_bytes[body_start_pos:]
+    
+    body_data = bytearray(body_fragment)
+    
+    # Check if we need to read more data from the stream
+    if len(body_data) < content_length:
+        try:
+            # Loop until all bytes are read
+            while len(body_data) < content_length:
+                remaining_bytes = content_length - len(body_data)
+                chunk = await reader.read(remaining_bytes)
+                if not chunk:
+                    logging.warning(f"Connection closed prematurely while reading request body. Expected {content_length}, got {len(body_data)}.")
+                    # Return what we have, the JSON parser will likely fail, which is handled downstream
+                    return bytes(body_data)
+                body_data.extend(chunk)
+        except asyncio.TimeoutError:
+            logging.error("Timeout while reading request body.")
+            return b"" # Return empty on timeout
+
+    return bytes(body_data)
+
+
 # -----------------------------
 # HTTP SERVER
 # -----------------------------
@@ -4124,7 +4178,7 @@ async def handle_http(reader: asyncio.StreamReader, writer: asyncio.StreamWriter
     # Declare global variables at function start to avoid scope issues  
     global current_hotkey_mappings, last_hotkey_update
     
-    logging.info(f"🌐 [http] Request from {addr}")
+    logging.debug(f"🌐 [http] Request from {addr}")
     try:
         request = await reader.read(1024)
         if not request:
@@ -4143,10 +4197,8 @@ async def handle_http(reader: asyncio.StreamReader, writer: asyncio.StreamWriter
             raw_path = "/"
 
         path = raw_path.split("?", 1)[0]  # strip query params
-        logging.info(f"🌐 [http] {method} {path}")
-        request_head = req_text.split('\r\n\r\n')[0]
-        logging.info(f"🌐 [http] Raw request headers from {addr}:\n---\n{request_head}\n---")
-
+                    logging.debug(f"🌐 [http] {method} {path}")        request_head = req_text.split('\r\n\r\n')[0]
+                    logging.debug(f"🌐 [http] Raw request headers from {addr}:\n---\n{request_head}\n---")
         # Selective authentication - only protect certain endpoints
         if requires_auth(path, method):
             if not check_auth_header(req_text):
