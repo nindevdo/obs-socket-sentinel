@@ -4641,6 +4641,7 @@ async def handle_http(reader: asyncio.StreamReader, writer: asyncio.StreamWriter
                     return
 
                 # Parse JSON
+                logging.debug(f"🔍 [action] Raw body_str for JSON parsing: '{body_str}'")
                 action_data = json.loads(body_str)
                 
                 # Extract required fields
