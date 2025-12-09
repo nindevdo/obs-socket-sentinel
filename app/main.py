@@ -4197,8 +4197,9 @@ async def handle_http(reader: asyncio.StreamReader, writer: asyncio.StreamWriter
             raw_path = "/"
 
         path = raw_path.split("?", 1)[0]  # strip query params
-                    logging.debug(f"🌐 [http] {method} {path}")        request_head = req_text.split('\r\n\r\n')[0]
-                    logging.debug(f"🌐 [http] Raw request headers from {addr}:\n---\n{request_head}\n---")
+        logging.debug(f"🌐 [http] {method} {path}")
+        request_head = req_text.split('\r\n\r\n')[0]
+        logging.debug(f"🌐 [http] Raw request headers from {addr}:\n---\n{request_head}\n---")
         # Selective authentication - only protect certain endpoints
         if requires_auth(path, method):
             if not check_auth_header(req_text):
