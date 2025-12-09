@@ -4079,7 +4079,10 @@ async def _read_http_body(req_text: str, request_bytes: bytes, reader: asyncio.S
                 content_length = 0
             break
 
+    logging.debug(f"🔍 [http_body] Detected Content-Length: {content_length}")
+
     if content_length == 0:
+        logging.debug(f"🔍 [http_body] Content-Length is 0, returning empty body.")
         return b""
 
     separator = b'\r\n\r\n'
@@ -4103,56 +4106,14 @@ async def _read_http_body(req_text: str, request_bytes: bytes, reader: asyncio.S
                 if not chunk:
                     logging.warning(f"Connection closed prematurely while reading request body. Expected {content_length}, got {len(body_data)}.")
                     # Return what we have, the JSON parser will likely fail, which is handled downstream
+                    logging.debug(f"🔍 [http_body] Returning partial body of {len(body_data)} bytes due to premature close.")
                     return bytes(body_data)
                 body_data.extend(chunk)
         except asyncio.TimeoutError:
             logging.error("Timeout while reading request body.")
             return b"" # Return empty on timeout
 
-    return bytes(body_data)
-
-
-async def _read_http_body(req_text: str, request_bytes: bytes, reader: asyncio.StreamReader) -> bytes:
-    """Helper to robustly read the body of an HTTP request."""
-    content_length = 0
-    for line in req_text.split('\r\n'):
-        if line.lower().startswith('content-length:'):
-            try:
-                content_length = int(line.split(':', 1)[1].strip())
-            except (ValueError, IndexError):
-                content_length = 0
-            break
-
-    if content_length == 0:
-        return b""
-
-    separator = b'\r\n\r\n'
-    
-    body_fragment = b''
-    header_end_pos = request_bytes.find(separator)
-
-    if header_end_pos != -1:
-        body_start_pos = header_end_pos + len(separator)
-        body_fragment = request_bytes[body_start_pos:]
-    
-    body_data = bytearray(body_fragment)
-    
-    # Check if we need to read more data from the stream
-    if len(body_data) < content_length:
-        try:
-            # Loop until all bytes are read
-            while len(body_data) < content_length:
-                remaining_bytes = content_length - len(body_data)
-                chunk = await reader.read(remaining_bytes)
-                if not chunk:
-                    logging.warning(f"Connection closed prematurely while reading request body. Expected {content_length}, got {len(body_data)}.")
-                    # Return what we have, the JSON parser will likely fail, which is handled downstream
-                    return bytes(body_data)
-                body_data.extend(chunk)
-        except asyncio.TimeoutError:
-            logging.error("Timeout while reading request body.")
-            return b"" # Return empty on timeout
-
+    logging.debug(f"🔍 [http_body] Read {len(body_data)} bytes for body (expected {content_length})")
     return bytes(body_data)
 
 
@@ -4671,14 +4632,16 @@ async def handle_http(reader: asyncio.StreamReader, writer: asyncio.StreamWriter
         if method == "POST" and path == "/action":
             try:
                 body_data = await _read_http_body(req_text, request, reader)
-                if not body_data:
-                    resp = b"HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: 29\r\nConnection: close\r\n\r\n{\"error\":\"Request body is empty\"}"
+                body_str = body_data.decode('utf-8', errors='ignore') # Decode body once
+
+                if not body_str.strip(): # Check if the decoded string is empty or just whitespace
+                    resp = b"HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: 38\r\nConnection: close\r\n\r\n{\"error\":\"Request body is empty or malformed\"}"
                     writer.write(resp)
                     await writer.drain()
                     return
 
                 # Parse JSON
-                action_data = json.loads(body_data.decode('utf-8'))
+                action_data = json.loads(body_str)
                 
                 # Extract required fields
                 game = action_data.get("game", action_data.get("project"))
