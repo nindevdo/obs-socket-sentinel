@@ -73,6 +73,12 @@ DISCORD_VIDEO_CACHE_DIR = Path(
     os.getenv("DISCORD_VIDEO_CACHE_DIR", "/discord/discord_videos")
 )
 
+# Alternative cache directories for fallback (in case of path issues)
+ALTERNATIVE_VIDEO_CACHE_DIRS = [
+    Path("./_data/discord/discord_videos"),  # Local development path
+    Path("_data/discord/discord_videos"),    # Alternative local path
+]
+
 # Discord meme/image file cache (persistent)
 DISCORD_MEME_CACHE_DIR = Path(
     os.getenv("DISCORD_MEME_CACHE_DIR", "/discord/discord_memes")
@@ -181,7 +187,7 @@ async def add_failed_video(url: str, error_type: str = "unknown", error_message:
             'failure_count': 1,
             'error_type': error_type,
             'error_message': error_message,
-            'video_id': url.split('/')[-1].split('?')[0] if 'youtube.com' in url else 'direct_video'
+            'video_id': extract_youtube_video_id(url) if 'youtube.com' in url or 'youtu.be' in url else 'direct_video'
         }
         logging.warning(f"📝 [startup] Added failed video to skip list: {url[:50]}... (Type: {error_type})")
     else:
@@ -398,6 +404,48 @@ logging.getLogger("aiohttp.client").setLevel(logging.WARNING)
 # -----------------------------
 # EMOJI / CONFIG HELPERS
 # -----------------------------
+def find_cached_video_file(filename: str) -> Optional[Path]:
+    """
+    Find a cached video file by checking multiple possible cache directories.
+    Returns the first existing path found, or None if not found anywhere.
+    """
+    # Check primary cache directory first
+    primary_path = DISCORD_VIDEO_CACHE_DIR / filename
+    if primary_path.exists() and primary_path.stat().st_size > 0:
+        return primary_path
+    
+    # Check alternative cache directories
+    for alt_dir in ALTERNATIVE_VIDEO_CACHE_DIRS:
+        alt_path = alt_dir / filename
+        if alt_path.exists() and alt_path.stat().st_size > 0:
+            logging.debug(f"📁 [cache] Found video in alternative cache: {alt_path}")
+            return alt_path
+    
+    return None
+
+
+def extract_youtube_video_id(url: str) -> str:
+    """Extract YouTube video ID from various YouTube URL formats"""
+    try:
+        from urllib.parse import urlparse, parse_qs
+        parsed = urlparse(url)
+        
+        if parsed.hostname in ('www.youtube.com', 'youtube.com', 'm.youtube.com'):
+            if parsed.path == '/watch':
+                return parse_qs(parsed.query).get('v', ['unknown'])[0]
+            elif parsed.path.startswith('/embed/'):
+                return parsed.path.split('/embed/')[-1].split('/')[0]
+            elif parsed.path.startswith('/shorts/'):
+                return parsed.path.split('/shorts/')[-1].split('/')[0]
+        elif parsed.hostname in ('youtu.be',):
+            return parsed.path.lstrip('/').split('/')[0]
+            
+        # Fallback for unrecognized format
+        return url.split('/')[-1].split('?')[0]
+    except:
+        return 'unknown'
+
+
 def normalize_emoji(s: str) -> str:
     """
     Normalize emoji strings so Discord unicode reactions and our mapping line up.
@@ -958,9 +1006,10 @@ async def warm_cache_all_media() -> None:
                 continue
                 
             h = hashlib.sha256(url.encode("utf-8")).hexdigest()[:32]
-            fs_path = DISCORD_VIDEO_CACHE_DIR / f"{h}.mp4"
+            filename = f"{h}.mp4"
+            fs_path = find_cached_video_file(filename)
             
-            if fs_path.exists() and fs_path.stat().st_size > 0:
+            if fs_path:
                 # Validate existing cached video
                 duration = await get_video_duration_from_file(str(fs_path))
                 if duration is not None and duration > 0:  # Accept any positive duration
@@ -1025,6 +1074,7 @@ def _select_messages_for_project(project: Optional[str]) -> List[dict]:
 
     if not discord_game_caches:
         # no per-game filtering available
+        logging.info("[discord] No per-game caches available; using full message cache.")
         return discord_messages_cache
 
     if not project:
@@ -1034,12 +1084,15 @@ def _select_messages_for_project(project: Optional[str]) -> List[dict]:
 
     key = resolve_game_key(project)
     if not key:
-        logging.info(f"[discord] Unknown project '{project}'; no per-game cache.")
-        return []
+        logging.info(f"[discord] Unknown project '{project}'; falling back to full cache for better video selection.")
+        return discord_messages_cache
+        
     msgs = discord_game_caches.get(key)
-    if msgs is None:
-        logging.info(f"[discord] No per-game cache for '{key}'; no memes will be selected.")
-        return []
+    if msgs is None or len(msgs) == 0:
+        logging.info(f"[discord] No per-game cache for '{key}'; falling back to full cache for better video selection.")
+        return discord_messages_cache
+        
+    logging.info(f"[discord] Using {len(msgs)} messages from {key} game cache.")
     return msgs
 
 
@@ -1300,6 +1353,10 @@ async def get_cached_discord_video(action_key: str, project: Optional[str]) -> t
     weighted_candidates: Dict[str, tuple[float, float, str]] = {}  # cache_url -> (weight, duration, original_url)
     VIDEO_EXTS = (".mp4", ".webm", ".mov", ".m4v", ".avi", ".mkv")
 
+    messages_with_videos = 0
+    messages_with_target_emoji = 0
+    messages_with_both = 0
+
     for msg in messages:
         msg_id = msg.get("id", "unknown")
         reactions = msg.get("reactions") or []
@@ -1324,8 +1381,10 @@ async def get_cached_discord_video(action_key: str, project: Optional[str]) -> t
                 break
         
         if has_video_content:
-            logging.info(f"[video] Message {msg_id} has video content, checking reactions...")
-
+            messages_with_videos += 1
+        
+        # Check if this message has the target emoji
+        has_target_emoji = False
         for r in reactions:
             emoji_obj = r.get("emoji") or {}
             name = emoji_obj.get("name") or ""
@@ -1338,28 +1397,27 @@ async def get_cached_discord_video(action_key: str, project: Optional[str]) -> t
             matched = False
             if emoji_id is None:
                 norm_name = normalize_emoji(name)
-                if has_video_content:
-                    logging.info(f"[video] Message {msg_id}: checking reaction '{name}' (normalized: '{norm_name}') vs target '{normalized_target}'")
                 if norm_name == normalized_target:
                     matched = True
-                    if has_video_content:
-                        logging.info(f"[video] Message {msg_id}: EMOJI MATCH! '{name}' matched target '{target_emoji}'")
+                    has_target_emoji = True
             else:
                 if name.lower() == action_key.lower():
                     matched = True
-                    if has_video_content:
-                        logging.info(f"[video] Message {msg_id}: CUSTOM EMOJI MATCH! '{name}' matched action '{action_key}'")
+                    has_target_emoji = True
 
             if matched:
                 match_weight += count  # Sum all matching emoji reactions
 
+        if has_target_emoji:
+            messages_with_target_emoji += 1
+            
+        if has_video_content and has_target_emoji:
+            messages_with_both += 1
+
         if match_weight <= 0:
-            if has_video_content:
-                logging.info(f"[video] Message {msg_id} has video content but no matching reactions (weight={match_weight})")
             continue
         
-        if has_video_content:
-            logging.info(f"[video] Message {msg_id} has video content AND matching reactions (weight={match_weight})")
+        # This message has both video content AND matching reactions
 
         # Check attachments for videos
         for att in msg.get("attachments", []):
@@ -1376,55 +1434,61 @@ async def get_cached_discord_video(action_key: str, project: Optional[str]) -> t
                 
                 # Check if this video is already cached AND valid
                 h = hashlib.sha256(url.encode("utf-8")).hexdigest()[:32]
-                fs_path = DISCORD_VIDEO_CACHE_DIR / f"{h}.mp4"
+                filename = f"{h}.mp4"
+                fs_path = find_cached_video_file(filename)
                 
-                logging.info(f"[video] Message {msg_id}: checking attachment video {url[:50]}... -> {fs_path}")
+                logging.info(f"[video] Message {msg_id}: checking attachment video {url[:50]}... -> {filename}")
                 logging.info(f"[video] Message {msg_id}: full attachment URL for hash: {url}")
                 logging.info(f"[video] Message {msg_id}: calculated hash: {h}")
                 
-                if fs_path.exists() and fs_path.stat().st_size > 0:
+                if fs_path:
                     duration = await get_video_duration_from_file(str(fs_path))
-                    logging.info(f"[video] Message {msg_id}: cached file exists, duration={duration}")
+                    logging.info(f"[video] Message {msg_id}: cached file found at {fs_path}, duration={duration}")
                     if duration is not None and duration > 0:  # Accept any positive duration
-                        cache_url = f"/dvideos/{h}.mp4"
+                        cache_url = f"/dvideos/{filename}"
                         prev_weight, _, _ = weighted_candidates.get(cache_url, (0.0, 0.0, url))
                         weighted_candidates[cache_url] = (prev_weight + match_weight, duration, url)
                         logging.info(f"[video] Message {msg_id}: ADDED video candidate {cache_url} (weight={prev_weight + match_weight}, duration={duration})")
                     else:
                         logging.warning(f"[video] Message {msg_id}: cached file has invalid duration ({duration})")
                 else:
-                    logging.info(f"[video] Message {msg_id}: cached file NOT found or empty at {fs_path}")
+                    logging.info(f"[video] Message {msg_id}: cached file NOT found: {filename}")
 
         # Check embeds for videos (including YouTube)
         for emb in msg.get("embeds", []):
             emb_url = (emb.get("url") or "").strip()
             if emb_url and (any(ext in emb_url.lower() for ext in VIDEO_EXTS) or YOUTUBE_RE.search(emb_url)):
                 h = hashlib.sha256(emb_url.encode("utf-8")).hexdigest()[:32]
-                fs_path = DISCORD_VIDEO_CACHE_DIR / f"{h}.mp4"
+                filename = f"{h}.mp4"
+                fs_path = find_cached_video_file(filename)
                 
-                logging.info(f"[video] Message {msg_id}: checking embed video {emb_url[:50]}... -> {fs_path}")
+                logging.info(f"[video] Message {msg_id}: checking embed video {emb_url[:50]}... -> {filename}")
                 logging.info(f"[video] Message {msg_id}: full embed URL for hash: {emb_url}")
                 logging.info(f"[video] Message {msg_id}: calculated hash: {h}")
                 
-                if fs_path.exists() and fs_path.stat().st_size > 0:
+                if fs_path:
                     duration = await get_video_duration_from_file(str(fs_path))
-                    logging.info(f"[video] Message {msg_id}: cached file exists, duration={duration}")
+                    logging.info(f"[video] Message {msg_id}: cached file found at {fs_path}, duration={duration}")
                     if duration is not None and duration > 0:  # Accept any positive duration
-                        cache_url = f"/dvideos/{h}.mp4"
+                        cache_url = f"/dvideos/{filename}"
                         prev_weight, _, _ = weighted_candidates.get(cache_url, (0.0, 0.0, emb_url))
                         weighted_candidates[cache_url] = (prev_weight + match_weight, duration, emb_url)
                         logging.info(f"[video] Message {msg_id}: ADDED video candidate {cache_url} (weight={prev_weight + match_weight}, duration={duration})")
                     else:
                         logging.warning(f"[video] Message {msg_id}: cached file has invalid duration ({duration})")
                 else:
-                    logging.info(f"[video] Message {msg_id}: cached file NOT found or empty at {fs_path}")
+                    logging.info(f"[video] Message {msg_id}: cached file NOT found: {filename}")
                     # Let's also check what files ARE in the cache directory
                     try:
-                        cache_files = list(DISCORD_VIDEO_CACHE_DIR.glob("*.mp4"))
-                        logging.info(f"[video] Cache directory has {len(cache_files)} files: {[f.name for f in cache_files[:5]]}")
+                        for cache_dir in [DISCORD_VIDEO_CACHE_DIR] + ALTERNATIVE_VIDEO_CACHE_DIRS:
+                            if cache_dir.exists():
+                                cache_files = list(cache_dir.glob("*.mp4"))
+                                logging.info(f"[video] Cache directory {cache_dir} has {len(cache_files)} files: {[f.name for f in cache_files[:3]]}")
                     except Exception:
                         pass
 
+    logging.info(f"[video] SUMMARY for {action_key}/{project}: {len(messages)} messages, {messages_with_videos} with videos, {messages_with_target_emoji} with emoji '{target_emoji}', {messages_with_both} with both")
+    
     if not weighted_candidates:
         logging.info(f"[video] No valid cached videos found for action={action_key} project={project}")
         return None, None, None
@@ -1704,18 +1768,29 @@ async def get_cached_discord_video_with_weight(action_key: str, project: Optiona
 
     target_emoji = get_action_emoji(action_key, project)
     if not target_emoji:
+        logging.info(f"[video_weight] No target emoji found for action={action_key} project={project}")
         return None, 0.0, None, None
 
     normalized_target = normalize_emoji(target_emoji)
+    logging.info(f"[video_weight] Looking for videos with emoji '{target_emoji}' (normalized: '{normalized_target}') for action={action_key}")
+    
     messages = _select_messages_for_project(project)
     if not messages:
+        logging.info(f"[video_weight] No messages found for project={project}")
         return None, 0.0, None, None
+
+    logging.info(f"[video_weight] Checking {len(messages)} messages for project={project}")
 
     # cache_url -> (weight, duration, original_url)
     weighted_candidates: Dict[str, tuple[float, float, str]] = {}
     VIDEO_EXTS = (".mp4", ".webm", ".mov", ".m4v", ".avi", ".mkv")
 
+    messages_with_videos = 0
+    messages_with_target_emoji = 0
+    messages_with_both = 0
+
     for msg in messages:
+        msg_id = msg.get("id", "unknown")  # Add message ID for debug
         reactions = msg.get("reactions") or []
         match_weight = 0
 
@@ -1758,14 +1833,19 @@ async def get_cached_discord_video_with_weight(action_key: str, project: Optiona
                 any(ext in url.lower() for ext in VIDEO_EXTS)):
                 
                 h = hashlib.sha256(url.encode("utf-8")).hexdigest()[:32]
-                fs_path = DISCORD_VIDEO_CACHE_DIR / f"{h}.mp4"
+                filename = f"{h}.mp4"
+                fs_path = find_cached_video_file(filename)
                 
-                if fs_path.exists() and fs_path.stat().st_size > 0:
+                if fs_path:
                     duration = await get_video_duration_from_file(str(fs_path))
-                    if duration is not None and duration > 0:
-                        cache_url = f"/dvideos/{h}.mp4"
+                    if duration is not None and duration > 0:  # Accept any positive duration
+                        cache_url = f"/dvideos/{filename}"
                         prev_weight, _, _ = weighted_candidates.get(cache_url, (0.0, duration, url))
                         weighted_candidates[cache_url] = (prev_weight + match_weight, duration, url)
+                    else:
+                        logging.info(f"[video_weight] Message {msg_id}: cached file has INVALID duration ({duration}) at {fs_path}")
+                else:
+                    logging.info(f"[video_weight] Message {msg_id}: video NOT CACHED: {filename} from {url[:50]}...")
 
         # Check embeds for videos (including YouTube and Tenor)
         for emb in msg.get("embeds", []):
@@ -1774,15 +1854,23 @@ async def get_cached_discord_video_with_weight(action_key: str, project: Optiona
                             YOUTUBE_RE.search(emb_url)):
                 # DISABLED: "tenor.com" in emb_url.lower()  # YouTube-only mode
                 h = hashlib.sha256(emb_url.encode("utf-8")).hexdigest()[:32]
-                fs_path = DISCORD_VIDEO_CACHE_DIR / f"{h}.mp4"
+                filename = f"{h}.mp4"
+                fs_path = find_cached_video_file(filename)
                 
-                if fs_path.exists() and fs_path.stat().st_size > 0:
+                if fs_path:
                     duration = await get_video_duration_from_file(str(fs_path))
                     if duration is not None and duration > 0:
-                        cache_url = f"/dvideos/{h}.mp4"
+                        cache_url = f"/dvideos/{filename}"
                         prev_weight, _, _ = weighted_candidates.get(cache_url, (0.0, duration, emb_url))
                         weighted_candidates[cache_url] = (prev_weight + match_weight, duration, emb_url)
+                    else:
+                        logging.info(f"[video_weight] Message {msg_id}: embed cached file has INVALID duration ({duration}) at {fs_path}")
+                else:
+                    logging.info(f"[video_weight] Message {msg_id}: embed video NOT CACHED: {filename} from {emb_url[:50]}...")
 
+    logging.info(f"[video_weight] SUMMARY for {action_key}/{project}: {len(messages)} messages, found {len(weighted_candidates)} cached videos")
+    logging.info(f"[video_weight] Stats: {messages_with_videos} msgs with videos, {messages_with_target_emoji} msgs with emoji '{target_emoji}', {messages_with_both} msgs with both")
+    
     if not weighted_candidates:
         return None, 0.0, None, None
 
@@ -2479,7 +2567,8 @@ async def cache_discord_video(url: str) -> tuple[Optional[str], Optional[float],
                         time.sleep(delay)
                         
                         ydl_opts = {
-                            # Don't specify format at all - let yt-dlp pick whatever works!
+                            # Force MP4 format for consistent web playback
+                            "format": "best[ext=mp4]/best[height<=720]/best",
                             "outtmpl": str(fs_path),
                             "quiet": True,
                             "no_warnings": False,
@@ -2487,7 +2576,8 @@ async def cache_discord_video(url: str) -> tuple[Optional[str], Optional[float],
                             "writesubtitles": False,
                             "writethumbnail": False,
                             "embed_subs": False,
-                            # No extractor_args - use yt-dlp defaults like command line
+                            # Force MP4 container for web compatibility
+                            "merge_output_format": "mp4",
                             # Built-in yt-dlp anti-blocking options
                             "socket_timeout": 60,  # Longer timeout
                             "retries": 5,  # More retries
@@ -4912,6 +5002,115 @@ async def handle_http(reader: asyncio.StreamReader, writer: asyncio.StreamWriter
             writer.write(headers.encode("ascii") + body_bytes)
             await writer.drain()
 
+        elif path.startswith("/refresh_discord"):
+            # Manual Discord cache refresh endpoint
+            try:
+                logging.info("🔄 [debug] Manual Discord cache refresh triggered")
+                await refresh_discord_messages_cache()
+                
+                total_messages = len(discord_messages_cache)
+                game_counts = {game: len(msgs) for game, msgs in discord_game_caches.items()}
+                
+                debug_info = {
+                    "success": True,
+                    "total_messages": total_messages,
+                    "game_caches": game_counts,
+                    "hunt_showdown_messages": game_counts.get("hunt_showdown", 0),
+                    "message": "Discord cache refreshed successfully"
+                }
+                
+                body_bytes = json.dumps(debug_info, indent=2).encode("utf-8")
+                headers = (
+                    "HTTP/1.1 200 OK\r\n"
+                    "Content-Type: application/json; charset=utf-8\r\n"
+                    f"Content-Length: {len(body_bytes)}\r\n"
+                    "Connection: close\r\n"
+                    "\r\n"
+                )
+                writer.write(headers.encode("ascii") + body_bytes)
+                await writer.drain()
+                return
+                
+            except Exception as e:
+                logging.error(f"❗ [debug] Error refreshing Discord cache: {e}", exc_info=True)
+                error_body = json.dumps({"error": str(e)}).encode("utf-8")
+                headers = (
+                    "HTTP/1.1 500 Internal Server Error\r\n"
+                    "Content-Type: application/json; charset=utf-8\r\n"
+                    f"Content-Length: {len(error_body)}\r\n"
+                    "Connection: close\r\n"
+                    "\r\n"
+                )
+                writer.write(headers.encode("ascii") + error_body)
+                await writer.drain()
+                return
+
+        elif path.startswith("/debug_video_lookup"):
+            # DEBUG ENDPOINT: Test video lookup for specific game/action
+            try:
+                from urllib.parse import urlparse, parse_qs
+                parsed_url = urlparse(raw_path)
+                query_params = parse_qs(parsed_url.query)
+                
+                action = query_params.get('action', ['kill'])[0]
+                project = query_params.get('project', ['hunt_showdown'])[0]
+                
+                logging.info(f"🔍 [debug] Testing video lookup for action={action} project={project}")
+                
+                # Use our fixed video lookup
+                video_result = await get_cached_discord_video_with_weight(action, project)
+                video_url, weight, duration, original_url = video_result
+                
+                debug_info = {
+                    "action": action,
+                    "project": project,
+                    "video_found": video_url is not None,
+                    "video_url": video_url,
+                    "weight": weight,
+                    "duration": duration,
+                    "original_url": original_url,
+                    "cache_directories_checked": [
+                        str(DISCORD_VIDEO_CACHE_DIR),
+                        *[str(d) for d in ALTERNATIVE_VIDEO_CACHE_DIRS]
+                    ]
+                }
+                
+                # Also check how many total videos are in cache
+                total_cached = 0
+                for cache_dir in [DISCORD_VIDEO_CACHE_DIR] + ALTERNATIVE_VIDEO_CACHE_DIRS:
+                    if cache_dir.exists():
+                        mp4_count = len(list(cache_dir.glob("*.mp4")))
+                        debug_info[f"videos_in_{cache_dir.name}"] = mp4_count
+                        total_cached += mp4_count
+                
+                debug_info["total_cached_videos"] = total_cached
+                
+                body_bytes = json.dumps(debug_info, indent=2).encode("utf-8")
+                headers = (
+                    "HTTP/1.1 200 OK\r\n"
+                    "Content-Type: application/json; charset=utf-8\r\n"
+                    f"Content-Length: {len(body_bytes)}\r\n"
+                    "Connection: close\r\n"
+                    "\r\n"
+                )
+                writer.write(headers.encode("ascii") + body_bytes)
+                await writer.drain()
+                return
+                
+            except Exception as e:
+                logging.error(f"❗ [debug] Error in video lookup test: {e}", exc_info=True)
+                error_body = json.dumps({"error": str(e)}).encode("utf-8")
+                headers = (
+                    "HTTP/1.1 500 Internal Server Error\r\n"
+                    "Content-Type: application/json; charset=utf-8\r\n"
+                    f"Content-Length: {len(error_body)}\r\n"
+                    "Connection: close\r\n"
+                    "\r\n"
+                )
+                writer.write(headers.encode("ascii") + error_body)
+                await writer.drain()
+                return
+
         elif path.startswith("/debug_video"):
             # DEBUG ENDPOINT: Force select a cached video for testing
             try:
@@ -5016,21 +5215,29 @@ async def handle_http(reader: asyncio.StreamReader, writer: asyncio.StreamWriter
         elif path.startswith("/dvideos/"):
             # Static served cached Discord videos
             rel = path[len("/dvideos/"):].lstrip("/")
-            fs_path = (DISCORD_VIDEO_CACHE_DIR / rel).resolve()
-
-            # Security: ensure it's inside DISCORD_VIDEO_CACHE_DIR
-            try:
-                fs_path.relative_to(DISCORD_VIDEO_CACHE_DIR.resolve())
-            except ValueError:
-                logging.warning(f"🚫 [http] Attempted path escape for dvideos: {fs_path}")
-                resp = b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            
+            # Use fallback mechanism to find the video file
+            fs_path = find_cached_video_file(rel)
+            if not fs_path:
+                logging.warning(f"❓ [http] Cached video not found anywhere: {rel}")
+                resp = b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
                 writer.write(resp)
                 await writer.drain()
                 return
 
-            if not fs_path.exists() or not fs_path.is_file():
-                logging.warning(f"❓ [http] Cached video not found: {fs_path}")
-                resp = b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            # Security check: ensure the file is inside one of the allowed cache directories
+            is_safe = False
+            for safe_dir in [DISCORD_VIDEO_CACHE_DIR] + ALTERNATIVE_VIDEO_CACHE_DIRS:
+                try:
+                    fs_path.resolve().relative_to(safe_dir.resolve())
+                    is_safe = True
+                    break
+                except (ValueError, OSError):
+                    continue
+                    
+            if not is_safe:
+                logging.warning(f"🚫 [http] Video file outside safe directories: {fs_path}")
+                resp = b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
                 writer.write(resp)
                 await writer.drain()
                 return
