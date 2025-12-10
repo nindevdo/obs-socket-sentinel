@@ -1019,12 +1019,12 @@
                 
                 try {
                     await this.loadConfig();
-                    await this.detectCurrentGame();
+                    // currentGame is now loaded from server in loadConfig()
                     this.render();
                     this.setStatus('connected', '✅ Connected to server');
                     
                     // Poll for game changes every 5 seconds
-                    setInterval(() => this.detectCurrentGame(), 5000);
+                    setInterval(() => this.loadConfig().then(() => this.render()), 5000);
                 } catch (error) {
                     console.error('Failed to initialize:', error);
                     this.setStatus('disconnected', '❌ Failed to connect to server');
@@ -1037,7 +1037,7 @@
 
             async loadConfig() {
                 try {
-                    const response = await fetch(`${this.serverUrl}/config`, {
+                    const response = await fetch(`${this.serverUrl}/ui_state`, {
                         headers: {
                             'Authorization': `Bearer ${this.authToken}`
                         }
@@ -1052,14 +1052,16 @@
                         throw new Error(`HTTP ${response.status}: ${response.statusText}`);
                     }
                     
-                    const yamlText = await response.text();
-                    this.config = this.parseYAML(yamlText);
+                    const data = await response.json();
+                    this.config = { games: data.games_config };
+                    this.currentGame = data.current_game;
                     
                     if (!this.config.games) {
                         throw new Error('No games found in configuration');
                     }
                     
                     console.log('Loaded config:', this.config);
+                    console.log('Current game:', this.currentGame);
                     
                     // Also load hotkey mappings
                     await this.loadHotkeyMappings();
@@ -1208,6 +1210,9 @@
                     return;
                 }
 
+                // Update the game title display
+                this.updateCurrentGameDisplay();
+
                 const gameConfig = this.config.games[this.currentGame];
                 if (!gameConfig || !gameConfig.actions) {
                     this.contentEl.innerHTML = '<div class="error">No actions found for current game</div>';
@@ -1244,7 +1249,6 @@
                 html += '</div>';
 
                 this.contentEl.innerHTML = html;
-
             }
 
             createActionButton(action, emoji, hotkey, isSystem = false) {

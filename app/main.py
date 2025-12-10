@@ -5039,6 +5039,43 @@ async def handle_http(reader: asyncio.StreamReader, writer: asyncio.StreamWriter
             await writer.drain()
 
 
+        elif path == "/ui_state":
+            # Return current game state for UI initialization
+            try:
+                available_games = list(GAMES_CONFIG.keys())
+                current_game = last_project or available_games[0] if available_games else "unknown"
+                
+                response_data = {
+                    "current_game": current_game,
+                    "available_games": available_games,
+                    "games_config": GAMES_CONFIG
+                }
+                
+                body_bytes = json.dumps(response_data).encode("utf-8")
+                headers = (
+                    "HTTP/1.1 200 OK\r\n"
+                    "Content-Type: application/json\r\n"
+                    f"Content-Length: {len(body_bytes)}\r\n"
+                    "Cache-Control: no-cache\r\n"
+                    "Connection: close\r\n"
+                    "\r\n"
+                )
+                writer.write(headers.encode("ascii") + body_bytes)
+                await writer.drain()
+            except Exception as e:
+                logging.error(f"❗ [http] Failed to get UI state: {e}", exc_info=True)
+                error_data = {"error": str(e)}
+                body_bytes = json.dumps(error_data).encode("utf-8")
+                headers = (
+                    "HTTP/1.1 500 Internal Server Error\r\n"
+                    "Content-Type: application/json\r\n"
+                    f"Content-Length: {len(body_bytes)}\r\n"
+                    "Connection: close\r\n"
+                    "\r\n"
+                )
+                writer.write(headers.encode("ascii") + body_bytes)
+                await writer.drain()
+
         elif path == "/set_game" and method == "POST":
             # Set the current game manually via dropdown selection
             try:
