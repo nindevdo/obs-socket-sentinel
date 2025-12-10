@@ -517,12 +517,12 @@
       animation: achievementGlow 2.5s ease-in-out infinite;
     }
 
-    /* Playtime notification styles (top-left corner) */
+    /* Playtime notification styles (top-right corner) */
     #playtime-notification {
       position: fixed;
       top: 2vh;
-      left: 2vw;
-      transform: translateX(-100%);
+      right: 2vw;
+      transform: translateX(100%);
       opacity: 0;
       pointer-events: none;
       z-index: 14000;
@@ -591,12 +591,12 @@
       color: #d1d5db;
     }
 
-    /* Achievement Percentages notification styles (left side, below playtime) */
+    /* Achievement Percentages notification styles (right side, below playtime) */
     #achievement-percentages-notification {
       position: fixed;
       top: 22vh; /* Position further down from playtime */
-      left: 2vw;
-      transform: translateX(-100%);
+      right: 2vw;
+      transform: translateX(100%);
       opacity: 0;
       pointer-events: none;
       z-index: 13900;
