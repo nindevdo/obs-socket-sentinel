@@ -1,7 +1,7 @@
 -- socket-sentinel-http.lua  
 -- OBS Lua script: send hotkey events over HTTP POST (secure replacement for TCP)
 -- Fetch YAML config from http://HOST:HTTP_PORT/config
--- Per-game hotkeys with auto-detection and manual selection.
+-- Manual game selection only - no automatic detection.
 
 local obs = obslua
 
@@ -16,11 +16,8 @@ local SS_TOKEN = "" -- Security token for authentication
 local GAMES = {} -- populated from YAML
 local hotkey_ids = {} -- [game][action] = id
 
--- Game detection and selection
-local AUTO_DETECT_GAME = true -- whether to auto-detect based on window title
+-- Game selection
 local MANUAL_GAME_SELECTION = "" -- manually selected game key
-local DETECTED_GAME = "" -- auto-detected game from window title
-local CURRENT_WINDOW_TITLE = "" -- last detected window title for display
 
 ----------------------------------------------------
 -- LOGGING
@@ -89,70 +86,13 @@ local function shell_escape(s)
 end
 
 ----------------------------------------------------
--- GAME DETECTION
+-- GAME SELECTION
 ----------------------------------------------------
 
--- Game detection patterns - maps window titles to game keys
-local GAME_DETECTION_PATTERNS = {
-	["hunt"] = "hunt_showdown",
-	["hunt: showdown"] = "hunt_showdown",
-	["enshrouded"] = "enshrouded",
-	["chivalry"] = "chivalry2",
-	["chivalry 2"] = "chivalry2",
-	["fortnite"] = "fortnite",
-	["helldivers"] = "hell_divers_2",
-	["hell divers"] = "hell_divers_2"
-}
-
-local function get_active_window_title()
-	-- Use xdotool to get active window title on Linux
-	local cmd = "xdotool getwindowfocus getwindowname 2>/dev/null"
-	local f = io.popen(cmd, "r")
-	if not f then
-		return nil
-	end
-	local title = f:read("*a")
-	f:close()
-	if title then
-		return trim(title)
-	end
-	return nil
-end
-
-local function detect_game_from_window()
-	local title = get_active_window_title()
-	CURRENT_WINDOW_TITLE = title or "No window detected"
-	
-	if not title or title == "" then
-		return nil
-	end
-	
-	local title_lower = title:lower()
-	log_info("Checking window title: " .. title)
-	
-	for pattern, game_key in pairs(GAME_DETECTION_PATTERNS) do
-		if title_lower:find(pattern, 1, true) then -- plain text search
-			log_info("✓ Detected game: " .. game_key .. " from window title: " .. title)
-			return game_key
-		end
-	end
-	
-	log_info("✗ No game pattern matched for window: " .. title)
-	return nil
-end
-
 local function get_current_game_key()
-	-- Priority: Manual selection > Auto-detection > First available game
+	-- Use manual selection or fallback to first available game
 	if MANUAL_GAME_SELECTION ~= "" and GAMES[MANUAL_GAME_SELECTION] then
 		return MANUAL_GAME_SELECTION
-	end
-	
-	if AUTO_DETECT_GAME then
-		local detected = detect_game_from_window()
-		if detected and GAMES[detected] then
-			DETECTED_GAME = detected
-			return detected
-		end
 	end
 	
 	-- Fallback to first available game
@@ -316,10 +256,10 @@ local function make_hotkey_callback(hotkey_game_key, action_name)
 			return
 		end
 
-		-- Get the current active game
+		-- Get the current selected game
 		local current_game = get_current_game_key()
 		if not current_game then
-			log_warn("No game detected or configured - ignoring hotkey")
+			log_warn("No game selected - ignoring hotkey")
 			return
 		end
 
@@ -327,11 +267,11 @@ local function make_hotkey_callback(hotkey_game_key, action_name)
 		local system_actions = {undo = true, clear = true, start = true}
 		
 		if not system_actions[action_name] then
-			-- Game gating: only fire when this hotkey's game matches the current active game
+			-- Game gating: only fire when this hotkey's game matches the current selected game
 			if normalize_name(current_game) ~= normalize_name(hotkey_game_key) then
 				log_info(
 					string.format(
-						"Ignoring [%s:%s] because current game '%s' != hotkey game '%s'",
+						"Ignoring [%s:%s] because selected game '%s' != hotkey game '%s'",
 						hotkey_game_key,
 						action_name,
 						current_game,
@@ -342,17 +282,8 @@ local function make_hotkey_callback(hotkey_game_key, action_name)
 			end
 		end
 
-		local detection_method = "manual"
-		if AUTO_DETECT_GAME and current_game == DETECTED_GAME then
-			detection_method = "auto-detected"
-		elseif MANUAL_GAME_SELECTION ~= "" then
-			detection_method = "manual selection"
-		else
-			detection_method = "fallback"
-		end
-
 		log_info(
-			string.format("Hotkey triggered → game=%s action=%s (%s)", current_game, action_name, detection_method)
+			string.format("Hotkey triggered → game=%s action=%s (manual selection)", current_game, action_name)
 		)
 
 		-- send current game and action via HTTP
@@ -704,13 +635,13 @@ function script_description()
 <ul>
 <li>🔒 Secure HTTP POST with authentication</li>
 <li>⚡ Real-time game action tracking</li>
-<li>🎯 Game-based action gating with auto-detection</li>
+<li>🎯 Manual game selection with action gating</li>
 <li>🔄 Dynamic config loading</li>
 </ul>
 <p><strong>Setup:</strong></p>
 <ol>
 <li>Enter your server host/port and authentication token</li>
-<li>Configure game detection or manual selection</li>
+<li>Select your game from the dropdown</li>
 <li>Click "Refresh Config" to load game configurations</li>
 <li>Assign hotkeys to your game actions</li>
 </ol>
@@ -724,26 +655,14 @@ function script_properties()
 	obs.obs_properties_add_int(props, "http_port", "HTTP Port", 1, 65535, 1)
 	obs.obs_properties_add_text(props, "ss_token", "Authentication Token", obs.OBS_TEXT_PASSWORD)
 	
-	-- Game detection options
-	obs.obs_properties_add_bool(props, "auto_detect", "Auto-detect game from window title")
-	
+	-- Manual game selection only
 	local game_list = obs.obs_properties_add_list(props, "manual_game", "Manual game selection", obs.OBS_COMBO_TYPE_LIST, obs.OBS_COMBO_FORMAT_STRING)
-	obs.obs_property_list_add_string(game_list, "Auto-detect / First Available", "")
+	obs.obs_property_list_add_string(game_list, "Select a game...", "")
 	
 	-- Populate with games from config
 	for game_key, _ in pairs(GAMES) do
 		obs.obs_property_list_add_string(game_list, game_key, game_key)
 	end
-	
-	-- Status display (read-only text fields)
-	obs.obs_properties_add_text(props, "status_window", "Current Window Title", obs.OBS_TEXT_INFO)
-	obs.obs_properties_add_text(props, "status_detected", "Detected Game", obs.OBS_TEXT_INFO) 
-	obs.obs_properties_add_text(props, "status_active", "Active Game", obs.OBS_TEXT_INFO)
-	
-	obs.obs_properties_add_button(props, "test_detection", "🔍 Test Detection Now", function()
-		test_game_detection()
-		return true
-	end)
 	
 	obs.obs_properties_add_button(props, "refresh_config", "🔄 Refresh Config", function()
 		refresh_config()
@@ -757,7 +676,6 @@ function script_defaults(settings)
 	obs.obs_data_set_default_string(settings, "host", HOST)
 	obs.obs_data_set_default_int(settings, "http_port", HTTP_PORT)
 	obs.obs_data_set_default_string(settings, "ss_token", SS_TOKEN)
-	obs.obs_data_set_default_bool(settings, "auto_detect", AUTO_DETECT_GAME)
 	obs.obs_data_set_default_string(settings, "manual_game", MANUAL_GAME_SELECTION)
 end
 
@@ -770,61 +688,23 @@ function script_update(settings)
 	end
 
 	SS_TOKEN = obs.obs_data_get_string(settings, "ss_token") or ""
-	AUTO_DETECT_GAME = obs.obs_data_get_bool(settings, "auto_detect")
 	MANUAL_GAME_SELECTION = obs.obs_data_get_string(settings, "manual_game") or ""
 
-	local detection_info = ""
+	local game_info = ""
 	if MANUAL_GAME_SELECTION ~= "" then
-		detection_info = "Manual: " .. MANUAL_GAME_SELECTION
-	elseif AUTO_DETECT_GAME then
-		detection_info = "Auto-detect enabled"
+		game_info = "Selected: " .. MANUAL_GAME_SELECTION
 	else
-		detection_info = "Fallback to first game"
+		game_info = "No game selected"
 	end
-
-	-- Update status fields
-	update_status_display(settings)
 
 	log_info(string.format("Updated settings → HTTP=%s:%d Token=%s Game=%s", HOST, HTTP_PORT, 
-		SS_TOKEN ~= "" and "***SET***" or "NOT_SET", detection_info))
-end
-
--- Function to test game detection and update status display
-function test_game_detection()
-	local detected = detect_game_from_window()
-	DETECTED_GAME = detected or ""
-	local active_game = get_current_game_key()
-	
-	log_info("=== GAME DETECTION TEST ===")
-	log_info("Window Title: " .. (CURRENT_WINDOW_TITLE or "None"))
-	log_info("Detected Game: " .. (DETECTED_GAME ~= "" and DETECTED_GAME or "None"))
-	log_info("Active Game: " .. (active_game or "None"))
-	log_info("Auto-detect: " .. (AUTO_DETECT_GAME and "Enabled" or "Disabled"))
-	log_info("Manual selection: " .. (MANUAL_GAME_SELECTION ~= "" and MANUAL_GAME_SELECTION or "None"))
-	log_info("==========================")
-end
-
--- Function to update status display in properties
-function update_status_display(settings)
-	if not settings then
-		return
-	end
-	
-	-- Force a detection check
-	local detected = detect_game_from_window()
-	DETECTED_GAME = detected or ""
-	local active_game = get_current_game_key()
-	
-	-- Update the status fields
-	obs.obs_data_set_string(settings, "status_window", CURRENT_WINDOW_TITLE or "No window detected")
-	obs.obs_data_set_string(settings, "status_detected", DETECTED_GAME ~= "" and DETECTED_GAME or "No game detected")
-	obs.obs_data_set_string(settings, "status_active", active_game or "No game active")
+		SS_TOKEN ~= "" and "***SET***" or "NOT_SET", game_info))
 end
 
 function script_load(settings)
 	script_update(settings)
 	
-	log_info("🚀 Socket Sentinel HTTP Client loaded")
+	log_info("🚀 Socket Sentinel HTTP Client loaded (Manual Game Selection)")
 	log_info("📡 Using secure HTTP POST instead of insecure TCP")
 	log_info("🔒 Authentication: " .. (SS_TOKEN ~= "" and "Enabled" or "⚠️  DISABLED"))
 	
