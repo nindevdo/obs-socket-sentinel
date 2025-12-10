@@ -227,6 +227,10 @@ last_overlay_output: str = ""           # current overlay text
 last_action: str = ""                   # last action key
 last_project: str = ""                  # last project/game key used for overlay
 
+# Video/audio duration cache to avoid repeated ffprobe calls
+video_duration_cache: Dict[str, float] = {}  # file_path -> duration in seconds
+audio_duration_cache: Dict[str, float] = {}  # file_path -> duration in seconds
+
 # Action history for undo functionality
 action_history: List[Dict[str, Any]] = []  # List of action records for undo
 MAX_UNDO_HISTORY = 50  # Maximum number of actions to keep in undo history
@@ -2870,7 +2874,13 @@ async def get_video_duration_from_file(file_path: str) -> Optional[float]:
     """
     Get duration from a local video file using ffprobe or similar.
     Returns None if the file is corrupted or unreadable, but accepts short durations for GIFs.
+    Uses cache to avoid repeated ffprobe calls.
     """
+    # Check cache first
+    if file_path in video_duration_cache:
+        logging.debug(f"✅ [video_duration] Using cached duration for {file_path}: {video_duration_cache[file_path]}s")
+        return video_duration_cache[file_path]
+    
     logging.debug(f"🔍 [video_duration] Checking duration for file: {file_path}")
     try:
         # Try ffprobe first (more reliable for local files)
@@ -2888,6 +2898,8 @@ async def get_video_duration_from_file(file_path: str) -> Optional[float]:
                 duration = float(duration_str)
                 if duration > 0:
                     logging.debug(f"[video] Valid video duration: {file_path} ({duration}s)")
+                    # Cache the result
+                    video_duration_cache[file_path] = duration
                     return duration
                 else:
                     logging.warning(f"[video] Zero duration video detected by ffprobe: {file_path}")
@@ -2937,7 +2949,11 @@ async def get_video_duration_from_file(file_path: str) -> Optional[float]:
                         return None
             return await asyncio.to_thread(_inner)
         
-        return await _get_duration_yt_dlp(file_path)
+        duration = await _get_duration_yt_dlp(file_path)
+        if duration is not None:
+            # Cache the result
+            video_duration_cache[file_path] = duration
+        return duration
     except Exception as e:
         logging.warning(f"❗ [video_duration] yt-dlp fallback failed for {file_path}: {e}")
         pass
@@ -2951,7 +2967,13 @@ async def get_audio_duration_from_file(file_path: str) -> Optional[float]:
     """
     Get duration from a local audio file using ffprobe.
     Returns None if the file is corrupted or unreadable.
+    Uses cache to avoid repeated ffprobe calls.
     """
+    # Check cache first
+    if file_path in audio_duration_cache:
+        logging.debug(f"✅ [audio_duration] Using cached duration for {file_path}: {audio_duration_cache[file_path]}s")
+        return audio_duration_cache[file_path]
+    
     try:
         # Use ffprobe to get audio duration
         result = await asyncio.create_subprocess_exec(
@@ -2967,6 +2989,8 @@ async def get_audio_duration_from_file(file_path: str) -> Optional[float]:
                 duration = float(duration_str)
                 if duration > 0:
                     logging.debug(f"[audio] Valid audio duration: {file_path} ({duration}s)")
+                    # Cache the result
+                    audio_duration_cache[file_path] = duration
                     return duration
                 else:
                     logging.warning(f"[audio] Zero duration audio: {file_path}")
@@ -5045,10 +5069,32 @@ async def handle_http(reader: asyncio.StreamReader, writer: asyncio.StreamWriter
                 available_games = list(GAMES_CONFIG.keys())
                 current_game = last_project or available_games[0] if available_games else "unknown"
                 
+                # Get action counts for current game
+                game_action_counts = {}
+                if current_game:
+                    for (proj, action_key), count in action_counts.items():
+                        if proj == current_game:
+                            game_action_counts[action_key] = count
+                
+                # Get current run stats for current game
+                current_run_stats = None
+                current_run_num = current_run_by_project.get(current_game)
+                if current_run_num:
+                    run_key = (current_game, current_run_num)
+                    stats = run_stats_by_project.get(run_key, {})
+                    current_run_stats = {
+                        "run_number": current_run_num,
+                        "kills": stats.get("kills", 0),
+                        "deaths": stats.get("deaths", 0),
+                        "headshots": stats.get("headshots", 0)
+                    }
+                
                 response_data = {
                     "current_game": current_game,
                     "available_games": available_games,
-                    "games_config": GAMES_CONFIG
+                    "games_config": GAMES_CONFIG,
+                    "action_counts": game_action_counts,
+                    "run_stats": current_run_stats
                 }
                 
                 body_bytes = json.dumps(response_data).encode("utf-8")

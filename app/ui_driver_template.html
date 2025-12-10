@@ -1055,6 +1055,8 @@
                     const data = await response.json();
                     this.config = { games: data.games_config };
                     this.currentGame = data.current_game;
+                    this.actionCounts = data.action_counts || {};
+                    this.runStats = data.run_stats || null;
                     
                     if (!this.config.games) {
                         throw new Error('No games found in configuration');
@@ -1062,6 +1064,8 @@
                     
                     console.log('Loaded config:', this.config);
                     console.log('Current game:', this.currentGame);
+                    console.log('Action counts:', this.actionCounts);
+                    console.log('Run stats:', this.runStats);
                     
                     // Also load hotkey mappings
                     await this.loadHotkeyMappings();
@@ -1248,18 +1252,34 @@
                 html += '</div>';
                 html += '</div>';
 
+                // Add run stats if available
+                if (this.runStats) {
+                    const kd = this.runStats.deaths > 0 ? (this.runStats.kills / this.runStats.deaths).toFixed(2) : this.runStats.kills;
+                    html += `
+                        <div class="run-stats" style="background: rgba(45, 55, 72, 0.8); border-radius: 12px; padding: 20px; margin: 20px auto; max-width: 400px; border: 1px solid #4a5568;">
+                            <h3 style="margin: 0 0 15px 0; color: #4fd1c7; text-align: center;">Current Run #${this.runStats.run_number}</h3>
+                            <div style="padding: 8px 0; font-size: 1.1em; border-bottom: 1px solid #2d3748;">💀 Kills: ${this.runStats.kills}</div>
+                            <div style="padding: 8px 0; font-size: 1.1em; border-bottom: 1px solid #2d3748;">☠️ Deaths: ${this.runStats.deaths}</div>
+                            <div style="padding: 8px 0; font-size: 1.1em; border-bottom: 1px solid #2d3748;">🤯 Headshots: ${this.runStats.headshots}</div>
+                            <div style="padding: 8px 0; font-size: 1.1em;">📊 K/D: ${kd}</div>
+                        </div>
+                    `;
+                }
+
                 this.contentEl.innerHTML = html;
             }
 
             createActionButton(action, emoji, hotkey, isSystem = false) {
                 const label = this.formatActionName(action);
+                const count = this.actionCounts[action] || 0;
+                const countDisplay = count > 0 ? ` (${count})` : '';
                 // Only show hotkey info if we have a real mapping
                 const hotkeyText = hotkey ? hotkey : '';
                 
                 return `
                     <button class="action-btn" data-action="${action}" data-game="${this.currentGame}">
                         <div class="action-emoji">${emoji}</div>
-                        <div class="action-label">${label}</div>
+                        <div class="action-label">${label}${countDisplay}</div>
                         ${hotkeyText ? `<div class="action-key">${hotkeyText}</div>` : ''}
                     </button>
                 `;
