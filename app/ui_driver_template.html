@@ -947,7 +947,7 @@
             storeToken(token) {
                 try {
                     // Simple base64 encoding with some obfuscation
-                    const encoded = btoa(unescape(encodeURIComponent(token + ':obs-sentinel')));
+                    const encoded = btoa(encodeURIComponent(token + ':obs-sentinel'));
                     localStorage.setItem('ss_auth_data', encoded);
                 } catch (error) {
                     console.error('Failed to store token:', error);
@@ -959,7 +959,7 @@
                     const encoded = localStorage.getItem('ss_auth_data');
                     if (!encoded) return null;
                     
-                    const decoded = decodeURIComponent(escape(atob(encoded)));
+                    const decoded = decodeURIComponent(atob(encoded));
                     if (decoded.endsWith(':obs-sentinel')) {
                         return decoded.slice(0, -13); // Remove ':obs-sentinel'
                     }
@@ -1353,8 +1353,10 @@
         }
 
         // Initialize the UI when the page loads
+        let actionUI;
         document.addEventListener('DOMContentLoaded', () => {
-            new ActionUI();
+            actionUI = new ActionUI();
+            window.actionUI = actionUI; // Make it accessible in console for debugging
         });
 
         // Add keyboard shortcuts
