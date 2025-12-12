@@ -13,9 +13,9 @@ import datetime
 from typing import Dict, List, Any, Optional, Set
 
 import aiohttp  # make sure this is installed in the container
-import yaml     # pip install pyyaml
+import yaml  # pip install pyyaml
 import hashlib  # for stable cache filenames
-import re       # for YouTube detection
+import re  # for YouTube detection
 
 # -----------------------------
 # CONFIG / GLOBALS
@@ -24,15 +24,24 @@ import re       # for YouTube detection
 overlay_clear_task: Optional[asyncio.Task] = None
 
 # Global references for overlay media
-last_sound: Optional[str] = None        # URL string for sound (Discord cached)
-last_meme_url: Optional[str] = None     # URL string for meme image/gif (Discord)
-last_video_url: Optional[str] = None    # URL string for video (YouTube/direct)
+last_sound: Optional[str] = None  # URL string for sound (Discord cached)
+last_meme_url: Optional[str] = None  # URL string for meme image/gif (Discord)
+last_video_url: Optional[str] = None  # URL string for video (YouTube/direct)
 last_video_duration: Optional[float] = None  # Seconds, if known
 last_audio_duration: Optional[float] = None  # Audio duration for proper timing
+last_synonyms: Optional[List[str]] = None  # Synonyms for burst words
 
 # Recently played media tracking to avoid repetition
 recent_media_history: Dict[str, List[str]] = {}  # action_key -> list of recent URLs
 RECENT_MEDIA_HISTORY_SIZE = 10  # Remember last 10 items per action
+
+# Video cycle tracking for smart rotation
+# Structure: action_key -> {
+#   "pool": [(url, weight, duration, original_url), ...],  # All videos with repetition for weighted ones
+#   "remaining": [(url, weight, duration, original_url), ...],  # Slots remaining in current cycle
+#   "cycle_number": int  # Which cycle we're on
+# }
+video_cycle_state: Dict[str, Dict] = {}
 
 # Where we consider the "recordings/markers" root
 WATCH_DIR = Path(os.getenv("WATCH_DIR", "/markers"))
@@ -76,7 +85,7 @@ DISCORD_VIDEO_CACHE_DIR = Path(
 # Alternative cache directories for fallback (in case of path issues)
 ALTERNATIVE_VIDEO_CACHE_DIRS = [
     Path("./_data/discord/discord_videos"),  # Local development path
-    Path("_data/discord/discord_videos"),    # Alternative local path
+    Path("_data/discord/discord_videos"),  # Alternative local path
 ]
 
 # Discord meme/image file cache (persistent)
@@ -89,33 +98,38 @@ FAILED_VIDEOS_LOG = DISCORD_VIDEO_CACHE_DIR / "failed_videos.json"
 failed_video_urls: Set[str] = set()
 failed_video_details: Dict[str, Dict[str, Any]] = {}
 
+
 async def load_failed_videos() -> None:
     """Load the list of previously failed video URLs to skip on startup."""
     global failed_video_urls, failed_video_details
-    
+
     try:
         if FAILED_VIDEOS_LOG.exists():
-            with open(FAILED_VIDEOS_LOG, 'r') as f:
+            with open(FAILED_VIDEOS_LOG, "r") as f:
                 data = json.load(f)
-                
+
                 # Backward compatibility - handle old format
-                if 'failed_urls' in data and isinstance(data['failed_urls'], list):
-                    failed_video_urls = set(data['failed_urls'])
+                if "failed_urls" in data and isinstance(data["failed_urls"], list):
+                    failed_video_urls = set(data["failed_urls"])
                     failed_video_details = {}
                     for url in failed_video_urls:
                         failed_video_details[url] = {
-                            'first_failed': '2025-11-25T00:00:00',  # Default for old entries
-                            'last_failed': data.get('last_updated', '2025-11-25T00:00:00'),
-                            'failure_count': 1,
-                            'error_type': 'legacy_unknown',
-                            'error_message': 'Migrated from old format'
+                            "first_failed": "2025-11-25T00:00:00",  # Default for old entries
+                            "last_failed": data.get(
+                                "last_updated", "2025-11-25T00:00:00"
+                            ),
+                            "failure_count": 1,
+                            "error_type": "legacy_unknown",
+                            "error_message": "Migrated from old format",
                         }
                 else:
                     # New detailed format
-                    failed_video_details = data.get('failed_videos', {})
+                    failed_video_details = data.get("failed_videos", {})
                     failed_video_urls = set(failed_video_details.keys())
-                
-                logging.info(f"📋 [startup] Loaded {len(failed_video_urls)} failed video URLs to skip")
+
+                logging.info(
+                    f"📋 [startup] Loaded {len(failed_video_urls)} failed video URLs to skip"
+                )
         else:
             failed_video_urls = set()
             failed_video_details = {}
@@ -125,92 +139,112 @@ async def load_failed_videos() -> None:
         failed_video_urls = set()
         failed_video_details = {}
 
+
 async def save_failed_videos() -> None:
     """Save the detailed list of failed video URLs to disk."""
     global failed_video_urls, failed_video_details
-    
+
     try:
         DISCORD_VIDEO_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-        
+
         # Generate statistics
-        total_failures = sum(details.get('failure_count', 1) for details in failed_video_details.values())
+        total_failures = sum(
+            details.get("failure_count", 1) for details in failed_video_details.values()
+        )
         error_types = {}
         for details in failed_video_details.values():
-            error_type = details.get('error_type', 'unknown')
+            error_type = details.get("error_type", "unknown")
             error_types[error_type] = error_types.get(error_type, 0) + 1
-        
+
         # Most recent failures for display
         recent_failures = []
         for url, details in failed_video_details.items():
-            recent_failures.append({
-                'url': url,
-                'last_failed': details.get('last_failed', ''),
-                'error_type': details.get('error_type', 'unknown'),
-                'failure_count': details.get('failure_count', 1)
-            })
-        recent_failures.sort(key=lambda x: x['last_failed'], reverse=True)
+            recent_failures.append(
+                {
+                    "url": url,
+                    "last_failed": details.get("last_failed", ""),
+                    "error_type": details.get("error_type", "unknown"),
+                    "failure_count": details.get("failure_count", 1),
+                }
+            )
+        recent_failures.sort(key=lambda x: x["last_failed"], reverse=True)
         recent_failures = recent_failures[:10]  # Keep top 10 most recent
-        
+
         data = {
-            'failed_videos': failed_video_details,
-            'statistics': {
-                'total_failed_urls': len(failed_video_urls),
-                'total_failure_attempts': total_failures,
-                'error_type_breakdown': error_types,
-                'startup_skip_rate': f"{len(failed_video_urls)}/{len(failed_video_urls) + 100}",  # Estimated
-                'recent_failures': recent_failures
+            "failed_videos": failed_video_details,
+            "statistics": {
+                "total_failed_urls": len(failed_video_urls),
+                "total_failure_attempts": total_failures,
+                "error_type_breakdown": error_types,
+                "startup_skip_rate": f"{len(failed_video_urls)}/{len(failed_video_urls) + 100}",  # Estimated
+                "recent_failures": recent_failures,
             },
-            'metadata': {
-                'last_updated': datetime.datetime.now().isoformat(),
-                'format_version': '2.0',
-                'generator': 'obs-socket-sentinel'
-            }
+            "metadata": {
+                "last_updated": datetime.datetime.now().isoformat(),
+                "format_version": "2.0",
+                "generator": "obs-socket-sentinel",
+            },
         }
-        
-        with open(FAILED_VIDEOS_LOG, 'w') as f:
+
+        with open(FAILED_VIDEOS_LOG, "w") as f:
             json.dump(data, f, indent=2)
-        logging.info(f"💾 [startup] Saved {len(failed_video_urls)} failed video URLs with detailed stats to {FAILED_VIDEOS_LOG}")
+        logging.info(
+            f"💾 [startup] Saved {len(failed_video_urls)} failed video URLs with detailed stats to {FAILED_VIDEOS_LOG}"
+        )
     except Exception as e:
         logging.error(f"❗ [startup] Error saving failed videos log: {e}")
 
-async def add_failed_video(url: str, error_type: str = "unknown", error_message: str = "No details") -> None:
+
+async def add_failed_video(
+    url: str, error_type: str = "unknown", error_message: str = "No details"
+) -> None:
     """Add a URL to the failed videos list with detailed error information."""
     global failed_video_urls, failed_video_details
-    
+
     now = datetime.datetime.now().isoformat()
-    
+
     if url not in failed_video_urls:
         failed_video_urls.add(url)
         failed_video_details[url] = {
-            'first_failed': now,
-            'last_failed': now,
-            'failure_count': 1,
-            'error_type': error_type,
-            'error_message': error_message,
-            'video_id': extract_youtube_video_id(url) if 'youtube.com' in url or 'youtu.be' in url else 'direct_video'
+            "first_failed": now,
+            "last_failed": now,
+            "failure_count": 1,
+            "error_type": error_type,
+            "error_message": error_message,
+            "video_id": extract_youtube_video_id(url)
+            if "youtube.com" in url or "youtu.be" in url
+            else "direct_video",
         }
-        logging.warning(f"📝 [startup] Added failed video to skip list: {url[:50]}... (Type: {error_type})")
+        logging.warning(
+            f"📝 [startup] Added failed video to skip list: {url[:50]}... (Type: {error_type})"
+        )
     else:
         # Update existing entry
         details = failed_video_details[url]
-        details['last_failed'] = now
-        details['failure_count'] = details.get('failure_count', 1) + 1
-        details['error_type'] = error_type  # Update to most recent error
-        details['error_message'] = error_message
-        logging.warning(f"📝 [startup] Updated failed video ({details['failure_count']} failures): {url[:50]}... (Type: {error_type})")
-    
+        details["last_failed"] = now
+        details["failure_count"] = details.get("failure_count", 1) + 1
+        details["error_type"] = error_type  # Update to most recent error
+        details["error_message"] = error_message
+        logging.warning(
+            f"📝 [startup] Updated failed video ({details['failure_count']} failures): {url[:50]}... (Type: {error_type})"
+        )
+
     await save_failed_videos()
+
 
 async def remove_failed_video(url: str) -> None:
     """Remove a URL from the failed videos list (if it works again)."""
     global failed_video_urls, failed_video_details
-    
+
     if url in failed_video_urls:
         failed_video_urls.remove(url)
         details = failed_video_details.pop(url, {})
-        failure_count = details.get('failure_count', 1)
-        logging.info(f"✅ [startup] Removed recovered video from skip list: {url[:50]}... (was {failure_count} failures)")
+        failure_count = details.get("failure_count", 1)
+        logging.info(
+            f"✅ [startup] Removed recovered video from skip list: {url[:50]}... (was {failure_count} failures)"
+        )
         await save_failed_videos()
+
 
 # Loaded from YAML
 GAMES_CONFIG: Dict[str, Dict[str, Any]] = {}
@@ -223,9 +257,9 @@ DEFAULT_PROJECT_NAME: Optional[str] = None  # used as fallback for chapters / ov
 # -----------------------------
 action_counts: Dict[tuple[str, str], int] = {}  # (project_key, action) -> count
 state_lock = asyncio.Lock()
-last_overlay_output: str = ""           # current overlay text
-last_action: str = ""                   # last action key
-last_project: str = ""                  # last project/game key used for overlay
+last_overlay_output: str = ""  # current overlay text
+last_action: str = ""  # last action key
+last_project: str = ""  # last project/game key used for overlay
 
 # Video/audio duration cache to avoid repeated ffprobe calls
 video_duration_cache: Dict[str, float] = {}  # file_path -> duration in seconds
@@ -248,7 +282,9 @@ PLAYTIME_DISPLAY_DURATION = 30  # Show playtime for 5 minutes (300 seconds)
 # Achievement percentages display state
 current_achievement_percentages: Optional[Dict[str, Any]] = None
 achievement_percentages_display_until: Optional[float] = None
-ACHIEVEMENT_PERCENTAGES_DISPLAY_DURATION = 30.0  # Show achievement percentages for 5 minutes (300 seconds)
+ACHIEVEMENT_PERCENTAGES_DISPLAY_DURATION = (
+    30.0  # Show achievement percentages for 5 minutes (300 seconds)
+)
 
 # News notification state
 current_news: Optional[Dict[str, Any]] = None
@@ -267,8 +303,10 @@ RUN_KILL_ACTIONS = {"kill", "headshot"}
 RUN_DEATH_ACTIONS = {"death", "downed"}
 
 # Per-project run counters + current run
-run_counters: Dict[str, int] = {}                      # project -> last run number
-current_run_by_project: Dict[str, Optional[int]] = {}  # project -> current run number or None
+run_counters: Dict[str, int] = {}  # project -> last run number
+current_run_by_project: Dict[
+    str, Optional[int]
+] = {}  # project -> current run number or None
 
 # Per-project+run stats
 # key: (project, run_number)
@@ -293,71 +331,322 @@ run_panel_visible_until: Optional[float] = None
 MAX_VISIBLE_RUNS = 10
 
 # Discord meme/sound cache
-discord_messages_cache: List[dict] = []         # all messages from channel
-discord_game_caches: Dict[str, List[dict]] = {} # per-game filtered messages
-discord_cache_lock = asyncio.Lock()             # to avoid concurrent rebuilds
+discord_messages_cache: List[dict] = []  # all messages from channel
+discord_game_caches: Dict[str, List[dict]] = {}  # per-game filtered messages
+discord_cache_lock = asyncio.Lock()  # to avoid concurrent rebuilds
 
 YOUTUBE_RE = re.compile(r"(youtube\.com|youtu\.be)", re.IGNORECASE)
 
 
-def apply_anti_repetition_weighting(weighted_candidates: Dict[str, float], action_key: str) -> Dict[str, float]:
+# Synonym fallback dictionaries for common game actions not just fallback
+ACTION_SYNONYMS = {
+    "kill": [
+        "ELIMINATED",
+        "DOWNED",
+        "SLAIN",
+        "DEFEATED",
+        "DESTROYED",
+        "WASTED",
+        "FRAGGED",
+        "REKT",
+        "OBLITERATED",
+        "TERMINATED",
+    ],
+    "death": [
+        "FALLEN",
+        "PERISHED",
+        "EXPIRED",
+        "DECEASED",
+        "ELIMINATED",
+        "TERMINATED",
+        "FLATLINED",
+        "DOWN",
+        "TOAST",
+        "DONE",
+    ],
+    "headshot": [
+        "HEADPOP",
+        "CRANKED",
+        "DOMED",
+        "NOGGIN HIT",
+        "BRAIN SHOT",
+        "HEAD TAP",
+        "SCALPED",
+        "POPPED",
+        "CRITICAL",
+        "PRECISION",
+    ],
+    "downed": [
+        "KNOCKED",
+        "DROPPED",
+        "FLOORED",
+        "GROUNDED",
+        "DOWN",
+        "INCAPACITATED",
+        "CRAWLING",
+        "WOUNDED",
+        "HURT",
+        "DAMAGED",
+    ],
+    "revive": [
+        "RESURRECTED",
+        "RESTORED",
+        "SAVED",
+        "RECOVERED",
+        "HEALED",
+        "BACK UP",
+        "HELPED",
+        "ASSISTED",
+        "RESCUED",
+        "RENEWED",
+    ],
+    "funny": [
+        "HILARIOUS",
+        "LMAO",
+        "LOL",
+        "COMEDY",
+        "JOKES",
+        "HAHA",
+        "ROFL",
+        "KEK",
+        "WILD",
+        "BRUH",
+    ],
+    "banish": [
+        "EXORCISED",
+        "EXPELLED",
+        "REMOVED",
+        "ERASED",
+        "PURGED",
+        "CLEANSED",
+        "VANISHED",
+        "GONE",
+        "SENT AWAY",
+        "DISMISSED",
+    ],
+    "extraction": [
+        "ESCAPED",
+        "EVACUATED",
+        "EXTRACTED",
+        "SURVIVED",
+        "BAILED",
+        "LEFT",
+        "DEPARTED",
+        "FLED",
+        "MADE IT",
+        "OUT",
+    ],
+    "undo": [
+        "REVERSED",
+        "REVERTED",
+        "CANCELLED",
+        "UNDONE",
+        "ROLLED BACK",
+        "FIXED",
+        "CORRECTED",
+        "OOPS",
+        "NEVERMIND",
+        "MISTAKE",
+    ],
+    "clear": [
+        "RESET",
+        "WIPED",
+        "CLEARED",
+        "CLEANED",
+        "ERASED",
+        "FRESH START",
+        "NEW",
+        "BLANK",
+        "ZERO",
+        "RESTART",
+    ],
+}
+
+
+def get_synonyms_for_action(action_key: str, count: int = 10) -> List[str]:
+    """
+    Get synonyms for a given action word.
+    Uses NLTK WordNet if available, otherwise falls back to predefined lists.
+
+    Returns a list of synonyms (uppercase) for use in burst words.
+    """
+    action_lower = action_key.lower()
+    synonyms = []
+
+    # Try NLTK WordNet first (if installed)
+    try:
+        from nltk.corpus import wordnet
+
+        synsets = wordnet.synsets(action_lower, pos=wordnet.VERB)
+
+        for synset in synsets[:3]:  # Get synonyms from first 3 synsets
+            for lemma in synset.lemmas():
+                word = lemma.name().replace("_", " ").upper()
+                if word != action_key.upper() and word not in synonyms:
+                    synonyms.append(word)
+                    if len(synonyms) >= count:
+                        break
+            if len(synonyms) >= count:
+                break
+
+        if synonyms:
+            logging.debug(
+                f"[synonyms] Found {len(synonyms)} WordNet synonyms for '{action_key}'"
+            )
+    except ImportError:
+        logging.debug(f"[synonyms] NLTK not available, using fallback dictionary")
+    except Exception as e:
+        logging.debug(f"[synonyms] WordNet error: {e}, using fallback")
+
+    # Fallback or supplement with predefined synonyms
+    if not synonyms or len(synonyms) < count:
+        fallback = ACTION_SYNONYMS.get(action_lower, [])
+
+        # Add fallback words that aren't already in the list
+        for word in fallback:
+            if word not in synonyms:
+                synonyms.append(word)
+                if len(synonyms) >= count:
+                    break
+
+    # If still no synonyms, add the original word variations
+    if not synonyms:
+        base = action_key.upper()
+        synonyms = [base, f"{base}!", f"{base}!!", f"💥{base}💥"]
+
+    # Shuffle for variety
+    random.shuffle(synonyms)
+
+    # Return requested count (or all if less available)
+    result = synonyms[:count]
+    logging.info(
+        f"[synonyms] Generated {len(result)} synonyms for '{action_key}': {result[:5]}..."
+    )
+    return result
+
+
+def build_video_cycle_pool(
+    weighted_candidates: Dict[str, tuple[float, float, str]], action_key: str
+) -> List[tuple[str, float, float, str]]:
+    """
+    Build a cycle pool where videos with higher weights appear multiple times.
+    The goal is to cycle through all videos before repeating, with weighted videos
+    getting proportionally more plays per cycle.
+
+    Returns a list of (url, weight, duration, original_url) tuples.
+    """
+    if not weighted_candidates:
+        return []
+
+    # Get all videos with their weights
+    videos = list(
+        weighted_candidates.items()
+    )  # [(url, (weight, duration, original_url)), ...]
+
+    if len(videos) == 1:
+        # Only one video, just include it once
+        url, (weight, duration, original_url) = videos[0]
+        return [(url, weight, duration, original_url)]
+
+    # Calculate relative weights
+    min_weight = min(w for _, (w, _, _) in videos)
+
+    # Build pool with repetitions based on weight
+    pool = []
+    for url, (weight, duration, original_url) in videos:
+        # Calculate how many times this video should appear in the cycle
+        # Videos with min_weight appear once, videos with 2x min_weight appear twice, etc.
+        repetitions = max(1, round(weight / min_weight))
+
+        # Cap repetitions at 3x to prevent single video domination
+        repetitions = min(repetitions, 3)
+
+        for _ in range(repetitions):
+            pool.append((url, weight, duration, original_url))
+
+    logging.info(
+        f"[video_cycle] Built pool for {action_key}: {len(pool)} slots from {len(videos)} unique videos"
+    )
+    for url, (weight, duration, original_url) in videos:
+        count = sum(1 for u, _, _, _ in pool if u == url)
+        logging.info(
+            f"[video_cycle]   {url}: weight={weight:.1f}, appears {count}x in cycle"
+        )
+
+    return pool
+
+
+def apply_anti_repetition_weighting(
+    weighted_candidates: Dict[str, float], action_key: str
+) -> Dict[str, float]:
     """
     Apply anti-repetition weighting to reduce chances of recently played media.
     Items played more recently get higher penalty, but still remain selectable.
+
+    NOTE: This is now primarily used for non-video media (sounds, memes).
+    Videos use the cycle-based system instead.
     """
     if not weighted_candidates:
         return weighted_candidates
-        
+
     recent_list = recent_media_history.get(action_key, [])
     if not recent_list:
         return weighted_candidates
-    
+
     adjusted_candidates = {}
     for url, weight in weighted_candidates.items():
         adjusted_weight = weight
-        
+
         # Check if this URL was recently played
         if url in recent_list:
             # Apply penalty based on recency - more gradual than before
             # Most recent gets 10% weight, second gets 25%, third gets 40%, etc.
             recency_index = recent_list.index(url)  # 0 = most recent
-            penalty_multiplier = 0.10 + (recency_index * 0.15)  # 0.10, 0.25, 0.40, 0.55, 0.70, 0.85, 1.0+
-            penalty_multiplier = min(penalty_multiplier, 0.85)  # Cap at 85% for older items
+            penalty_multiplier = 0.10 + (
+                recency_index * 0.15
+            )  # 0.10, 0.25, 0.40, 0.55, 0.70, 0.85, 1.0+
+            penalty_multiplier = min(
+                penalty_multiplier, 0.85
+            )  # Cap at 85% for older items
             adjusted_weight = weight * penalty_multiplier
-            
+
         adjusted_candidates[url] = adjusted_weight
-        
+
     return adjusted_candidates
 
 
-def apply_diversity_weighting(weighted_candidates: Dict[str, float]) -> Dict[str, float]:
+def apply_diversity_weighting(
+    weighted_candidates: Dict[str, float],
+) -> Dict[str, float]:
     """
     Apply diversity weighting to give lower-weighted items a small boost.
     This ensures that content with fewer reactions can still occasionally be selected.
     """
     if not weighted_candidates or len(weighted_candidates) <= 1:
         return weighted_candidates
-    
+
     # Calculate base stats
     weights = list(weighted_candidates.values())
     min_weight = min(weights)
     max_weight = max(weights)
-    
+
     # If all weights are the same, no diversity needed
     if max_weight == min_weight:
         return weighted_candidates
-    
+
     # Add a small diversity bonus that's inversely proportional to weight
     # This gives lower-weighted items a small chance bump
     adjusted_candidates = {}
     for url, weight in weighted_candidates.items():
         # Calculate how "underrepresented" this item is (0.0 to 1.0)
-        underrepresented_ratio = 1.0 - ((weight - min_weight) / (max_weight - min_weight))
+        underrepresented_ratio = 1.0 - (
+            (weight - min_weight) / (max_weight - min_weight)
+        )
         # Apply a small diversity bonus (up to 15% of the original weight)
         diversity_bonus = weight * (underrepresented_ratio * 0.15)
         adjusted_weight = weight + diversity_bonus
         adjusted_candidates[url] = adjusted_weight
-    
+
     return adjusted_candidates
 
 
@@ -368,23 +657,24 @@ def track_played_media(url: str, action_key: str) -> None:
     """
     if not url or not action_key:
         return
-        
+
     # Get or create history list for this action
     if action_key not in recent_media_history:
         recent_media_history[action_key] = []
-    
+
     history = recent_media_history[action_key]
-    
+
     # Remove if already in list (move to front)
     if url in history:
         history.remove(url)
-    
+
     # Add to front
     history.insert(0, url)
-    
+
     # Trim to size limit
     if len(history) > RECENT_MEDIA_HISTORY_SIZE:
         history[:] = history[:RECENT_MEDIA_HISTORY_SIZE]
+
 
 # -----------------------------
 # LOGGING
@@ -394,7 +684,7 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(message)s",
     handlers=[
         logging.StreamHandler(),
-    ]
+    ],
 )
 
 # Silence the http logger specifically to prevent excessive request logging
@@ -402,7 +692,6 @@ logging.getLogger("http").setLevel(logging.WARNING)
 
 # Silence aiohttp's internal client logger
 logging.getLogger("aiohttp.client").setLevel(logging.WARNING)
-
 
 
 # -----------------------------
@@ -417,14 +706,14 @@ def find_cached_video_file(filename: str) -> Optional[Path]:
     primary_path = DISCORD_VIDEO_CACHE_DIR / filename
     if primary_path.exists() and primary_path.stat().st_size > 0:
         return primary_path
-    
+
     # Check alternative cache directories
     for alt_dir in ALTERNATIVE_VIDEO_CACHE_DIRS:
         alt_path = alt_dir / filename
         if alt_path.exists() and alt_path.stat().st_size > 0:
             logging.debug(f"📁 [cache] Found video in alternative cache: {alt_path}")
             return alt_path
-    
+
     return None
 
 
@@ -432,22 +721,23 @@ def extract_youtube_video_id(url: str) -> str:
     """Extract YouTube video ID from various YouTube URL formats"""
     try:
         from urllib.parse import urlparse, parse_qs
+
         parsed = urlparse(url)
-        
-        if parsed.hostname in ('www.youtube.com', 'youtube.com', 'm.youtube.com'):
-            if parsed.path == '/watch':
-                return parse_qs(parsed.query).get('v', ['unknown'])[0]
-            elif parsed.path.startswith('/embed/'):
-                return parsed.path.split('/embed/')[-1].split('/')[0]
-            elif parsed.path.startswith('/shorts/'):
-                return parsed.path.split('/shorts/')[-1].split('/')[0]
-        elif parsed.hostname in ('youtu.be',):
-            return parsed.path.lstrip('/').split('/')[0]
-            
+
+        if parsed.hostname in ("www.youtube.com", "youtube.com", "m.youtube.com"):
+            if parsed.path == "/watch":
+                return parse_qs(parsed.query).get("v", ["unknown"])[0]
+            elif parsed.path.startswith("/embed/"):
+                return parsed.path.split("/embed/")[-1].split("/")[0]
+            elif parsed.path.startswith("/shorts/"):
+                return parsed.path.split("/shorts/")[-1].split("/")[0]
+        elif parsed.hostname in ("youtu.be",):
+            return parsed.path.lstrip("/").split("/")[0]
+
         # Fallback for unrecognized format
-        return url.split('/')[-1].split('?')[0]
+        return url.split("/")[-1].split("?")[0]
     except:
-        return 'unknown'
+        return "unknown"
 
 
 def normalize_emoji(s: str) -> str:
@@ -510,6 +800,7 @@ def get_action_emoji(action_key: str, project: Optional[str]) -> str:
 current_hotkey_mappings = {}
 last_hotkey_update = 0
 
+
 # -----------------------------
 # SECURITY HELPERS
 # -----------------------------
@@ -521,20 +812,20 @@ def check_auth_header(request_headers: str) -> bool:
     if not SS_TOKEN:
         # If no token is configured, allow access (backward compatibility)
         return True
-    
+
     # Parse headers to find Authorization
-    lines = request_headers.split('\r\n')
+    lines = request_headers.split("\r\n")
     for line in lines:
-        if line.lower().startswith('authorization:'):
-            auth_value = line[len('authorization:'):].strip()
+        if line.lower().startswith("authorization:"):
+            auth_value = line[len("authorization:") :].strip()
             # Support both "Bearer TOKEN" and just "TOKEN" formats
-            if auth_value.lower().startswith('bearer '):
+            if auth_value.lower().startswith("bearer "):
                 token = auth_value[7:].strip()
             else:
                 token = auth_value
-            
+
             return token == SS_TOKEN
-    
+
     # No Authorization header found and token is required
     return False
 
@@ -542,16 +833,16 @@ def check_auth_header(request_headers: str) -> bool:
 def requires_auth(path: str, method: str = "GET") -> bool:
     """
     Determine if a request path and method requires authentication.
-    
+
     Public endpoints (no auth required):
     - GET / (main HTML page for browser overlay)
     - GET /ui (action control UI driver)
-    - GET /overlay (JSON data for browser overlay)  
+    - GET /overlay (JSON data for browser overlay)
     - GET /config (configuration for hotkey scripts)
     - GET /dsounds/* (cached audio files for overlay)
     - GET /dvideos/* (cached video files for overlay)
     - GET /dmemes/* (cached meme files for overlay)
-    
+
     Protected endpoints (auth required):
     - POST requests (if any)
     - Other endpoints not explicitly listed as public
@@ -562,19 +853,21 @@ def requires_auth(path: str, method: str = "GET") -> bool:
         if path == "/auth" or path == "/hotkeys":
             return False
         return True
-    
+
     # Public GET endpoints for browser overlay and scripts
-    if (path == "/" or 
-        path == "/ui" or
-        path.startswith("/overlay") or 
-        path.startswith("/config") or
-        path.startswith("/hotkeys") or
-        path.startswith("/dsounds/") or 
-        path.startswith("/dvideos/") or 
-        path.startswith("/dmemes/") or
-        path.startswith("/sounds/")):
+    if (
+        path == "/"
+        or path == "/ui"
+        or path.startswith("/overlay")
+        or path.startswith("/config")
+        or path.startswith("/hotkeys")
+        or path.startswith("/dsounds/")
+        or path.startswith("/dvideos/")
+        or path.startswith("/dmemes/")
+        or path.startswith("/sounds/")
+    ):
         return False
-    
+
     # Default: require auth for unknown endpoints
     return True
 
@@ -592,7 +885,7 @@ def send_unauthorized(writer: asyncio.StreamWriter) -> None:
         "\r\n"
         f"{json_response}"
     )
-    writer.write(resp.encode('utf-8'))
+    writer.write(resp.encode("utf-8"))
 
 
 def load_overlay_config() -> None:
@@ -609,14 +902,18 @@ def load_overlay_config() -> None:
     global GAMES_CONFIG, GAME_EMOJI_MAP, ALL_ACTION_KEYS, DEFAULT_PROJECT_NAME
 
     if not CONFIG_PATH.exists():
-        logging.error(f"❌ Config file {CONFIG_PATH} not found. This app requires a YAML config.")
+        logging.error(
+            f"❌ Config file {CONFIG_PATH} not found. This app requires a YAML config."
+        )
         raise SystemExit(1)
 
     try:
         cfg = yaml.safe_load(CONFIG_PATH.read_text(encoding="utf-8")) or {}
         logging.info(f"🧾 Loaded config from {CONFIG_PATH}")
     except Exception as e:
-        logging.error(f"❌ Failed to read/parse config YAML {CONFIG_PATH}: {e}", exc_info=True)
+        logging.error(
+            f"❌ Failed to read/parse config YAML {CONFIG_PATH}: {e}", exc_info=True
+        )
         raise SystemExit(1)
 
     GAMES_CONFIG = cfg.get("games", {}) or {}
@@ -639,7 +936,7 @@ def load_overlay_config() -> None:
     for gconf in GAMES_CONFIG.values():
         acts = gconf.get("actions") or {}
         ALL_ACTION_KEYS.update(acts.keys())
-    
+
     # Add special system actions that are always available
     ALL_ACTION_KEYS.add("undo")
     ALL_ACTION_KEYS.add("clear")
@@ -679,43 +976,59 @@ async def cleanup_old_cache_files() -> None:
     """
     try:
         import time
+
         cutoff_time = time.time() - (24 * 60 * 60)  # 24 hours ago
-        
-        for cache_dir in [DISCORD_SOUND_CACHE_DIR, DISCORD_VIDEO_CACHE_DIR, DISCORD_MEME_CACHE_DIR]:
+
+        for cache_dir in [
+            DISCORD_SOUND_CACHE_DIR,
+            DISCORD_VIDEO_CACHE_DIR,
+            DISCORD_MEME_CACHE_DIR,
+        ]:
             if not cache_dir.exists():
                 continue
-                
+
             cleaned_count = 0
             invalid_count = 0
-            
+
             for file_path in cache_dir.glob("*"):
                 try:
                     if not file_path.is_file():
                         continue
-                        
+
                     # Check age
                     if file_path.stat().st_mtime < cutoff_time:
                         file_path.unlink()
                         cleaned_count += 1
                         continue
-                        
+
                     # For video files, also check if they're corrupted (not short)
-                    if cache_dir == DISCORD_VIDEO_CACHE_DIR and file_path.suffix == ".mp4":
+                    if (
+                        cache_dir == DISCORD_VIDEO_CACHE_DIR
+                        and file_path.suffix == ".mp4"
+                    ):
                         duration = await get_video_duration_from_file(str(file_path))
-                        if duration is None:  # Only remove if we can't read duration (corrupted)
+                        if (
+                            duration is None
+                        ):  # Only remove if we can't read duration (corrupted)
                             file_path.unlink()
                             invalid_count += 1
-                            logging.info(f"🗑️ [cache] Removed corrupted video file: {file_path}")
+                            logging.info(
+                                f"🗑️ [cache] Removed corrupted video file: {file_path}"
+                            )
                         # Accept all videos with readable duration, even very short ones
-                            
+
                 except Exception as e:
                     logging.warning(f"Failed to clean cache file {file_path}: {e}")
-                    
+
             if cleaned_count > 0:
-                logging.info(f"🧹 [cache] Cleaned {cleaned_count} old files from {cache_dir}")
+                logging.info(
+                    f"🧹 [cache] Cleaned {cleaned_count} old files from {cache_dir}"
+                )
             if invalid_count > 0:
-                logging.info(f"🗑️ [cache] Removed {invalid_count} invalid video files from {cache_dir}")
-                
+                logging.info(
+                    f"🗑️ [cache] Removed {invalid_count} invalid video files from {cache_dir}"
+                )
+
     except Exception as e:
         logging.error(f"❗ [cache] Error during cache cleanup: {e}")
 
@@ -740,7 +1053,9 @@ def _build_game_caches_from_messages(messages: List[dict]) -> Dict[str, List[dic
     emoji matches one of that game's configured emojis (GAME_EMOJI_MAP).
     """
     if not GAME_EMOJI_MAP:
-        logging.info("[discord] No GAME_EMOJI_MAP defined; skipping per-game cache build.")
+        logging.info(
+            "[discord] No GAME_EMOJI_MAP defined; skipping per-game cache build."
+        )
         return {}
 
     game_caches: Dict[str, List[dict]] = {g: [] for g in GAME_EMOJI_MAP.keys()}
@@ -784,7 +1099,9 @@ async def refresh_discord_messages_cache() -> None:
     global discord_messages_cache, discord_game_caches
 
     if not DISCORD_BOT_TOKEN or not DISCORD_CHANNEL_ID:
-        logging.debug("[discord] Missing bot token or channel id; skipping cache refresh.")
+        logging.debug(
+            "[discord] Missing bot token or channel id; skipping cache refresh."
+        )
         return
 
     async with discord_cache_lock:
@@ -802,7 +1119,9 @@ async def refresh_discord_messages_cache() -> None:
         page = 1
         max_pages = 200  # Safety limit - should handle ~20,000 messages
 
-        logging.info(f"[discord] Starting paginated message fetch from channel {DISCORD_CHANNEL_ID}")
+        logging.info(
+            f"[discord] Starting paginated message fetch from channel {DISCORD_CHANNEL_ID}"
+        )
 
         try:
             async with aiohttp.ClientSession() as session:
@@ -811,16 +1130,23 @@ async def refresh_discord_messages_cache() -> None:
                     api_url = f"https://discord.com/api/v10/channels/{DISCORD_CHANNEL_ID}/messages?limit=100"
                     if before_id:
                         api_url += f"&before={before_id}"
-                    
-                    logging.info(f"[discord] Fetching page {page}" + (f" (before={before_id})" if before_id else " (latest)"))
-                    
-                    async with session.get(api_url, headers=headers, timeout=15) as resp:
+
+                    logging.info(
+                        f"[discord] Fetching page {page}"
+                        + (f" (before={before_id})" if before_id else " (latest)")
+                    )
+
+                    async with session.get(
+                        api_url, headers=headers, timeout=15
+                    ) as resp:
                         if resp.status == 429:  # Rate limited
-                            retry_after = int(resp.headers.get('retry-after', 5))
-                            logging.warning(f"[discord] Rate limited, waiting {retry_after} seconds...")
+                            retry_after = int(resp.headers.get("retry-after", 5))
+                            logging.warning(
+                                f"[discord] Rate limited, waiting {retry_after} seconds..."
+                            )
                             await asyncio.sleep(retry_after)
                             continue
-                            
+
                         if resp.status != 200:
                             text = await resp.text()
                             logging.warning(
@@ -829,15 +1155,19 @@ async def refresh_discord_messages_cache() -> None:
                             break
 
                         messages = await resp.json()
-                        
+
                         if not messages:  # No more messages
-                            logging.info(f"[discord] No more messages found on page {page}, stopping")
+                            logging.info(
+                                f"[discord] No more messages found on page {page}, stopping"
+                            )
                             break
-                            
+
                         page_count = len(messages)
                         total_messages += page_count
-                        
-                        logging.info(f"[discord] Page {page}: got {page_count} messages (total so far: {total_messages})")
+
+                        logging.info(
+                            f"[discord] Page {page}: got {page_count} messages (total so far: {total_messages})"
+                        )
 
                         # Add messages from this page
                         discord_messages_cache.extend(messages)
@@ -845,23 +1175,29 @@ async def refresh_discord_messages_cache() -> None:
 
                         # If we got less than 100, we've reached the end
                         if page_count < 100:
-                            logging.info(f"[discord] Reached end of messages (got {page_count} < 100 on page {page})")
+                            logging.info(
+                                f"[discord] Reached end of messages (got {page_count} < 100 on page {page})"
+                            )
                             break
-                            
+
                         page += 1
-                        
+
                         # Small delay to be nice to Discord API
                         await asyncio.sleep(0.5)
 
         except Exception as e:
-            logging.error(f"❗ [discord] Error during paginated fetch: {e}", exc_info=True)
+            logging.error(
+                f"❗ [discord] Error during paginated fetch: {e}", exc_info=True
+            )
             return
 
         if total_messages == 0:
             logging.warning("[discord] No messages fetched!")
             return
 
-        logging.info(f"[discord] Paginated fetch complete: {total_messages} total messages from {page-1} pages")
+        logging.info(
+            f"[discord] Paginated fetch complete: {total_messages} total messages from {page - 1} pages"
+        )
 
         # Rebuild per-game caches (used by memes; sounds may ignore this)
         discord_game_caches = _build_game_caches_from_messages(discord_messages_cache)
@@ -875,48 +1211,51 @@ async def warm_cache_all_media() -> None:
     if not discord_messages_cache:
         logging.info("[warm_cache] No messages to warm cache from")
         return
-        
-    logging.info(f"[warm_cache] Starting warm cache of all media from {len(discord_messages_cache)} messages")
-    
+
+    logging.info(
+        f"[warm_cache] Starting warm cache of all media from {len(discord_messages_cache)} messages"
+    )
+
     # Collect all media URLs from all messages with deduplication
     audio_urls = set()
     video_urls = set()
-    
+
     VIDEO_EXTS = (".mp4", ".webm", ".mov", ".m4v", ".avi", ".mkv")
     AUDIO_EXTS = (".mp3", ".wav", ".ogg", ".flac", ".m4a", ".webm")
-    
+
     def normalize_url(url: str) -> str:
         """Normalize URL by removing query parameters that don't affect content"""
         import urllib.parse
         import re
+
         parsed = urllib.parse.urlparse(url)
-        
+
         # For YouTube URLs, normalize to canonical format
         if "youtube.com" in url or "youtu.be" in url:
             video_id = None
-            
+
             # Extract video ID from different YouTube URL formats
             if "watch" in parsed.path and parsed.query:
                 # https://www.youtube.com/watch?v=VIDEO_ID
                 query_params = urllib.parse.parse_qs(parsed.query)
-                if 'v' in query_params:
-                    video_id = query_params['v'][0]
+                if "v" in query_params:
+                    video_id = query_params["v"][0]
             elif "/embed/" in parsed.path:
                 # https://www.youtube.com/embed/VIDEO_ID
-                video_id = parsed.path.split('/embed/')[-1].split('/')[0]
+                video_id = parsed.path.split("/embed/")[-1].split("/")[0]
             elif "/shorts/" in parsed.path:
-                # https://www.youtube.com/shorts/VIDEO_ID  
-                video_id = parsed.path.split('/shorts/')[-1].split('/')[0]
+                # https://www.youtube.com/shorts/VIDEO_ID
+                video_id = parsed.path.split("/shorts/")[-1].split("/")[0]
             elif "youtu.be" in parsed.netloc:
                 # https://youtu.be/VIDEO_ID
-                video_id = parsed.path.lstrip('/').split('/')[0]
-            
+                video_id = parsed.path.lstrip("/").split("/")[0]
+
             if video_id:
                 # Normalize ALL YouTube URLs to watch format for consistent hashing
                 return f"https://www.youtube.com/watch?v={video_id}"
             else:
                 return url  # Return as-is if video ID can't be extracted
-                
+
         elif "tenor.com" in url:
             # For Tenor, we can remove query params
             return f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
@@ -925,33 +1264,35 @@ async def warm_cache_all_media() -> None:
             return url
         else:
             return f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
-    
+
     for msg in discord_messages_cache:
         # Process attachments
         for att in msg.get("attachments", []):
             url = (att.get("url") or "").strip()
             if not url:
                 continue
-                
+
             fname = (att.get("filename") or "").lower()
             ctype = (att.get("content_type") or "").lower()
-            
+
             # Check if it's audio - DISABLED for YouTube-only mode
-            # if (ctype.startswith("audio/") or 
-            #     fname.endswith(AUDIO_EXTS) or 
+            # if (ctype.startswith("audio/") or
+            #     fname.endswith(AUDIO_EXTS) or
             #     any(ext in url.lower() for ext in AUDIO_EXTS)):
             #     audio_urls.add(url)  # Keep Discord URLs as-is for auth
-                
-            # Check if it's video  
-            if (ctype.startswith("video/") or 
-                  fname.endswith(VIDEO_EXTS) or 
-                  any(ext in url.lower() for ext in VIDEO_EXTS)):
+
+            # Check if it's video
+            if (
+                ctype.startswith("video/")
+                or fname.endswith(VIDEO_EXTS)
+                or any(ext in url.lower() for ext in VIDEO_EXTS)
+            ):
                 video_urls.add(url)  # Keep Discord URLs as-is for auth
-        
+
         # Process embeds
         for emb in msg.get("embeds", []):
             emb_url = (emb.get("url") or "").strip()
-            
+
             # Check for YouTube URLs
             if emb_url and YOUTUBE_RE.search(emb_url):
                 video_urls.add(normalize_url(emb_url))  # Normalize YouTube URLs
@@ -959,19 +1300,21 @@ async def warm_cache_all_media() -> None:
                 video_urls.add(normalize_url(emb_url))  # Normalize other video URLs
             # DISABLED: elif emb_url and any(ext in emb_url.lower() for ext in AUDIO_EXTS):
             #     audio_urls.add(normalize_url(emb_url))  # Normalize other audio URLs
-                
+
             # Check embed video/audio objects
             video_obj = emb.get("video") or {}
             v_url = (video_obj.get("url") or "").strip()
             if v_url:
-                if any(ext in v_url.lower() for ext in VIDEO_EXTS) or YOUTUBE_RE.search(v_url):
+                if any(ext in v_url.lower() for ext in VIDEO_EXTS) or YOUTUBE_RE.search(
+                    v_url
+                ):
                     video_urls.add(normalize_url(v_url))
-                    
+
             # DISABLED: audio_obj = emb.get("audio") or {}
             # a_url = (audio_obj.get("url") or "").strip()
             # if a_url and any(ext in a_url.lower() for ext in AUDIO_EXTS):
             #     audio_urls.add(normalize_url(a_url))
-        
+
         # Check content for direct links
         content = (msg.get("content") or "").strip()
         if "http" in content:
@@ -979,45 +1322,52 @@ async def warm_cache_all_media() -> None:
             for part in parts:
                 if not part.startswith("http"):
                     continue
-                    
+
                 lower_part = part.lower()
                 # DISABLED: if any(ext in lower_part for ext in AUDIO_EXTS):
                 #     audio_urls.add(normalize_url(part))
-                if any(ext in lower_part for ext in VIDEO_EXTS) or YOUTUBE_RE.search(part):
+                if any(ext in lower_part for ext in VIDEO_EXTS) or YOUTUBE_RE.search(
+                    part
+                ):
                     video_urls.add(normalize_url(part))
-    
-    logging.info(f"[warm_cache] Found 0 audio URLs (disabled) and {len(video_urls)} unique video URLs")
-    
+
+    logging.info(
+        f"[warm_cache] Found 0 audio URLs (disabled) and {len(video_urls)} unique video URLs"
+    )
+
     # DISABLED: Skip all audio files - YouTube videos only
     audio_cached = 0
     audio_skipped = len(audio_urls) if audio_urls else 0  # Count as skipped
     audio_failed = 0
-    
+
     # Skip audio processing entirely
     logging.info(f"[warm_cache] Skipped {audio_skipped} audio URLs (YouTube-only mode)")
-    
-    
+
     # Pre-cache all video files with better error handling
     video_cached = 0
     video_skipped = 0
     video_failed = 0
-    
+
     for url in video_urls:
         try:
             # Skip URLs that previously failed to download
             if url in failed_video_urls:
                 video_skipped += 1
-                logging.debug(f"⏭️ [warm_cache] Skipping previously failed video: {url[:50]}...")
+                logging.debug(
+                    f"⏭️ [warm_cache] Skipping previously failed video: {url[:50]}..."
+                )
                 continue
-                
+
             h = hashlib.sha256(url.encode("utf-8")).hexdigest()[:32]
             filename = f"{h}.mp4"
             fs_path = find_cached_video_file(filename)
-            
+
             if fs_path:
                 # Validate existing cached video
                 duration = await get_video_duration_from_file(str(fs_path))
-                if duration is not None and duration > 0:  # Accept any positive duration
+                if (
+                    duration is not None and duration > 0
+                ):  # Accept any positive duration
                     video_skipped += 1
                     # Remove from failed list if it exists and works now
                     if url in failed_video_urls:
@@ -1027,10 +1377,12 @@ async def warm_cache_all_media() -> None:
                     # Remove invalid cached video (corrupted, not short)
                     try:
                         fs_path.unlink()
-                        logging.info(f"🗑️ [warm_cache] Removed corrupted cached video: {fs_path}")
+                        logging.info(
+                            f"🗑️ [warm_cache] Removed corrupted cached video: {fs_path}"
+                        )
                     except Exception:
                         pass
-                
+
             result, duration, error_type, error_message = await cache_discord_video(url)
             if result and duration is not None:
                 video_cached += 1
@@ -1041,14 +1393,18 @@ async def warm_cache_all_media() -> None:
                 video_failed += 1
                 logging.warning(f"[warm_cache] Failed to cache video: {url}")
                 # Add to failed list for next startup with detailed error info
-                await add_failed_video(url, error_type or "unknown", error_message or "No details")
+                await add_failed_video(
+                    url, error_type or "unknown", error_message or "No details"
+                )
         except Exception as e:
             video_failed += 1
             logging.error(f"[warm_cache] Error caching video {url}: {e}")
             # Add to failed list for next startup
             await add_failed_video(url, "exception", str(e))
-    
-    logging.info(f"[warm_cache] Complete! Audio: {audio_cached} cached, {audio_skipped} skipped, {audio_failed} failed. Video: {video_cached} cached, {video_skipped} skipped, {video_failed} failed")
+
+    logging.info(
+        f"[warm_cache] Complete! Audio: {audio_cached} cached, {audio_skipped} skipped, {audio_failed} failed. Video: {video_cached} cached, {video_skipped} skipped, {video_failed} failed"
+    )
 
 
 async def discord_cache_refresher_task(interval_seconds: int = 600) -> None:
@@ -1062,7 +1418,9 @@ async def discord_cache_refresher_task(interval_seconds: int = 600) -> None:
             # After refreshing messages, warm cache all media
             await warm_cache_all_media()
         except Exception as e:
-            logging.error(f"[discord] Error in periodic cache refresh: {e}", exc_info=True)
+            logging.error(
+                f"[discord] Error in periodic cache refresh: {e}", exc_info=True
+            )
         await asyncio.sleep(interval_seconds)
 
 
@@ -1079,24 +1437,32 @@ def _select_messages_for_project(project: Optional[str]) -> List[dict]:
 
     if not discord_game_caches:
         # no per-game filtering available
-        logging.info("[discord] No per-game caches available; using full message cache.")
+        logging.info(
+            "[discord] No per-game caches available; using full message cache."
+        )
         return discord_messages_cache
 
     if not project:
         # with per-game caches, but no explicit project, we can't disambiguate → []
-        logging.info("[discord] No project provided; with per-game caches this returns [].")
+        logging.info(
+            "[discord] No project provided; with per-game caches this returns []."
+        )
         return []
 
     key = resolve_game_key(project)
     if not key:
-        logging.info(f"[discord] Unknown project '{project}'; falling back to full cache for better video selection.")
+        logging.info(
+            f"[discord] Unknown project '{project}'; falling back to full cache for better video selection."
+        )
         return discord_messages_cache
-        
+
     msgs = discord_game_caches.get(key)
     if msgs is None or len(msgs) == 0:
-        logging.info(f"[discord] No per-game cache for '{key}'; falling back to full cache for better video selection.")
+        logging.info(
+            f"[discord] No per-game cache for '{key}'; falling back to full cache for better video selection."
+        )
         return discord_messages_cache
-        
+
     logging.info(f"[discord] Using {len(msgs)} messages from {key} game cache.")
     return msgs
 
@@ -1104,7 +1470,9 @@ def _select_messages_for_project(project: Optional[str]) -> List[dict]:
 # -----------------------------
 # CACHED MEDIA LOOKUP (NO DOWNLOADS)
 # -----------------------------
-async def get_cached_discord_sound(action_key: str, project: Optional[str]) -> Optional[str]:
+async def get_cached_discord_sound(
+    action_key: str, project: Optional[str]
+) -> Optional[str]:
     """
     Look up a random cached sound for the action/project, but don't download anything.
     Only returns sounds that are already cached locally.
@@ -1162,10 +1530,11 @@ async def get_cached_discord_sound(action_key: str, project: Optional[str]) -> O
             if not url:
                 continue
 
-            if (ctype.startswith("audio/") or 
-                fname.endswith(AUDIO_EXTS) or 
-                any(ext in url.lower() for ext in AUDIO_EXTS)):
-                
+            if (
+                ctype.startswith("audio/")
+                or fname.endswith(AUDIO_EXTS)
+                or any(ext in url.lower() for ext in AUDIO_EXTS)
+            ):
                 # Check if this URL is already cached
                 h = hashlib.sha256(url.encode("utf-8")).hexdigest()[:32]
                 base_part = url.split("?", 1)[0]
@@ -1173,7 +1542,7 @@ async def get_cached_discord_sound(action_key: str, project: Optional[str]) -> O
                 if not ext:
                     ext = ".ogg"
                 fs_path = DISCORD_SOUND_CACHE_DIR / f"{h}{ext}"
-                
+
                 if fs_path.exists() and fs_path.stat().st_size > 0:
                     prev = weighted_candidates.get(f"/dsounds/{h}{ext}", 0.0)
                     weighted_candidates[f"/dsounds/{h}{ext}"] = prev + match_weight
@@ -1188,7 +1557,7 @@ async def get_cached_discord_sound(action_key: str, project: Optional[str]) -> O
                 if not ext:
                     ext = ".ogg"
                 fs_path = DISCORD_SOUND_CACHE_DIR / f"{h}{ext}"
-                
+
                 if fs_path.exists() and fs_path.stat().st_size > 0:
                     prev = weighted_candidates.get(f"/dsounds/{h}{ext}", 0.0)
                     weighted_candidates[f"/dsounds/{h}{ext}"] = prev + match_weight
@@ -1197,8 +1566,10 @@ async def get_cached_discord_sound(action_key: str, project: Optional[str]) -> O
         return None
 
     # Apply anti-repetition weighting to avoid playing same sounds repeatedly
-    weighted_candidates = apply_anti_repetition_weighting(weighted_candidates, action_key)
-    
+    weighted_candidates = apply_anti_repetition_weighting(
+        weighted_candidates, action_key
+    )
+
     # Apply diversity weighting to give lower-reaction content a chance
     weighted_candidates = apply_diversity_weighting(weighted_candidates)
 
@@ -1220,7 +1591,9 @@ async def get_cached_discord_sound(action_key: str, project: Optional[str]) -> O
     return chosen
 
 
-async def get_cached_discord_meme(action_key: str, project: Optional[str]) -> Optional[str]:
+async def get_cached_discord_meme(
+    action_key: str, project: Optional[str]
+) -> Optional[str]:
     """
     Look up a random cached meme for the action/project, but don't download anything.
     Returns the original URL since memes are served directly (not cached locally).
@@ -1277,9 +1650,14 @@ async def get_cached_discord_meme(action_key: str, project: Optional[str]) -> Op
             if not url:
                 continue
 
-            if (ctype.startswith("image/") or 
-                fname.endswith((".gif", ".webp", ".png", ".jpg", ".jpeg")) or 
-                any(ext in url.lower() for ext in [".gif", ".webp", ".png", ".jpg", ".jpeg"])):
+            if (
+                ctype.startswith("image/")
+                or fname.endswith((".gif", ".webp", ".png", ".jpg", ".jpeg"))
+                or any(
+                    ext in url.lower()
+                    for ext in [".gif", ".webp", ".png", ".jpg", ".jpeg"]
+                )
+            ):
                 url = _normalize_meme_url(url)
                 prev = weighted_candidates.get(url, 0.0)
                 weighted_candidates[url] = prev + match_weight
@@ -1292,13 +1670,18 @@ async def get_cached_discord_meme(action_key: str, project: Optional[str]) -> Op
 
             for label, img_obj in (("image", img), ("thumb", thumb)):
                 u = (img_obj.get("url") or img_obj.get("proxy_url") or "").strip()
-                if u and any(ext in u.lower() for ext in [".gif", ".webp", ".png", ".jpg", ".jpeg"]):
+                if u and any(
+                    ext in u.lower()
+                    for ext in [".gif", ".webp", ".png", ".jpg", ".jpeg"]
+                ):
                     u = _normalize_meme_url(u)
                     prev = weighted_candidates.get(u, 0.0)
                     weighted_candidates[u] = prev + match_weight
 
-            if emb_url and ("tenor.com/view" in emb_url.lower() or 
-                           any(ext in emb_url.lower() for ext in [".gif", ".webp"])):
+            if emb_url and (
+                "tenor.com/view" in emb_url.lower()
+                or any(ext in emb_url.lower() for ext in [".gif", ".webp"])
+            ):
                 emb_url = _normalize_meme_url(emb_url)
                 prev = weighted_candidates.get(emb_url, 0.0)
                 weighted_candidates[emb_url] = prev + match_weight
@@ -1306,9 +1689,11 @@ async def get_cached_discord_meme(action_key: str, project: Optional[str]) -> Op
     if not weighted_candidates:
         return None
 
-    # Apply anti-repetition weighting to avoid playing same memes repeatedly  
-    weighted_candidates = apply_anti_repetition_weighting(weighted_candidates, action_key)
-    
+    # Apply anti-repetition weighting to avoid playing same memes repeatedly
+    weighted_candidates = apply_anti_repetition_weighting(
+        weighted_candidates, action_key
+    )
+
     # Apply diversity weighting to give lower-reaction content a chance
     weighted_candidates = apply_diversity_weighting(weighted_candidates)
 
@@ -1330,7 +1715,9 @@ async def get_cached_discord_meme(action_key: str, project: Optional[str]) -> Op
     return chosen
 
 
-async def get_cached_discord_video(action_key: str, project: Optional[str]) -> tuple[Optional[str], Optional[float], Optional[str]]:
+async def get_cached_discord_video(
+    action_key: str, project: Optional[str]
+) -> tuple[Optional[str], Optional[float], Optional[str]]:
     """
     Look up a random cached video for the action/project, but don't download anything.
     Only returns videos that are already cached locally AND have valid duration.
@@ -1341,12 +1728,16 @@ async def get_cached_discord_video(action_key: str, project: Optional[str]) -> t
 
     target_emoji = get_action_emoji(action_key, project)
     if not target_emoji:
-        logging.info(f"[video] No target emoji found for action={action_key} project={project}")
+        logging.info(
+            f"[video] No target emoji found for action={action_key} project={project}"
+        )
         return None, None, None
 
     normalized_target = normalize_emoji(target_emoji)
-    logging.info(f"[video] Looking for videos with emoji '{target_emoji}' (normalized: '{normalized_target}') for action={action_key}")
-    
+    logging.info(
+        f"[video] Looking for videos with emoji '{target_emoji}' (normalized: '{normalized_target}') for action={action_key}"
+    )
+
     messages = _select_messages_for_project(project)
     if not messages:
         logging.info(f"[video] No messages found for project={project}")
@@ -1355,7 +1746,9 @@ async def get_cached_discord_video(action_key: str, project: Optional[str]) -> t
     logging.info(f"[video] Checking {len(messages)} messages for project={project}")
 
     # Build list of candidate video URLs (same logic as fetch_random_discord_video)
-    weighted_candidates: Dict[str, tuple[float, float, str]] = {}  # cache_url -> (weight, duration, original_url)
+    weighted_candidates: Dict[
+        str, tuple[float, float, str]
+    ] = {}  # cache_url -> (weight, duration, original_url)
     VIDEO_EXTS = (".mp4", ".webm", ".mov", ".m4v", ".avi", ".mkv")
 
     messages_with_videos = 0
@@ -1366,28 +1759,33 @@ async def get_cached_discord_video(action_key: str, project: Optional[str]) -> t
         msg_id = msg.get("id", "unknown")
         reactions = msg.get("reactions") or []
         match_weight = 0
-        
+
         # Debug: check if this message has any videos at all
         has_video_content = False
         for att in msg.get("attachments", []):
             url = (att.get("url") or "").strip()
             fname = (att.get("filename") or "").lower()
             ctype = (att.get("content_type") or "").lower()
-            if (ctype.startswith("video/") or 
-                fname.endswith(VIDEO_EXTS) or 
-                any(ext in url.lower() for ext in VIDEO_EXTS)):
+            if (
+                ctype.startswith("video/")
+                or fname.endswith(VIDEO_EXTS)
+                or any(ext in url.lower() for ext in VIDEO_EXTS)
+            ):
                 has_video_content = True
                 break
-        
+
         for emb in msg.get("embeds", []):
             emb_url = (emb.get("url") or "").strip()
-            if emb_url and (any(ext in emb_url.lower() for ext in VIDEO_EXTS) or YOUTUBE_RE.search(emb_url)):
+            if emb_url and (
+                any(ext in emb_url.lower() for ext in VIDEO_EXTS)
+                or YOUTUBE_RE.search(emb_url)
+            ):
                 has_video_content = True
                 break
-        
+
         if has_video_content:
             messages_with_videos += 1
-        
+
         # Check if this message has the target emoji
         has_target_emoji = False
         for r in reactions:
@@ -1415,13 +1813,13 @@ async def get_cached_discord_video(action_key: str, project: Optional[str]) -> t
 
         if has_target_emoji:
             messages_with_target_emoji += 1
-            
+
         if has_video_content and has_target_emoji:
             messages_with_both += 1
 
         if match_weight <= 0:
             continue
-        
+
         # This message has both video content AND matching reactions
 
         # Check attachments for videos
@@ -1433,78 +1831,139 @@ async def get_cached_discord_video(action_key: str, project: Optional[str]) -> t
             if not url:
                 continue
 
-            if (ctype.startswith("video/") or 
-                fname.endswith(VIDEO_EXTS) or 
-                any(ext in url.lower() for ext in VIDEO_EXTS)):
-                
+            if (
+                ctype.startswith("video/")
+                or fname.endswith(VIDEO_EXTS)
+                or any(ext in url.lower() for ext in VIDEO_EXTS)
+            ):
                 # Check if this video is already cached AND valid
                 h = hashlib.sha256(url.encode("utf-8")).hexdigest()[:32]
                 filename = f"{h}.mp4"
                 fs_path = find_cached_video_file(filename)
-                
-                logging.info(f"[video] Message {msg_id}: checking attachment video {url[:50]}... -> {filename}")
-                logging.info(f"[video] Message {msg_id}: full attachment URL for hash: {url}")
+
+                logging.info(
+                    f"[video] Message {msg_id}: checking attachment video {url[:50]}... -> {filename}"
+                )
+                logging.info(
+                    f"[video] Message {msg_id}: full attachment URL for hash: {url}"
+                )
                 logging.info(f"[video] Message {msg_id}: calculated hash: {h}")
-                
+
                 if fs_path:
                     duration = await get_video_duration_from_file(str(fs_path))
-                    logging.info(f"[video] Message {msg_id}: cached file found at {fs_path}, duration={duration}")
-                    if duration is not None and duration > 0:  # Accept any positive duration
+                    logging.info(
+                        f"[video] Message {msg_id}: cached file found at {fs_path}, duration={duration}"
+                    )
+                    if (
+                        duration is not None and duration > 0
+                    ):  # Accept any positive duration
                         cache_url = f"/dvideos/{filename}"
-                        prev_weight, _, _ = weighted_candidates.get(cache_url, (0.0, 0.0, url))
-                        weighted_candidates[cache_url] = (prev_weight + match_weight, duration, url)
-                        logging.info(f"[video] Message {msg_id}: ADDED video candidate {cache_url} (weight={prev_weight + match_weight}, duration={duration})")
+                        prev_weight, _, _ = weighted_candidates.get(
+                            cache_url, (0.0, 0.0, url)
+                        )
+                        weighted_candidates[cache_url] = (
+                            prev_weight + match_weight,
+                            duration,
+                            url,
+                        )
+                        logging.info(
+                            f"[video] Message {msg_id}: ADDED video candidate {cache_url} (weight={prev_weight + match_weight}, duration={duration})"
+                        )
                     else:
-                        logging.warning(f"[video] Message {msg_id}: cached file has invalid duration ({duration})")
+                        logging.warning(
+                            f"[video] Message {msg_id}: cached file has invalid duration ({duration})"
+                        )
                 else:
-                    logging.info(f"[video] Message {msg_id}: cached file NOT found: {filename}")
+                    logging.info(
+                        f"[video] Message {msg_id}: cached file NOT found: {filename}"
+                    )
 
         # Check embeds for videos (including YouTube)
         for emb in msg.get("embeds", []):
             emb_url = (emb.get("url") or "").strip()
-            if emb_url and (any(ext in emb_url.lower() for ext in VIDEO_EXTS) or YOUTUBE_RE.search(emb_url)):
+            if emb_url and (
+                any(ext in emb_url.lower() for ext in VIDEO_EXTS)
+                or YOUTUBE_RE.search(emb_url)
+            ):
                 h = hashlib.sha256(emb_url.encode("utf-8")).hexdigest()[:32]
                 filename = f"{h}.mp4"
                 fs_path = find_cached_video_file(filename)
-                
-                logging.info(f"[video] Message {msg_id}: checking embed video {emb_url[:50]}... -> {filename}")
-                logging.info(f"[video] Message {msg_id}: full embed URL for hash: {emb_url}")
+
+                logging.info(
+                    f"[video] Message {msg_id}: checking embed video {emb_url[:50]}... -> {filename}"
+                )
+                logging.info(
+                    f"[video] Message {msg_id}: full embed URL for hash: {emb_url}"
+                )
                 logging.info(f"[video] Message {msg_id}: calculated hash: {h}")
-                
+
                 if fs_path:
                     duration = await get_video_duration_from_file(str(fs_path))
-                    logging.info(f"[video] Message {msg_id}: cached file found at {fs_path}, duration={duration}")
-                    if duration is not None and duration > 0:  # Accept any positive duration
+                    logging.info(
+                        f"[video] Message {msg_id}: cached file found at {fs_path}, duration={duration}"
+                    )
+                    if (
+                        duration is not None and duration > 0
+                    ):  # Accept any positive duration
                         cache_url = f"/dvideos/{filename}"
-                        prev_weight, _, _ = weighted_candidates.get(cache_url, (0.0, 0.0, emb_url))
-                        weighted_candidates[cache_url] = (prev_weight + match_weight, duration, emb_url)
-                        logging.info(f"[video] Message {msg_id}: ADDED video candidate {cache_url} (weight={prev_weight + match_weight}, duration={duration})")
+                        prev_weight, _, _ = weighted_candidates.get(
+                            cache_url, (0.0, 0.0, emb_url)
+                        )
+                        weighted_candidates[cache_url] = (
+                            prev_weight + match_weight,
+                            duration,
+                            emb_url,
+                        )
+                        logging.info(
+                            f"[video] Message {msg_id}: ADDED video candidate {cache_url} (weight={prev_weight + match_weight}, duration={duration})"
+                        )
                     else:
-                        logging.warning(f"[video] Message {msg_id}: cached file has invalid duration ({duration})")
+                        logging.warning(
+                            f"[video] Message {msg_id}: cached file has invalid duration ({duration})"
+                        )
                 else:
-                    logging.info(f"[video] Message {msg_id}: cached file NOT found: {filename}")
+                    logging.info(
+                        f"[video] Message {msg_id}: cached file NOT found: {filename}"
+                    )
                     # Let's also check what files ARE in the cache directory
                     try:
-                        for cache_dir in [DISCORD_VIDEO_CACHE_DIR] + ALTERNATIVE_VIDEO_CACHE_DIRS:
+                        for cache_dir in [
+                            DISCORD_VIDEO_CACHE_DIR
+                        ] + ALTERNATIVE_VIDEO_CACHE_DIRS:
                             if cache_dir.exists():
                                 cache_files = list(cache_dir.glob("*.mp4"))
-                                logging.info(f"[video] Cache directory {cache_dir} has {len(cache_files)} files: {[f.name for f in cache_files[:3]]}")
+                                logging.info(
+                                    f"[video] Cache directory {cache_dir} has {len(cache_files)} files: {[f.name for f in cache_files[:3]]}"
+                                )
                     except Exception:
                         pass
 
-    logging.info(f"[video] SUMMARY for {action_key}/{project}: {len(messages)} messages, {messages_with_videos} with videos, {messages_with_target_emoji} with emoji '{target_emoji}', {messages_with_both} with both")
-    
+    logging.info(
+        f"[video] SUMMARY for {action_key}/{project}: {len(messages)} messages, {messages_with_videos} with videos, {messages_with_target_emoji} with emoji '{target_emoji}', {messages_with_both} with both"
+    )
+
     if not weighted_candidates:
-        logging.info(f"[video] No valid cached videos found for action={action_key} project={project}")
+        logging.info(
+            f"[video] No valid cached videos found for action={action_key} project={project}"
+        )
         return None, None, None
 
     # Apply anti-repetition weighting to avoid playing same videos repeatedly
     # Convert tuple format to simple format for anti-repetition processing
-    simple_candidates = {url: weight for url, (weight, _, _) in weighted_candidates.items()}
+    simple_candidates = {
+        url: weight for url, (weight, _, _) in weighted_candidates.items()
+    }
     simple_candidates = apply_anti_repetition_weighting(simple_candidates, action_key)
     simple_candidates = apply_diversity_weighting(simple_candidates)
     # Convert back to tuple format
-    adjusted_candidates = {url: (simple_candidates[url], weighted_candidates[url][1], weighted_candidates[url][2]) for url in simple_candidates}
+    adjusted_candidates = {
+        url: (
+            simple_candidates[url],
+            weighted_candidates[url][1],
+            weighted_candidates[url][2],
+        )
+        for url in simple_candidates
+    }
 
     # Weighted random choice from cached candidates
     items = list(adjusted_candidates.items())
@@ -1514,23 +1973,30 @@ async def get_cached_discord_video(action_key: str, project: Optional[str]) -> t
     for url, (weight, duration, original_url) in items:
         upto += weight
         if r <= upto:
-            logging.info(f"📺 [cache] Selected cached video for action={action_key}: {url} (duration={duration}s)")
+            logging.info(
+                f"📺 [cache] Selected cached video for action={action_key}: {url} (duration={duration}s)"
+            )
             # Track this selection to avoid repetition
             track_played_media(url, action_key)
             return url, duration, original_url
 
     # Fallback
     chosen_url, (_, chosen_duration, chosen_original) = random.choice(items)
-    logging.info(f"📺 [cache] Fallback selected cached video for action={action_key}: {chosen_url} (duration={chosen_duration}s)")
+    logging.info(
+        f"📺 [cache] Fallback selected cached video for action={action_key}: {chosen_url} (duration={chosen_duration}s)"
+    )
     track_played_media(chosen_url, action_key)
     return chosen_url, chosen_duration, chosen_original
 
 
 # -----------------------------
-# WEIGHT-AWARE CACHED MEDIA FUNCTIONS  
+# WEIGHT-AWARE CACHED MEDIA FUNCTIONS
 # -----------------------------
 
-async def get_cached_discord_sound_with_weight(action_key: str, project: Optional[str]) -> tuple[Optional[str], float]:
+
+async def get_cached_discord_sound_with_weight(
+    action_key: str, project: Optional[str]
+) -> tuple[Optional[str], float]:
     """
     Look up a random cached audio for the action/project with emoji weight.
     Returns: (cached_url, total_weight)
@@ -1588,10 +2054,11 @@ async def get_cached_discord_sound_with_weight(action_key: str, project: Optiona
             if not url:
                 continue
 
-            if (ctype.startswith("audio/") or 
-                fname.endswith(AUDIO_EXTS) or 
-                any(ext in url.lower() for ext in AUDIO_EXTS)):
-                
+            if (
+                ctype.startswith("audio/")
+                or fname.endswith(AUDIO_EXTS)
+                or any(ext in url.lower() for ext in AUDIO_EXTS)
+            ):
                 # Check if cached locally
                 h = hashlib.sha256(url.encode("utf-8")).hexdigest()[:32]
                 base_part = url.split("?", 1)[0]
@@ -1599,11 +2066,13 @@ async def get_cached_discord_sound_with_weight(action_key: str, project: Optiona
                 if not ext:
                     ext = ".ogg"
                 fs_path = DISCORD_SOUND_CACHE_DIR / f"{h}{ext}"
-                
+
                 if fs_path.exists() and fs_path.stat().st_size > 0:
                     cache_url = f"/dsounds/{h}{ext}"
                     # Accumulate weight for same URL from multiple messages
-                    weighted_candidates[cache_url] = weighted_candidates.get(cache_url, 0.0) + match_weight
+                    weighted_candidates[cache_url] = (
+                        weighted_candidates.get(cache_url, 0.0) + match_weight
+                    )
 
         # Check embeds for audio
         for emb in msg.get("embeds", []):
@@ -1615,18 +2084,22 @@ async def get_cached_discord_sound_with_weight(action_key: str, project: Optiona
                 if not ext:
                     ext = ".ogg"
                 fs_path = DISCORD_SOUND_CACHE_DIR / f"{h}{ext}"
-                
+
                 if fs_path.exists() and fs_path.stat().st_size > 0:
                     cache_url = f"/dsounds/{h}{ext}"
-                    weighted_candidates[cache_url] = weighted_candidates.get(cache_url, 0.0) + match_weight
+                    weighted_candidates[cache_url] = (
+                        weighted_candidates.get(cache_url, 0.0) + match_weight
+                    )
 
     if not weighted_candidates:
         return None, 0.0
 
     # Apply anti-repetition and weighted selection
-    weighted_candidates = apply_anti_repetition_weighting(weighted_candidates, action_key)
+    weighted_candidates = apply_anti_repetition_weighting(
+        weighted_candidates, action_key
+    )
     weighted_candidates = apply_diversity_weighting(weighted_candidates)
-    
+
     # Weighted random choice
     items = list(weighted_candidates.items())
     total_weight = sum(w for _, w in items)
@@ -1644,7 +2117,9 @@ async def get_cached_discord_sound_with_weight(action_key: str, project: Optiona
     return chosen_url, chosen_weight
 
 
-async def get_cached_discord_meme_with_weight(action_key: str, project: Optional[str]) -> tuple[Optional[str], float]:
+async def get_cached_discord_meme_with_weight(
+    action_key: str, project: Optional[str]
+) -> tuple[Optional[str], float]:
     """
     Look up a random cached meme for the action/project with emoji weight.
     Returns: (cached_url, total_weight)
@@ -1702,38 +2177,52 @@ async def get_cached_discord_meme_with_weight(action_key: str, project: Optional
                 continue
 
             if any(ext in fname for ext in [".gif", ".webp", ".png", ".jpg", ".jpeg"]):
-                weighted_candidates[url] = weighted_candidates.get(url, 0.0) + match_weight
+                weighted_candidates[url] = (
+                    weighted_candidates.get(url, 0.0) + match_weight
+                )
 
         # Check embeds for images/GIFs
         for emb in msg.get("embeds", []):
             emb_url = (emb.get("url") or "").strip()
-            
-            # Check various embed URL types  
+
+            # Check various embed URL types
             for label, u in [
                 ("url", emb.get("url")),
                 ("image.url", emb.get("image", {}).get("url")),
                 ("thumbnail.url", emb.get("thumbnail", {}).get("url")),
-                ("video.thumbnail_url", emb.get("video", {}).get("thumbnail_url"))
+                ("video.thumbnail_url", emb.get("video", {}).get("thumbnail_url")),
             ]:
-                if u and any(ext in u.lower() for ext in [".gif", ".webp", ".png", ".jpg", ".jpeg"]):
+                if u and any(
+                    ext in u.lower()
+                    for ext in [".gif", ".webp", ".png", ".jpg", ".jpeg"]
+                ):
                     # CRITICAL: Exclude YouTube thumbnails - these should be handled by video logic, not meme logic
                     if "ytimg.com" in u.lower() or "youtube.com" in u.lower():
                         continue  # Skip YouTube thumbnails
-                    weighted_candidates[u] = weighted_candidates.get(u, 0.0) + match_weight
+                    weighted_candidates[u] = (
+                        weighted_candidates.get(u, 0.0) + match_weight
+                    )
 
             if emb_url and (
-                ("tenor.com/view" in emb_url.lower() and not emb_url.lower().endswith('.mp4'))  # Tenor images only, not videos
+                (
+                    "tenor.com/view" in emb_url.lower()
+                    and not emb_url.lower().endswith(".mp4")
+                )  # Tenor images only, not videos
                 or any(ext in emb_url.lower() for ext in [".gif", ".webp"])
             ):
-                weighted_candidates[emb_url] = weighted_candidates.get(emb_url, 0.0) + match_weight
+                weighted_candidates[emb_url] = (
+                    weighted_candidates.get(emb_url, 0.0) + match_weight
+                )
 
     if not weighted_candidates:
         return None, 0.0
 
     # Apply anti-repetition and weighted selection
-    weighted_candidates = apply_anti_repetition_weighting(weighted_candidates, action_key)
+    weighted_candidates = apply_anti_repetition_weighting(
+        weighted_candidates, action_key
+    )
     weighted_candidates = apply_diversity_weighting(weighted_candidates)
-    
+
     # Weighted random choice
     items = list(weighted_candidates.items())
     total_weight = sum(w for _, w in items)
@@ -1749,7 +2238,9 @@ async def get_cached_discord_meme_with_weight(action_key: str, project: Optional
                 return cached_url, w
             else:
                 # Failed to cache, skip this one
-                logging.warning(f"❗ [meme] Failed to cache selected meme: {url[:50]}...")
+                logging.warning(
+                    f"❗ [meme] Failed to cache selected meme: {url[:50]}..."
+                )
                 continue
 
     # Fallback
@@ -1759,11 +2250,15 @@ async def get_cached_discord_meme_with_weight(action_key: str, project: Optional
         track_played_media(cached_url, action_key)
         return cached_url, chosen_weight
     else:
-        logging.warning(f"❗ [meme] Failed to cache fallback meme: {chosen_url[:50]}...")
+        logging.warning(
+            f"❗ [meme] Failed to cache fallback meme: {chosen_url[:50]}..."
+        )
         return None, 0.0
 
 
-async def get_cached_discord_video_with_weight(action_key: str, project: Optional[str]) -> tuple[Optional[str], float, Optional[float], Optional[str]]:
+async def get_cached_discord_video_with_weight(
+    action_key: str, project: Optional[str]
+) -> tuple[Optional[str], float, Optional[float], Optional[str]]:
     """
     Look up a random cached video for the action/project with emoji weight.
     Returns: (cached_url, total_weight, duration, original_source_url)
@@ -1773,18 +2268,24 @@ async def get_cached_discord_video_with_weight(action_key: str, project: Optiona
 
     target_emoji = get_action_emoji(action_key, project)
     if not target_emoji:
-        logging.info(f"[video_weight] No target emoji found for action={action_key} project={project}")
+        logging.info(
+            f"[video_weight] No target emoji found for action={action_key} project={project}"
+        )
         return None, 0.0, None, None
 
     normalized_target = normalize_emoji(target_emoji)
-    logging.info(f"[video_weight] Looking for videos with emoji '{target_emoji}' (normalized: '{normalized_target}') for action={action_key}")
-    
+    logging.info(
+        f"[video_weight] Looking for videos with emoji '{target_emoji}' (normalized: '{normalized_target}') for action={action_key}"
+    )
+
     messages = _select_messages_for_project(project)
     if not messages:
         logging.info(f"[video_weight] No messages found for project={project}")
         return None, 0.0, None, None
 
-    logging.info(f"[video_weight] Checking {len(messages)} messages for project={project}")
+    logging.info(
+        f"[video_weight] Checking {len(messages)} messages for project={project}"
+    )
 
     # cache_url -> (weight, duration, original_url)
     weighted_candidates: Dict[str, tuple[float, float, str]] = {}
@@ -1805,18 +2306,23 @@ async def get_cached_discord_video_with_weight(action_key: str, project: Optiona
             url = (att.get("url") or "").strip()
             fname = (att.get("filename") or "").lower()
             ctype = (att.get("content_type") or "").lower()
-            if (ctype.startswith("video/") or 
-                fname.endswith(VIDEO_EXTS) or 
-                any(ext in url.lower() for ext in VIDEO_EXTS)):
+            if (
+                ctype.startswith("video/")
+                or fname.endswith(VIDEO_EXTS)
+                or any(ext in url.lower() for ext in VIDEO_EXTS)
+            ):
                 has_video_content = True
                 break
-        
+
         for emb in msg.get("embeds", []):
             emb_url = (emb.get("url") or "").strip()
-            if emb_url and (any(ext in emb_url.lower() for ext in VIDEO_EXTS) or YOUTUBE_RE.search(emb_url)):
+            if emb_url and (
+                any(ext in emb_url.lower() for ext in VIDEO_EXTS)
+                or YOUTUBE_RE.search(emb_url)
+            ):
                 has_video_content = True
                 break
-        
+
         if has_video_content:
             messages_with_videos += 1
 
@@ -1847,7 +2353,7 @@ async def get_cached_discord_video_with_weight(action_key: str, project: Optiona
 
         if has_target_emoji:
             messages_with_target_emoji += 1
-            
+
         if has_video_content and has_target_emoji:
             messages_with_both += 1
 
@@ -1863,74 +2369,143 @@ async def get_cached_discord_video_with_weight(action_key: str, project: Optiona
             if not url:
                 continue
 
-            if (ctype.startswith("video/") or 
-                fname.endswith(VIDEO_EXTS) or 
-                any(ext in url.lower() for ext in VIDEO_EXTS)):
-                
+            if (
+                ctype.startswith("video/")
+                or fname.endswith(VIDEO_EXTS)
+                or any(ext in url.lower() for ext in VIDEO_EXTS)
+            ):
                 h = hashlib.sha256(url.encode("utf-8")).hexdigest()[:32]
                 filename = f"{h}.mp4"
                 fs_path = find_cached_video_file(filename)
-                
+
                 if fs_path:
                     duration = await get_video_duration_from_file(str(fs_path))
-                    if duration is not None and duration > 0:  # Accept any positive duration
+                    if (
+                        duration is not None and duration > 0
+                    ):  # Accept any positive duration
                         cache_url = f"/dvideos/{filename}"
-                        prev_weight, _, _ = weighted_candidates.get(cache_url, (0.0, duration, url))
-                        weighted_candidates[cache_url] = (prev_weight + match_weight, duration, url)
+                        prev_weight, _, _ = weighted_candidates.get(
+                            cache_url, (0.0, duration, url)
+                        )
+                        weighted_candidates[cache_url] = (
+                            prev_weight + match_weight,
+                            duration,
+                            url,
+                        )
                     else:
-                        logging.info(f"[video_weight] Message {msg_id}: cached file has INVALID duration ({duration}) at {fs_path}")
+                        logging.info(
+                            f"[video_weight] Message {msg_id}: cached file has INVALID duration ({duration}) at {fs_path}"
+                        )
                 else:
-                    logging.info(f"[video_weight] Message {msg_id}: video NOT CACHED: {filename} from {url[:50]}...")
+                    logging.info(
+                        f"[video_weight] Message {msg_id}: video NOT CACHED: {filename} from {url[:50]}..."
+                    )
 
         # Check embeds for videos (including YouTube and Tenor)
         for emb in msg.get("embeds", []):
             emb_url = (emb.get("url") or "").strip()
-            if emb_url and (any(ext in emb_url.lower() for ext in VIDEO_EXTS) or 
-                            YOUTUBE_RE.search(emb_url)):
+            if emb_url and (
+                any(ext in emb_url.lower() for ext in VIDEO_EXTS)
+                or YOUTUBE_RE.search(emb_url)
+            ):
                 # DISABLED: "tenor.com" in emb_url.lower()  # YouTube-only mode
                 h = hashlib.sha256(emb_url.encode("utf-8")).hexdigest()[:32]
                 filename = f"{h}.mp4"
                 fs_path = find_cached_video_file(filename)
-                
+
                 if fs_path:
                     duration = await get_video_duration_from_file(str(fs_path))
                     if duration is not None and duration > 0:
                         cache_url = f"/dvideos/{filename}"
-                        prev_weight, _, _ = weighted_candidates.get(cache_url, (0.0, duration, emb_url))
-                        weighted_candidates[cache_url] = (prev_weight + match_weight, duration, emb_url)
+                        prev_weight, _, _ = weighted_candidates.get(
+                            cache_url, (0.0, duration, emb_url)
+                        )
+                        weighted_candidates[cache_url] = (
+                            prev_weight + match_weight,
+                            duration,
+                            emb_url,
+                        )
                     else:
-                        logging.info(f"[video_weight] Message {msg_id}: embed cached file has INVALID duration ({duration}) at {fs_path}")
+                        logging.info(
+                            f"[video_weight] Message {msg_id}: embed cached file has INVALID duration ({duration}) at {fs_path}"
+                        )
                 else:
-                    logging.info(f"[video_weight] Message {msg_id}: embed video NOT CACHED: {filename} from {emb_url[:50]}...")
+                    logging.info(
+                        f"[video_weight] Message {msg_id}: embed video NOT CACHED: {filename} from {emb_url[:50]}..."
+                    )
 
-    logging.info(f"[video_weight] SUMMARY for {action_key}/{project}: {len(messages)} messages, found {len(weighted_candidates)} cached videos")
-    logging.info(f"[video_weight] Stats: {messages_with_videos} msgs with videos, {messages_with_target_emoji} msgs with emoji '{target_emoji}', {messages_with_both} msgs with both")
-    
+    logging.info(
+        f"[video_weight] SUMMARY for {action_key}/{project}: {len(messages)} messages, found {len(weighted_candidates)} cached videos"
+    )
+    logging.info(
+        f"[video_weight] Stats: {messages_with_videos} msgs with videos, {messages_with_target_emoji} msgs with emoji '{target_emoji}', {messages_with_both} msgs with both"
+    )
+
     if not weighted_candidates:
         return None, 0.0, None, None
 
-    # Apply anti-repetition weighting
-    simple_candidates = {url: weight for url, (weight, _, _) in weighted_candidates.items()}
-    simple_candidates = apply_anti_repetition_weighting(simple_candidates, action_key)
-    simple_candidates = apply_diversity_weighting(simple_candidates)
-    adjusted_candidates = {url: (simple_candidates[url], weighted_candidates[url][1], weighted_candidates[url][2]) for url in simple_candidates}
+    # Use cycle-based selection for videos
+    global video_cycle_state
 
-    # Weighted random choice
-    items = list(adjusted_candidates.items())
-    total_weight = sum(weight for _, (weight, _, _) in items)
-    r = random.uniform(0, total_weight)
-    upto = 0.0
-    for url, (weight, duration, original_url) in items:
-        upto += weight
-        if r <= upto:
-            track_played_media(url, action_key)
-            return url, weight, duration, original_url
+    # Check if we need to initialize or rebuild the cycle
+    cycle_state = video_cycle_state.get(action_key)
 
-    # Fallback
-    chosen_url, (chosen_weight, chosen_duration, chosen_original) = random.choice(items)
+    # Rebuild cycle if:
+    # 1. No cycle exists yet
+    # 2. Available videos changed (different candidates than cycle pool)
+    current_video_urls = set(weighted_candidates.keys())
+    needs_rebuild = False
+
+    if not cycle_state:
+        needs_rebuild = True
+        logging.info(
+            f"[video_cycle] No cycle state for {action_key}, building new cycle"
+        )
+    else:
+        # Check if the set of available videos changed
+        pool_urls = set(url for url, _, _, _ in cycle_state["pool"])
+        if current_video_urls != pool_urls:
+            needs_rebuild = True
+            logging.info(
+                f"[video_cycle] Available videos changed for {action_key}, rebuilding cycle"
+            )
+
+    if needs_rebuild:
+        pool = build_video_cycle_pool(weighted_candidates, action_key)
+        video_cycle_state[action_key] = {
+            "pool": pool,
+            "remaining": pool.copy(),  # Track which specific pool slots remain
+            "cycle_number": 1,
+        }
+        cycle_state = video_cycle_state[action_key]
+        logging.info(
+            f"[video_cycle] Created new cycle #{cycle_state['cycle_number']} for {action_key} with {len(pool)} slots"
+        )
+
+    # If all slots have been used, start a new cycle
+    if not cycle_state["remaining"]:
+        cycle_state["remaining"] = cycle_state["pool"].copy()
+        cycle_state["cycle_number"] += 1
+        logging.info(
+            f"[video_cycle] Cycle complete! Starting cycle #{cycle_state['cycle_number']} for {action_key}"
+        )
+
+    # Randomly select from remaining slots (equal probability)
+    idx = random.randint(0, len(cycle_state["remaining"]) - 1)
+    chosen_url, chosen_weight, chosen_duration, chosen_original = cycle_state[
+        "remaining"
+    ].pop(idx)
+
+    # Track in legacy history for backward compatibility
     track_played_media(chosen_url, action_key)
-    return chosen_url, chosen_weight, chosen_duration, chosen_original
 
+    played_count = len(cycle_state["pool"]) - len(cycle_state["remaining"])
+    total_count = len(cycle_state["pool"])
+    logging.info(
+        f"[video_cycle] Selected '{chosen_url}' (weight={chosen_weight:.1f}) - progress: {played_count}/{total_count} in cycle #{cycle_state['cycle_number']}"
+    )
+
+    return chosen_url, chosen_weight, chosen_duration, chosen_original
 
 
 # -----------------------------
@@ -1962,7 +2537,9 @@ def _normalize_meme_url(url: str) -> str:
     return url_stripped
 
 
-async def fetch_random_discord_meme(action_key: str, project: Optional[str]) -> Optional[str]:
+async def fetch_random_discord_meme(
+    action_key: str, project: Optional[str]
+) -> Optional[str]:
     """
     Choose a random meme image/gif URL for the given action and project from the
     cached Discord messages.
@@ -1989,7 +2566,9 @@ async def fetch_random_discord_meme(action_key: str, project: Optional[str]) -> 
 
     # Lazy-load cache on first use if needed
     if not discord_messages_cache:
-        logging.info("[discord] Message cache empty; doing one-time refresh before meme selection.")
+        logging.info(
+            "[discord] Message cache empty; doing one-time refresh before meme selection."
+        )
         await refresh_discord_messages_cache()
 
     messages = _select_messages_for_project(project)
@@ -2074,7 +2653,10 @@ async def fetch_random_discord_meme(action_key: str, project: Optional[str]) -> 
             if (
                 ctype.startswith("image/")
                 or fname.endswith((".gif", ".webp", ".png", ".jpg", ".jpeg"))
-                or any(ext in url.lower() for ext in [".gif", ".webp", ".png", ".jpg", ".jpeg"])
+                or any(
+                    ext in url.lower()
+                    for ext in [".gif", ".webp", ".png", ".jpg", ".jpeg"]
+                )
             ):
                 _add_candidate(url, match_weight)
 
@@ -2091,7 +2673,10 @@ async def fetch_random_discord_meme(action_key: str, project: Optional[str]) -> 
                 u = (img_obj.get("url") or img_obj.get("proxy_url") or "").strip()
                 if u:
                     logging.info(f"[discord] Embed {label} on {msg_id}: url={u}")
-                    if any(ext in u.lower() for ext in [".gif", ".webp", ".png", ".jpg", ".jpeg"]):
+                    if any(
+                        ext in u.lower()
+                        for ext in [".gif", ".webp", ".png", ".jpg", ".jpeg"]
+                    ):
                         _add_candidate(u, match_weight)
 
             if emb_url and (
@@ -2109,9 +2694,8 @@ async def fetch_random_discord_meme(action_key: str, project: Optional[str]) -> 
                     continue
 
                 lower_p = p.lower()
-                if (
-                    "tenor.com/view" in lower_p
-                    or any(ext in lower_p for ext in [".gif", ".webp", ".png", ".jpg", ".jpeg"])
+                if "tenor.com/view" in lower_p or any(
+                    ext in lower_p for ext in [".gif", ".webp", ".png", ".jpg", ".jpeg"]
                 ):
                     logging.info(f"[discord] Content image candidate on {msg_id}: {p}")
                     _add_candidate(p, match_weight)
@@ -2125,7 +2709,9 @@ async def fetch_random_discord_meme(action_key: str, project: Optional[str]) -> 
         return None
 
     # Apply anti-repetition weighting to avoid playing same memes repeatedly
-    weighted_candidates = apply_anti_repetition_weighting(weighted_candidates, action_key)
+    weighted_candidates = apply_anti_repetition_weighting(
+        weighted_candidates, action_key
+    )
     weighted_candidates = apply_diversity_weighting(weighted_candidates)
 
     # Weighted random choice from cached candidates
@@ -2157,7 +2743,9 @@ async def fetch_random_discord_meme(action_key: str, project: Optional[str]) -> 
 # -----------------------------
 # DISCORD VIDEO SELECTION
 # -----------------------------
-async def fetch_random_discord_video(action_key: str, project: Optional[str]) -> tuple[Optional[str], Optional[float]]:
+async def fetch_random_discord_video(
+    action_key: str, project: Optional[str]
+) -> tuple[Optional[str], Optional[float]]:
     """
     Choose a random *video* URL (YouTube or direct video file) for the given
     action and project from the cached Discord messages, download/cache it locally,
@@ -2174,7 +2762,9 @@ async def fetch_random_discord_video(action_key: str, project: Optional[str]) ->
           * OR the URL looks like a YouTube link (youtube.com / youtu.be)
     """
     if not DISCORD_BOT_TOKEN or not DISCORD_CHANNEL_ID:
-        logging.debug("[discord] Missing bot token or channel id; skipping video fetch.")
+        logging.debug(
+            "[discord] Missing bot token or channel id; skipping video fetch."
+        )
         return None, None
 
     target_emoji = get_action_emoji(action_key, project)
@@ -2189,7 +2779,9 @@ async def fetch_random_discord_video(action_key: str, project: Optional[str]) ->
 
     # Lazy-load cache on first use if needed
     if not discord_messages_cache:
-        logging.info("[discord] Message cache empty; doing one-time refresh before video selection.")
+        logging.info(
+            "[discord] Message cache empty; doing one-time refresh before video selection."
+        )
         await refresh_discord_messages_cache()
 
     messages = _select_messages_for_project(project)
@@ -2247,7 +2839,9 @@ async def fetch_random_discord_video(action_key: str, project: Optional[str]) ->
                     matched = True
 
             if matched:
-                match_weight += count  # Sum all matching emoji reactions for voting weight
+                match_weight += (
+                    count  # Sum all matching emoji reactions for voting weight
+                )
 
         if match_weight <= 0:
             continue
@@ -2284,9 +2878,8 @@ async def fetch_random_discord_video(action_key: str, project: Optional[str]) ->
             emb_url = (emb.get("url") or "").strip()
             if emb_url:
                 lower_emb = emb_url.lower()
-                if (
-                    any(ext in lower_emb for ext in VIDEO_EXTS)
-                    or _looks_like_youtube(emb_url)
+                if any(ext in lower_emb for ext in VIDEO_EXTS) or _looks_like_youtube(
+                    emb_url
                 ):
                     logging.info(f"[discord] (video) Embed url on {msg_id}: {emb_url}")
                     _add_candidate(emb_url, match_weight)
@@ -2295,9 +2888,8 @@ async def fetch_random_discord_video(action_key: str, project: Optional[str]) ->
             v_url = (video_obj.get("url") or "").strip()
             if v_url:
                 lower_v = v_url.lower()
-                if (
-                    any(ext in lower_v for ext in VIDEO_EXTS)
-                    or _looks_like_youtube(v_url)
+                if any(ext in lower_v for ext in VIDEO_EXTS) or _looks_like_youtube(
+                    v_url
                 ):
                     logging.info(f"[discord] (video) Embed video on {msg_id}: {v_url}")
                     _add_candidate(v_url, match_weight)
@@ -2310,11 +2902,10 @@ async def fetch_random_discord_video(action_key: str, project: Optional[str]) ->
                 if not p.startswith("http"):
                     continue
                 lower_p = p.lower()
-                if (
-                    any(ext in lower_p for ext in VIDEO_EXTS)
-                    or _looks_like_youtube(p)
-                ):
-                    logging.info(f"[discord] (video) Content video candidate on {msg_id}: {p}")
+                if any(ext in lower_p for ext in VIDEO_EXTS) or _looks_like_youtube(p):
+                    logging.info(
+                        f"[discord] (video) Content video candidate on {msg_id}: {p}"
+                    )
                     _add_candidate(p, match_weight)
                     break
 
@@ -2422,12 +3013,16 @@ async def get_video_duration_seconds(url: str) -> Optional[float]:
     try:
         duration = await _run_yt_dlp(url)
         if duration is not None:
-            logging.info("⌛ [video] Fetched YouTube duration=%.2fs for %s", duration, url)
+            logging.info(
+                "⌛ [video] Fetched YouTube duration=%.2fs for %s", duration, url
+            )
         else:
             logging.info("⌛ [video] No duration metadata found for %s", url)
         return duration
     except Exception as e:
-        logging.error(f"❗ [video] Error getting duration for {url}: {e}", exc_info=True)
+        logging.error(
+            f"❗ [video] Error getting duration for {url}: {e}", exc_info=True
+        )
         return None
 
 
@@ -2469,14 +3064,18 @@ async def cache_discord_audio(url: str) -> Optional[str]:
     for attempt in range(max_retries):
         try:
             if attempt > 0:
-                logging.info(f"🔄 [warm_cache] Retry {attempt}/{max_retries} for audio {url[:50]}...")
+                logging.info(
+                    f"🔄 [warm_cache] Retry {attempt}/{max_retries} for audio {url[:50]}..."
+                )
                 await asyncio.sleep(1 * attempt)  # Exponential backoff
-                
-            logging.info(f"🔊 [warm_cache] Downloading audio {url[:50]}... -> {fs_path}")
-            
+
+            logging.info(
+                f"🔊 [warm_cache] Downloading audio {url[:50]}... -> {fs_path}"
+            )
+
             async with aiohttp.ClientSession(
                 timeout=aiohttp.ClientTimeout(total=45),
-                connector=aiohttp.TCPConnector(limit=10)
+                connector=aiohttp.TCPConnector(limit=10),
             ) as session:
                 async with session.get(url) as resp:
                     if resp.status != 200:
@@ -2488,30 +3087,39 @@ async def cache_discord_audio(url: str) -> Optional[str]:
                         if resp.status in (404, 403, 410):  # Don't retry for these
                             break
                         continue
-                    
+
                     # Read data in chunks to handle large files
                     data = b""
                     async for chunk in resp.content.iter_chunked(8192):
                         data += chunk
-                        
+
             # Only write if we have data
             if len(data) > 0:
                 fs_path.write_bytes(data)
-                logging.info(f"💾 [warm_cache] Cached audio {url[:50]}... -> {fs_path} ({len(data)} bytes)")
+                logging.info(
+                    f"💾 [warm_cache] Cached audio {url[:50]}... -> {fs_path} ({len(data)} bytes)"
+                )
                 return f"/dsounds/{fname}"
             else:
                 logging.warning(f"❗ [discord] Empty audio data for {url[:50]}...")
                 continue
-                
+
         except asyncio.TimeoutError:
-            logging.warning(f"⏱️ [discord] Timeout downloading audio {url[:50]}... (attempt {attempt + 1})")
+            logging.warning(
+                f"⏱️ [discord] Timeout downloading audio {url[:50]}... (attempt {attempt + 1})"
+            )
             continue
         except Exception as e:
-            logging.error(f"❗ [discord] Error caching audio {url[:50]}... (attempt {attempt + 1}): {e}")
+            logging.error(
+                f"❗ [discord] Error caching audio {url[:50]}... (attempt {attempt + 1}): {e}"
+            )
             if attempt == max_retries - 1:  # Last attempt
-                logging.error(f"❗ [discord] Final failure caching audio {url[:50]}...", exc_info=True)
+                logging.error(
+                    f"❗ [discord] Final failure caching audio {url[:50]}...",
+                    exc_info=True,
+                )
             continue
-            
+
     # Clean up partial file on failure
     if fs_path.exists():
         try:
@@ -2521,7 +3129,9 @@ async def cache_discord_audio(url: str) -> Optional[str]:
     return None
 
 
-async def cache_discord_video(url: str) -> tuple[Optional[str], Optional[float], Optional[str], Optional[str]]:
+async def cache_discord_video(
+    url: str,
+) -> tuple[Optional[str], Optional[float], Optional[str], Optional[str]]:
     """
     Download a video URL (YouTube or direct) into an ephemeral cache directory and return
     a local HTTP path like /dvideos/<hashed>.mp4 that the overlay can play, plus duration.
@@ -2541,31 +3151,43 @@ async def cache_discord_video(url: str) -> tuple[Optional[str], Optional[float],
     h = hashlib.sha256(url.encode("utf-8")).hexdigest()[:32]
     fname = f"{h}.mp4"
     fs_path = DISCORD_VIDEO_CACHE_DIR / fname
-    
+
     logging.info(f"[cache] Caching video with URL: {url}")
     logging.info(f"[cache] Calculated hash: {h}")
     logging.info(f"[cache] Target file path: {fs_path}")
 
     # Check for existing valid cached file
-    logging.debug(f"🔍 [video_cache] Checking cache for {fs_path.name}. Exists: {fs_path.exists()}, Size: {fs_path.stat().st_size if fs_path.exists() else 0}")
+    logging.debug(
+        f"🔍 [video_cache] Checking cache for {fs_path.name}. Exists: {fs_path.exists()}, Size: {fs_path.stat().st_size if fs_path.exists() else 0}"
+    )
     if fs_path.exists() and fs_path.stat().st_size > 0:
         logging.debug(f"📺 [discord] Using cached video for {url[:50]}... -> {fs_path}")
         # Try to get duration from existing file
         duration = await get_video_duration_from_file(str(fs_path))
-        logging.debug(f"🔍 [video_cache] get_video_duration_from_file returned: {duration} for {fs_path.name}")
+        logging.debug(
+            f"🔍 [video_cache] get_video_duration_from_file returned: {duration} for {fs_path.name}"
+        )
         if duration is None:
-            logging.warning(f"🗑️ [video] Cached video {fs_path.name} is invalid (no duration or zero duration). Removing and re-downloading.")
+            logging.warning(
+                f"🗑️ [video] Cached video {fs_path.name} is invalid (no duration or zero duration). Removing and re-downloading."
+            )
             # File is invalid (too short or corrupted), remove it
             try:
                 fs_path.unlink()
                 logging.info(f"🗑️ [video] Removed invalid cached video: {fs_path}")
             except Exception as e:
-                logging.error(f"❗ [video] Error removing invalid cached video {fs_path}: {e}")
+                logging.error(
+                    f"❗ [video] Error removing invalid cached video {fs_path}: {e}"
+                )
         else:
-            logging.info(f"✅ [video] Using valid cached video {fs_path.name} (duration: {duration}s).")
+            logging.info(
+                f"✅ [video] Using valid cached video {fs_path.name} (duration: {duration}s)."
+            )
             return f"/dvideos/{fname}", duration, None, None
     else:
-        logging.info(f"⬇️ [video] Cached file {fs_path.name} not found or empty. Downloading...")
+        logging.info(
+            f"⬇️ [video] Cached file {fs_path.name} not found or empty. Downloading..."
+        )
 
     # Check if it's a YouTube video
     is_youtube = bool(YOUTUBE_RE.search(url))
@@ -2576,11 +3198,15 @@ async def cache_discord_video(url: str) -> tuple[Optional[str], Optional[float],
     for attempt in range(max_retries):
         try:
             if attempt > 0:
-                logging.info(f"🔄 [warm_cache] Retry {attempt}/{max_retries} for video {url[:50]}...")
+                logging.info(
+                    f"🔄 [warm_cache] Retry {attempt}/{max_retries} for video {url[:50]}..."
+                )
                 await asyncio.sleep(2 * attempt)  # Exponential backoff
-                
-            logging.info(f"📺 [warm_cache] Downloading video {url[:50]}... -> {fs_path}")
-            
+
+            logging.info(
+                f"📺 [warm_cache] Downloading video {url[:50]}... -> {fs_path}"
+            )
+
             if is_youtube:
                 # Use yt-dlp to download YouTube video
                 try:
@@ -2592,15 +3218,22 @@ async def cache_discord_video(url: str) -> tuple[Optional[str], Optional[float],
                     )
                     return None, None, "missing_ytdlp", "yt-dlp not installed"
 
-                async def _download_youtube(u: str) -> tuple[Optional[float], Optional[str], Optional[str]]:
-                    def _inner() -> tuple[Optional[float], Optional[str], Optional[str]]:
+                async def _download_youtube(
+                    u: str,
+                ) -> tuple[Optional[float], Optional[str], Optional[str]]:
+                    def _inner() -> tuple[
+                        Optional[float], Optional[str], Optional[str]
+                    ]:
                         # Random delay between 1-10 seconds to appear more human-like
                         import random
                         import time
+
                         delay = random.uniform(1, 10)
-                        logging.info(f"⏸️ [yt-dlp] Random anti-bot delay: {delay:.1f}s for {u[:50]}...")
+                        logging.info(
+                            f"⏸️ [yt-dlp] Random anti-bot delay: {delay:.1f}s for {u[:50]}..."
+                        )
                         time.sleep(delay)
-                        
+
                         ydl_opts = {
                             # Force MP4 format for consistent web playback
                             "format": "best[ext=mp4]/best[height<=720]/best",
@@ -2621,20 +3254,30 @@ async def cache_discord_video(url: str) -> tuple[Optional[str], Optional[float],
                             "ignoreerrors": False,
                             "no_check_certificate": True,
                             # Anti-blocking sleep settings
-                            "sleep_requests": random.uniform(3, 8),  # Longer sleep between requests
+                            "sleep_requests": random.uniform(
+                                3, 8
+                            ),  # Longer sleep between requests
                             "sleep_subtitles": random.uniform(1, 3),
-                            "sleep_formats": random.uniform(1, 5),  # Sleep between format attempts
-                            "sleep_fragments": random.uniform(0.5, 2),  # Sleep between fragments
+                            "sleep_formats": random.uniform(
+                                1, 5
+                            ),  # Sleep between format attempts
+                            "sleep_fragments": random.uniform(
+                                0.5, 2
+                            ),  # Sleep between fragments
                             # Throttle download speed to appear less bot-like
-                            "ratelimit": random.randint(500000, 2000000),  # 500KB-2MB/s limit
+                            "ratelimit": random.randint(
+                                500000, 2000000
+                            ),  # 500KB-2MB/s limit
                             # User-agent rotation with more realistic agents
                             "http_headers": {
-                                "User-Agent": random.choice([
-                                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
-                                    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/121.0"
-                                ])
+                                "User-Agent": random.choice(
+                                    [
+                                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
+                                        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/121.0",
+                                    ]
+                                )
                             },
                             # Additional anti-detection options
                             "skip_unavailable_fragments": True,
@@ -2643,50 +3286,79 @@ async def cache_discord_video(url: str) -> tuple[Optional[str], Optional[float],
                             # Force IPv4 to avoid IPv6 detection
                             "force_ipv4": True,
                             # Add some randomness to avoid pattern detection
-                            "http_chunk_size": random.randint(1024, 10240),  # Random chunk size
+                            "http_chunk_size": random.randint(
+                                1024, 10240
+                            ),  # Random chunk size
                         }
-                        
+
                         # Add cookies if available
                         cookies_file = "/app/youtube/cookies.txt"
                         if os.path.exists(cookies_file):
                             ydl_opts["cookiefile"] = cookies_file
                             logging.info(f"[yt-dlp] Using cookies from {cookies_file}")
                         else:
-                            logging.debug(f"[yt-dlp] No cookies file found at {cookies_file}")
+                            logging.debug(
+                                f"[yt-dlp] No cookies file found at {cookies_file}"
+                            )
                         try:
                             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                                logging.info(f"📹 [yt-dlp] Extracting info for {u[:50]}...")
+                                logging.info(
+                                    f"📹 [yt-dlp] Extracting info for {u[:50]}..."
+                                )
                                 info = ydl.extract_info(u, download=True)
                                 if not info:
-                                    logging.warning(f"❗ [yt-dlp] No info extracted for {u[:50]}...")
+                                    logging.warning(
+                                        f"❗ [yt-dlp] No info extracted for {u[:50]}..."
+                                    )
                                     return None, "no_info", "No info extracted"
-                                    
+
                                 dur = info.get("duration")
                                 if dur is None:
-                                    logging.warning(f"❗ [yt-dlp] No duration in info for {u[:50]}...")
-                                    return None, "no_duration", "No duration in metadata"
+                                    logging.warning(
+                                        f"❗ [yt-dlp] No duration in info for {u[:50]}..."
+                                    )
+                                    return (
+                                        None,
+                                        "no_duration",
+                                        "No duration in metadata",
+                                    )
                                 try:
                                     duration = float(dur)
                                     if duration > 0:
-                                        logging.info(f"✅ [yt-dlp] Downloaded video: {u[:50]}... ({duration}s)")
+                                        logging.info(
+                                            f"✅ [yt-dlp] Downloaded video: {u[:50]}... ({duration}s)"
+                                        )
                                         return duration, None, None
                                     else:
-                                        logging.warning(f"❗ [yt-dlp] Zero duration video: {u[:50]}...")
-                                        return None, "zero_duration", f"Video has zero duration"
+                                        logging.warning(
+                                            f"❗ [yt-dlp] Zero duration video: {u[:50]}..."
+                                        )
+                                        return (
+                                            None,
+                                            "zero_duration",
+                                            f"Video has zero duration",
+                                        )
                                 except Exception as e:
-                                    logging.error(f"❗ [yt-dlp] Duration parse error for {u[:50]}...: {e}")
+                                    logging.error(
+                                        f"❗ [yt-dlp] Duration parse error for {u[:50]}...: {e}"
+                                    )
                                     return None, "duration_parse_error", str(e)
                         except Exception as e:
                             error_str = str(e)
-                            logging.error(f"❗ [yt-dlp] Download failed for {u[:50]}...: {e}")
-                            
+                            logging.error(
+                                f"❗ [yt-dlp] Download failed for {u[:50]}...: {e}"
+                            )
+
                             # Categorize common yt-dlp errors
                             if "Video unavailable" in error_str:
                                 if "private" in error_str.lower():
                                     return None, "video_private", error_str
                                 elif "copyright" in error_str.lower():
                                     return None, "copyright_claim", error_str
-                                elif "Terms of Service" in error_str or "ToS" in error_str:
+                                elif (
+                                    "Terms of Service" in error_str
+                                    or "ToS" in error_str
+                                ):
                                     return None, "tos_violation", error_str
                                 else:
                                     return None, "video_unavailable", error_str
@@ -2700,16 +3372,26 @@ async def cache_discord_video(url: str) -> tuple[Optional[str], Optional[float],
                     return await asyncio.to_thread(_inner)
 
                 duration, error_type, error_message = await _download_youtube(url)
-                if duration is not None and fs_path.exists() and fs_path.stat().st_size > 0:
-                    logging.info(f"📹 [warm_cache] Downloaded YouTube video {url[:50]}... -> {fs_path} (duration={duration}s, size={fs_path.stat().st_size} bytes)")
+                if (
+                    duration is not None
+                    and fs_path.exists()
+                    and fs_path.stat().st_size > 0
+                ):
+                    logging.info(
+                        f"📹 [warm_cache] Downloaded YouTube video {url[:50]}... -> {fs_path} (duration={duration}s, size={fs_path.stat().st_size} bytes)"
+                    )
                     return f"/dvideos/{fname}", duration, None, None
                 else:
                     if attempt < max_retries - 1:
                         continue
                     # Use captured error details or fallback
                     final_error_type = error_type or "ytdlp_failed"
-                    final_error_message = error_message or "yt-dlp failed to download or video too short"
-                    logging.warning(f"❗ [discord] {final_error_message}: {url[:50]}...")
+                    final_error_message = (
+                        error_message or "yt-dlp failed to download or video too short"
+                    )
+                    logging.warning(
+                        f"❗ [discord] {final_error_message}: {url[:50]}..."
+                    )
                     # Clean up failed download
                     if fs_path.exists():
                         try:
@@ -2722,7 +3404,7 @@ async def cache_discord_video(url: str) -> tuple[Optional[str], Optional[float],
                 # Direct video file - download it
                 async with aiohttp.ClientSession(
                     timeout=aiohttp.ClientTimeout(total=90),
-                    connector=aiohttp.TCPConnector(limit=5)
+                    connector=aiohttp.TCPConnector(limit=5),
                 ) as session:
                     async with session.get(url) as resp:
                         if resp.status != 200:
@@ -2734,41 +3416,57 @@ async def cache_discord_video(url: str) -> tuple[Optional[str], Optional[float],
                             if resp.status in (404, 403, 410):  # Don't retry for these
                                 break
                             continue
-                        
+
                         # Read data in chunks to handle large files
                         data = b""
                         async for chunk in resp.content.iter_chunked(8192):
                             data += chunk
-                            
+
                 # Only write if we have data
                 if len(data) > 0:
                     fs_path.write_bytes(data)
-                    logging.info(f"💾 [warm_cache] Cached video {url[:50]}... -> {fs_path} ({len(data)} bytes)")
-                    
+                    logging.info(
+                        f"💾 [warm_cache] Cached video {url[:50]}... -> {fs_path} ({len(data)} bytes)"
+                    )
+
                     # Try to get duration from downloaded file
                     duration = await get_video_duration_from_file(str(fs_path))
                     if duration is None:
                         # File is invalid (too short or corrupted), remove it
                         try:
                             fs_path.unlink()
-                            logging.info(f"🗑️ [video] Removed invalid downloaded video: {fs_path}")
+                            logging.info(
+                                f"🗑️ [video] Removed invalid downloaded video: {fs_path}"
+                            )
                         except Exception:
                             pass
                         if attempt < max_retries - 1:
                             continue
-                        return None, None, "video_too_short", f"Video duration {duration}s is too short"
+                        return (
+                            None,
+                            None,
+                            "video_too_short",
+                            f"Video duration {duration}s is too short",
+                        )
                     return f"/dvideos/{fname}", duration, None, None
                 else:
                     logging.warning(f"❗ [discord] Empty video data for {url[:50]}...")
                     continue
 
         except asyncio.TimeoutError:
-            logging.warning(f"⏱️ [discord] Timeout downloading video {url[:50]}... (attempt {attempt + 1})")
+            logging.warning(
+                f"⏱️ [discord] Timeout downloading video {url[:50]}... (attempt {attempt + 1})"
+            )
             continue
         except Exception as e:
-            logging.error(f"❗ [discord] Error caching video {url[:50]}... (attempt {attempt + 1}): {e}")
+            logging.error(
+                f"❗ [discord] Error caching video {url[:50]}... (attempt {attempt + 1}): {e}"
+            )
             if attempt == max_retries - 1:  # Last attempt
-                logging.error(f"❗ [discord] Final failure caching video {url[:50]}...", exc_info=True)
+                logging.error(
+                    f"❗ [discord] Final failure caching video {url[:50]}...",
+                    exc_info=True,
+                )
             continue
 
     # Clean up partial download on final failure
@@ -2784,60 +3482,68 @@ async def cache_discord_video(url: str) -> tuple[Optional[str], Optional[float],
 async def cache_discord_meme(url: str) -> Optional[str]:
     """
     Download a meme/image URL into local cache and return a local HTTP path.
-    
-    - Files are stored under DISCORD_MEME_CACHE_DIR  
+
+    - Files are stored under DISCORD_MEME_CACHE_DIR
     - Names are based on SHA256(url) + appropriate extension
     - Returns local path like /dmemes/<hashed>.<ext> that the overlay can use
     """
     if not url:
         return None
-        
+
     DISCORD_MEME_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    
+
     # Stable name based on URL hash
     h = hashlib.sha256(url.encode("utf-8")).hexdigest()[:32]
-    
+
     # Determine file extension from URL
     try:
         from urllib.parse import urlparse
+
         parsed = urlparse(url)
         path = parsed.path.lower()
-        if path.endswith(('.png', '.jpg', '.jpeg', '.gif', '.webp')):
-            ext = path[path.rfind('.'):]
+        if path.endswith((".png", ".jpg", ".jpeg", ".gif", ".webp")):
+            ext = path[path.rfind(".") :]
         else:
-            ext = '.png'  # Default fallback
+            ext = ".png"  # Default fallback
     except:
-        ext = '.png'
-        
+        ext = ".png"
+
     fname = f"{h}{ext}"
     fs_path = DISCORD_MEME_CACHE_DIR / fname
-    
+
     # Check for existing valid cached file
     if fs_path.exists() and fs_path.stat().st_size > 0:
         logging.debug(f"🎨 [meme] Using cached meme for {url[:50]}... -> {fs_path}")
         return f"/dmemes/{fname}"
-    
+
     # Download the meme
     try:
         import aiohttp
+
         async with aiohttp.ClientSession(
             timeout=aiohttp.ClientTimeout(total=30),
-            connector=aiohttp.TCPConnector(limit=5)
+            connector=aiohttp.TCPConnector(limit=5),
         ) as session:
             async with session.get(url) as resp:
                 if resp.status != 200:
-                    logging.warning(f"❗ [meme] Failed to download {url[:50]}...: status={resp.status}")
+                    logging.warning(
+                        f"❗ [meme] Failed to download {url[:50]}...: status={resp.status}"
+                    )
                     return None
-                
+
                 content = await resp.read()
                 if len(content) < 100:  # Too small to be a valid image
-                    logging.warning(f"❗ [meme] Downloaded content too small for {url[:50]}...")
+                    logging.warning(
+                        f"❗ [meme] Downloaded content too small for {url[:50]}..."
+                    )
                     return None
-                
+
                 fs_path.write_bytes(content)
-                logging.info(f"🎨 [meme] Downloaded {url[:50]}... -> {fs_path} (size={len(content)} bytes)")
+                logging.info(
+                    f"🎨 [meme] Downloaded {url[:50]}... -> {fs_path} (size={len(content)} bytes)"
+                )
                 return f"/dmemes/{fname}"
-                
+
     except Exception as e:
         logging.warning(f"❗ [meme] Error downloading {url[:50]}...: {e}")
         # Clean up failed download
@@ -2849,7 +3555,6 @@ async def cache_discord_meme(url: str) -> Optional[str]:
         return None
 
 
-
 async def video_has_audio(video_path: str) -> bool:
     """
     Check if a video file contains an audio track.
@@ -2857,14 +3562,27 @@ async def video_has_audio(video_path: str) -> bool:
     """
     try:
         import subprocess
-        result = subprocess.run([
-            'ffprobe', '-v', 'quiet', '-select_streams', 'a', 
-            '-show_entries', 'stream=codec_type', '-of', 'csv=p=0', 
-            video_path
-        ], capture_output=True, text=True, timeout=30)
-        
+
+        result = subprocess.run(
+            [
+                "ffprobe",
+                "-v",
+                "quiet",
+                "-select_streams",
+                "a",
+                "-show_entries",
+                "stream=codec_type",
+                "-of",
+                "csv=p=0",
+                video_path,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+
         # If ffprobe finds audio streams, it will output "audio"
-        return 'audio' in result.stdout
+        return "audio" in result.stdout
     except Exception as e:
         logging.warning(f"❗ [audio_detect] Error checking audio in {video_path}: {e}")
         return False  # Assume no audio if detection fails
@@ -2878,44 +3596,67 @@ async def get_video_duration_from_file(file_path: str) -> Optional[float]:
     """
     # Check cache first
     if file_path in video_duration_cache:
-        logging.debug(f"✅ [video_duration] Using cached duration for {file_path}: {video_duration_cache[file_path]}s")
+        logging.debug(
+            f"✅ [video_duration] Using cached duration for {file_path}: {video_duration_cache[file_path]}s"
+        )
         return video_duration_cache[file_path]
-    
+
     logging.debug(f"🔍 [video_duration] Checking duration for file: {file_path}")
     try:
         # Try ffprobe first (more reliable for local files)
         import subprocess
-        result = subprocess.run([
-             'ffprobe', '-v', 'quiet', '-show_entries', 'format=duration',
-             '-of', 'default=noprint_wrappers=1:nokey=1', file_path
-        ], capture_output=True, text=True, timeout=10)
-        
-        logging.debug(f"🔍 [video_duration] ffprobe result for {file_path}: ReturnCode={result.returncode}, Stdout='{result.stdout.strip()}', Stderr='{result.stderr.strip()}'")
+
+        result = subprocess.run(
+            [
+                "ffprobe",
+                "-v",
+                "quiet",
+                "-show_entries",
+                "format=duration",
+                "-of",
+                "default=noprint_wrappers=1:nokey=1",
+                file_path,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+
+        logging.debug(
+            f"🔍 [video_duration] ffprobe result for {file_path}: ReturnCode={result.returncode}, Stdout='{result.stdout.strip()}', Stderr='{result.stderr.strip()}'"
+        )
 
         if result.returncode == 0:
             duration_str = result.stdout.strip()
             if duration_str:
                 duration = float(duration_str)
                 if duration > 0:
-                    logging.debug(f"[video] Valid video duration: {file_path} ({duration}s)")
+                    logging.debug(
+                        f"[video] Valid video duration: {file_path} ({duration}s)"
+                    )
                     # Cache the result
                     video_duration_cache[file_path] = duration
                     return duration
                 else:
-                    logging.warning(f"[video] Zero duration video detected by ffprobe: {file_path}")
+                    logging.warning(
+                        f"[video] Zero duration video detected by ffprobe: {file_path}"
+                    )
                     return None
             else:
-                logging.warning(f"[video] ffprobe returned empty duration string for {file_path}")
+                logging.warning(
+                    f"[video] ffprobe returned empty duration string for {file_path}"
+                )
                 return None
     except Exception as e:
         logging.warning(f"❗ [video_duration] ffprobe failed for {file_path}: {e}")
-        pass # Try yt-dlp fallback
+        pass  # Try yt-dlp fallback
 
     # Fallback: try yt-dlp on local file
     try:
         import yt_dlp  # type: ignore
+
         logging.debug(f"🔍 [video_duration] Falling back to yt-dlp for {file_path}")
-        
+
         async def _get_duration_yt_dlp(path: str) -> Optional[float]:
             def _inner() -> Optional[float]:
                 ydl_opts = {
@@ -2925,41 +3666,56 @@ async def get_video_duration_from_file(file_path: str) -> Optional[float]:
                     "extractor_args": {
                         "youtube": {
                             "player_client": ["web", "ios", "android_embedded"],
-                            "skip": ["hls", "dash"]
+                            "skip": ["hls", "dash"],
                         }
-                    }
+                    },
                 }
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                     info = ydl.extract_info(f"file://{path}", download=False)
                     dur = info.get("duration")
-                    logging.debug(f"🔍 [video_duration] yt-dlp info for {path}: Duration={dur}")
+                    logging.debug(
+                        f"🔍 [video_duration] yt-dlp info for {path}: Duration={dur}"
+                    )
                     if dur is None:
-                        logging.warning(f"[video] yt-dlp found no duration metadata for {path}")
+                        logging.warning(
+                            f"[video] yt-dlp found no duration metadata for {path}"
+                        )
                         return None
                     try:
                         duration = float(dur)
                         if duration > 0:
-                            logging.debug(f"[video] Valid video duration (yt-dlp): {path} ({duration}s)")
+                            logging.debug(
+                                f"[video] Valid video duration (yt-dlp): {path} ({duration}s)"
+                            )
                             return duration
                         else:
-                            logging.warning(f"[video] Zero duration video detected by yt-dlp: {path}")
+                            logging.warning(
+                                f"[video] Zero duration video detected by yt-dlp: {path}"
+                            )
                             return None
                     except Exception as e:
-                        logging.warning(f"❗ [video_duration] yt-dlp duration parse error for {path}: {e}")
+                        logging.warning(
+                            f"❗ [video_duration] yt-dlp duration parse error for {path}: {e}"
+                        )
                         return None
+
             return await asyncio.to_thread(_inner)
-        
+
         duration = await _get_duration_yt_dlp(file_path)
         if duration is not None:
             # Cache the result
             video_duration_cache[file_path] = duration
         return duration
     except Exception as e:
-        logging.warning(f"❗ [video_duration] yt-dlp fallback failed for {file_path}: {e}")
+        logging.warning(
+            f"❗ [video_duration] yt-dlp fallback failed for {file_path}: {e}"
+        )
         pass
 
     # If we can't determine duration, assume it's corrupted
-    logging.warning(f"❗ [video] Could not determine duration for {file_path} - may be corrupted")
+    logging.warning(
+        f"❗ [video] Could not determine duration for {file_path} - may be corrupted"
+    )
     return None
 
 
@@ -2971,24 +3727,35 @@ async def get_audio_duration_from_file(file_path: str) -> Optional[float]:
     """
     # Check cache first
     if file_path in audio_duration_cache:
-        logging.debug(f"✅ [audio_duration] Using cached duration for {file_path}: {audio_duration_cache[file_path]}s")
+        logging.debug(
+            f"✅ [audio_duration] Using cached duration for {file_path}: {audio_duration_cache[file_path]}s"
+        )
         return audio_duration_cache[file_path]
-    
+
     try:
         # Use ffprobe to get audio duration
         result = await asyncio.create_subprocess_exec(
-            "ffprobe", "-v", "quiet", "-show_entries", "format=duration", 
-            "-of", "csv=p=0", file_path,
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+            "ffprobe",
+            "-v",
+            "quiet",
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "csv=p=0",
+            file_path,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
         )
         stdout, stderr = await result.communicate()
-        
+
         if result.returncode == 0 and stdout:
             duration_str = stdout.decode().strip()
             if duration_str:
                 duration = float(duration_str)
                 if duration > 0:
-                    logging.debug(f"[audio] Valid audio duration: {file_path} ({duration}s)")
+                    logging.debug(
+                        f"[audio] Valid audio duration: {file_path} ({duration}s)"
+                    )
                     # Cache the result
                     audio_duration_cache[file_path] = duration
                     return duration
@@ -2997,15 +3764,19 @@ async def get_audio_duration_from_file(file_path: str) -> Optional[float]:
                     return None
     except Exception:
         pass
-    
-    logging.warning(f"❗ [audio] Could not determine duration for {file_path} - may be corrupted")
+
+    logging.warning(
+        f"❗ [audio] Could not determine duration for {file_path} - may be corrupted"
+    )
     return None
 
 
 # -----------------------------
 # DISCORD SOUND SELECTION (Discord-only SFX)
 # -----------------------------
-async def fetch_random_discord_sound(action_key: str, project: Optional[str]) -> Optional[str]:
+async def fetch_random_discord_sound(
+    action_key: str, project: Optional[str]
+) -> Optional[str]:
     """
     Choose a random sound (audio URL) for the given action from the cached
     Discord messages, then download & cache it locally and return a /dsounds/ URL.
@@ -3019,7 +3790,9 @@ async def fetch_random_discord_sound(action_key: str, project: Optional[str]) ->
     NOTE: Now uses the same project filtering as memes (requires both game emoji and action emoji).
     """
     if not DISCORD_BOT_TOKEN or not DISCORD_CHANNEL_ID:
-        logging.debug("[discord] Missing bot token or channel id; skipping sound fetch.")
+        logging.debug(
+            "[discord] Missing bot token or channel id; skipping sound fetch."
+        )
         return None
 
     # Determine action emoji for this project; if none, no sounds
@@ -3035,7 +3808,9 @@ async def fetch_random_discord_sound(action_key: str, project: Optional[str]) ->
 
     # Lazy-load cache on first use if needed
     if not discord_messages_cache:
-        logging.info("[discord] Message cache empty; doing one-time refresh before sound selection.")
+        logging.info(
+            "[discord] Message cache empty; doing one-time refresh before sound selection."
+        )
         await refresh_discord_messages_cache()
 
     messages = _select_messages_for_project(project)
@@ -3096,7 +3871,9 @@ async def fetch_random_discord_sound(action_key: str, project: Optional[str]) ->
                     matched = True
 
             if matched:
-                match_weight += count  # Sum all matching emoji reactions for voting weight
+                match_weight += (
+                    count  # Sum all matching emoji reactions for voting weight
+                )
 
         if match_weight <= 0:
             continue  # no matching reaction for this action on this message
@@ -3149,7 +3926,9 @@ async def fetch_random_discord_sound(action_key: str, project: Optional[str]) ->
                     continue
                 lower_p = p.lower()
                 if any(ext in lower_p for ext in AUDIO_EXTS):
-                    logging.info(f"[discord] (sound) Content audio candidate on {msg_id}: {p}")
+                    logging.info(
+                        f"[discord] (sound) Content audio candidate on {msg_id}: {p}"
+                    )
                     _add_candidate(p, match_weight)
                     break
 
@@ -3215,42 +3994,50 @@ async def pick_media_for_action(
 ) -> tuple[Optional[str], Optional[float]]:
     """
     Decide which media to use for a given action based on EMOJI VOTE WEIGHTS ONLY.
-    
+
     Core principle: Only media with valid emoji votes can be selected.
     Selection is weighted by reaction counts (democratic voting system).
-    
+
     Returns: (video_url, video_duration_seconds) - YouTube videos only
     """
     game_conf = GAMES_CONFIG.get(project_key, {})
-    actions_map = (game_conf.get("actions") or {})
-    
+    actions_map = game_conf.get("actions") or {}
+
     if action_key not in actions_map or action_key == "clear":
-        logging.info(f"[media] No action mapping for {action_key} in project {project_key}")
+        logging.info(
+            f"[media] No action mapping for {action_key} in project {project_key}"
+        )
         return None, None
-    
+
     # Get all media options with their emoji weights
     # SIMPLIFIED: Only process YouTube videos
     try:
         # Get only YouTube video results - skip all other media
-        video_result = await get_cached_discord_video_with_weight(action_key, project=project_key)
-        
+        video_result = await get_cached_discord_video_with_weight(
+            action_key, project=project_key
+        )
+
         if not video_result or not video_result[0]:
             logging.info(f"[media] No YouTube videos found for action={action_key}")
             return None, None
-            
+
         video_url, video_weight, video_duration, original_video_url = video_result
-        
+
         # Only process if it's a YouTube video
         if not (original_video_url and YOUTUBE_RE.search(original_video_url)):
-            logging.info(f"[media] No YouTube videos found for action={action_key} (skipping non-YouTube)")
+            logging.info(
+                f"[media] No YouTube videos found for action={action_key} (skipping non-YouTube)"
+            )
             return None, None
-            
-        logging.info(f"[media] youtube_video: {video_url} (weight={video_weight}, duration={video_duration}s)")
-        
+
+        logging.info(
+            f"[media] youtube_video: {video_url} (weight={video_weight}, duration={video_duration}s)"
+        )
+
     except Exception as e:
         logging.error(f"[media] Error getting YouTube videos for {action_key}: {e}")
         return None, None
-    
+
     # Return YouTube video directly - no complex combinations needed
     logging.info(f"[media] SELECTED: youtube_video (weight={video_weight:.1f})")
     return video_url, video_duration
@@ -3318,7 +4105,9 @@ async def start_new_chapter_session(project: Optional[str]) -> None:
             f.write("# Format: HH:MM:SS.mmm <label>\n\n")
         logging.info(f"📄 [chapter] Started new chapter file: {path}")
     except Exception as e:
-        logging.error(f"❗ [chapter] Failed to create chapter file {path}: {e}", exc_info=True)
+        logging.error(
+            f"❗ [chapter] Failed to create chapter file {path}: {e}", exc_info=True
+        )
 
 
 async def append_chapter_line(action: str, project: Optional[str]) -> None:
@@ -3329,7 +4118,9 @@ async def append_chapter_line(action: str, project: Optional[str]) -> None:
     global current_chapter_file, session_start_wall, CURRENT_SESSION_PROJECT
 
     if current_chapter_file is None:
-        logging.info("⚠️ [chapter] No active chapter file; starting a session implicitly.")
+        logging.info(
+            "⚠️ [chapter] No active chapter file; starting a session implicitly."
+        )
         await start_new_chapter_session(project)
 
     if session_start_wall is None:
@@ -3422,7 +4213,9 @@ async def end_run_for_project(project_key: str) -> None:
 
     run_num = current_run_by_project.get(project_key)
     if not run_num:
-        logging.info(f"⚠️ [run] end_run_for_project called but no active run for {project_key}")
+        logging.info(
+            f"⚠️ [run] end_run_for_project called but no active run for {project_key}"
+        )
         return
 
     key = (project_key, run_num)
@@ -3518,7 +4311,7 @@ def add_action_to_history(action: str, project_key: str) -> None:
     Add an action to the undo history.
     """
     global action_history
-    
+
     # Record the action for potential undo
     action_record = {
         "action": action,
@@ -3526,14 +4319,16 @@ def add_action_to_history(action: str, project_key: str) -> None:
         "timestamp": time.time(),
         "original_count": action_counts.get((project_key, action.lower()), 0),
     }
-    
+
     action_history.append(action_record)
-    
+
     # Trim history to maximum size
     if len(action_history) > MAX_UNDO_HISTORY:
         action_history.pop(0)
-    
-    logging.info(f"📝 [undo] Added action to history: {action} for {project_key} (history size: {len(action_history)})")
+
+    logging.info(
+        f"📝 [undo] Added action to history: {action} for {project_key} (history size: {len(action_history)})"
+    )
 
 
 def reverse_run_event(project_key: str, action_key: str) -> None:
@@ -3553,7 +4348,7 @@ def reverse_run_event(project_key: str, action_key: str) -> None:
     stats["events"] = max(0, stats.get("events", 0) - 1)
 
     ak = action_key.lower()
-    
+
     # Reverse specific action stats
     if ak in RUN_KILL_ACTIONS:
         stats["kills"] = max(0, stats.get("kills", 0) - 1)
@@ -3562,7 +4357,9 @@ def reverse_run_event(project_key: str, action_key: str) -> None:
     if ak == "headshot":
         stats["headshots"] = max(0, stats.get("headshots", 0) - 1)
 
-    logging.info(f"↩️ [undo] Reversed run stats for action={action_key} in project={project_key}, run={run_num}")
+    logging.info(
+        f"↩️ [undo] Reversed run stats for action={action_key} in project={project_key}, run={run_num}"
+    )
 
 
 async def undo_last_action() -> bool:
@@ -3571,23 +4368,23 @@ async def undo_last_action() -> bool:
     Returns True if an action was undone, False if no actions to undo.
     """
     global action_history, action_counts, last_overlay_output, last_action, last_project
-    
+
     if not action_history:
         logging.info("⚠️ [undo] No actions in history to undo")
         return False
-    
+
     # Get the last action from history
     last_action_record = action_history.pop()
     action = last_action_record["action"]
     project_key = last_action_record["project_key"]
     original_count = last_action_record["original_count"]
-    
+
     logging.info(f"↩️ [undo] Undoing last action: {action} for project {project_key}")
-    
+
     # Reverse the action count
     count_key = (project_key, action.lower())
     current_count = action_counts.get(count_key, 0)
-    
+
     if current_count > 0:
         new_count = current_count - 1
         if new_count == 0:
@@ -3595,29 +4392,29 @@ async def undo_last_action() -> bool:
             action_counts.pop(count_key, None)
         else:
             action_counts[count_key] = new_count
-    
+
     # Reverse run stats if applicable
     if action.lower() not in ["clear", "start", "run_start", "run_end", "run_stop"]:
         reverse_run_event(project_key, action.lower())
-    
+
     # Append undo entry to chapter file
     try:
         await append_chapter_line(f"UNDO: {action}", project_key)
     except Exception as e:
         logging.warning(f"Failed to append undo to chapter file: {e}")
-    
+
     # Update overlay to show current state
     # Find the most recent action for this project to display
     most_recent_action = None
     most_recent_project = None
-    
+
     # Look through action_counts to find what should be displayed
     for (proj, act), count in action_counts.items():
         if proj == project_key and count > 0:
             most_recent_action = act
             most_recent_project = proj
             break
-    
+
     if most_recent_action and most_recent_project:
         # Update overlay with the current highest count action for this project
         await update_overlay_from_counts(most_recent_action, most_recent_project)
@@ -3627,9 +4424,11 @@ async def undo_last_action() -> bool:
             last_overlay_output = "Undone"
             last_action = "undo"
             last_project = project_key
-            
-        logging.info(f"🧽 [undo] No actions remaining for project {project_key}, showing 'Undone' message")
-    
+
+        logging.info(
+            f"🧽 [undo] No actions remaining for project {project_key}, showing 'Undone' message"
+        )
+
     return True
 
 
@@ -3639,31 +4438,41 @@ async def update_overlay_from_counts(action_key: str, project_key: str) -> None:
     """
     count_key = (project_key, action_key.lower())
     count = action_counts.get(count_key, 0)
-    
+
     # Look up emoji for this game
     game_conf = GAMES_CONFIG.get(project_key, {})
-    actions_map = (game_conf.get("actions") or {})
+    actions_map = game_conf.get("actions") or {}
     emoji = actions_map.get(action_key.lower(), "")
-    
+
     output = f"{emoji} {action_key}".strip()
     if count > 1:
         output += f" x{count}"
-    
+
     async with state_lock:
-        global last_overlay_output, last_action, last_project, last_sound, last_meme_url, last_video_url, last_video_duration, last_audio_duration
-        
+        global \
+            last_overlay_output, \
+            last_action, \
+            last_project, \
+            last_sound, \
+            last_meme_url, \
+            last_video_url, \
+            last_video_duration, \
+            last_audio_duration
+
         last_overlay_output = output
         last_action = action_key.lower()
         last_project = project_key
-        
+
         # Clear media for undo - no need to replay media
         last_sound = None
-        last_meme_url = None 
+        last_meme_url = None
         last_video_url = None
         last_video_duration = None
         last_audio_duration = None
-    
-    logging.info(f"🔄 [undo] Updated overlay from counts: {output} for project {project_key}")
+
+    logging.info(
+        f"🔄 [undo] Updated overlay from counts: {output} for project {project_key}"
+    )
 
 
 # -----------------------------
@@ -3674,15 +4483,17 @@ async def display_achievement_notification(achievement_data: Dict[str, Any]) -> 
     Display a Steam achievement notification.
     """
     global current_achievement, achievement_display_until
-    
+
     async with state_lock:
         current_achievement = achievement_data.copy()
         # Add sound URL for achievement notifications
         current_achievement["sound"] = "/sounds/achievement-unlocked-xbox.mp3"
         achievement_display_until = time.time() + ACHIEVEMENT_DISPLAY_DURATION
-        
-        logging.info(f"🏆 [achievement] Displaying notification: {achievement_data.get('achievement_title', 'Unknown')} from {achievement_data.get('game_name', 'Unknown Game')}")
-        
+
+        logging.info(
+            f"🏆 [achievement] Displaying notification: {achievement_data.get('achievement_title', 'Unknown')} from {achievement_data.get('game_name', 'Unknown Game')}"
+        )
+
         # Auto-clear after duration
         asyncio.create_task(_auto_clear_achievement())
 
@@ -3692,19 +4503,22 @@ async def _auto_clear_achievement() -> None:
     Clear achievement notification after display duration.
     """
     global current_achievement, achievement_display_until
-    
+
     try:
         await asyncio.sleep(ACHIEVEMENT_DISPLAY_DURATION)
-        
+
         async with state_lock:
             current_achievement = None
             achievement_display_until = None
-            
-        logging.info(f"🧽 [achievement] Auto-cleared notification after {ACHIEVEMENT_DISPLAY_DURATION}s")
-        
+
+        logging.info(
+            f"🧽 [achievement] Auto-cleared notification after {ACHIEVEMENT_DISPLAY_DURATION}s"
+        )
+
     except asyncio.CancelledError:
         logging.debug("⏳ [achievement] Auto-clear cancelled")
         return
+
 
 # -----------------------------
 # PLAYTIME NOTIFICATION HELPERS
@@ -3714,34 +4528,39 @@ async def display_playtime_notification(playtime_data: Dict[str, Any]) -> None:
     Display a playtime notification for 5 minutes.
     """
     global current_playtime, playtime_display_until
-    
+
     async with state_lock:
         current_playtime = playtime_data.copy()
         playtime_display_until = time.time() + PLAYTIME_DISPLAY_DURATION
-        
-        game_name = playtime_data.get('game_name', 'Unknown Game')
-        readable_time = playtime_data.get('total_playtime_readable', 'Unknown')
-        
-        logging.info(f"⏰ [playtime] Displaying playtime: {readable_time} for {game_name}")
-        
+
+        game_name = playtime_data.get("game_name", "Unknown Game")
+        readable_time = playtime_data.get("total_playtime_readable", "Unknown")
+
+        logging.info(
+            f"⏰ [playtime] Displaying playtime: {readable_time} for {game_name}"
+        )
+
         # Auto-clear after duration
         asyncio.create_task(_auto_clear_playtime())
+
 
 async def _auto_clear_playtime() -> None:
     """
     Clear playtime notification after display duration.
     """
     global current_playtime, playtime_display_until
-    
+
     try:
         await asyncio.sleep(PLAYTIME_DISPLAY_DURATION)
-        
+
         async with state_lock:
             current_playtime = None
             playtime_display_until = None
-            
-        logging.info(f"🧽 [playtime] Auto-cleared notification after {PLAYTIME_DISPLAY_DURATION}s")
-        
+
+        logging.info(
+            f"🧽 [playtime] Auto-cleared notification after {PLAYTIME_DISPLAY_DURATION}s"
+        )
+
     except asyncio.CancelledError:
         logging.debug("⏳ [playtime] Auto-clear cancelled")
         return
@@ -3752,38 +4571,50 @@ async def display_achievement_percentages(achievement_data: Dict[str, Any]) -> N
     Display achievement percentages notification for 5 minutes.
     """
     global current_achievement_percentages, achievement_percentages_display_until
-    
+
     async with state_lock:
         current_achievement_percentages = achievement_data.copy()
         # Add sound to the notification
-        current_achievement_percentages["sound"] = "/sounds/achievement-unlocked-xbox.mp3"
-        achievement_percentages_display_until = time.time() + ACHIEVEMENT_PERCENTAGES_DISPLAY_DURATION
-        
+        current_achievement_percentages["sound"] = (
+            "/sounds/achievement-unlocked-xbox.mp3"
+        )
+        achievement_percentages_display_until = (
+            time.time() + ACHIEVEMENT_PERCENTAGES_DISPLAY_DURATION
+        )
+
         # Log what we're displaying
-        game_name = achievement_data.get('game_name', 'Unknown')
-        achievements_list = achievement_data.get('achievements', [])
-        achievement_names = [f"{a.get('display_name', a.get('name', 'Unknown'))} ({a.get('percent', 0)}%)" for a in achievements_list]
-        
-        logging.info(f"🏆 [achievement_percentages] Displaying {len(achievements_list)} achievements for {game_name}: {', '.join(achievement_names)}")
-        
+        game_name = achievement_data.get("game_name", "Unknown")
+        achievements_list = achievement_data.get("achievements", [])
+        achievement_names = [
+            f"{a.get('display_name', a.get('name', 'Unknown'))} ({a.get('percent', 0)}%)"
+            for a in achievements_list
+        ]
+
+        logging.info(
+            f"🏆 [achievement_percentages] Displaying {len(achievements_list)} achievements for {game_name}: {', '.join(achievement_names)}"
+        )
+
         # Auto-clear after duration
         asyncio.create_task(_auto_clear_achievement_percentages())
+
 
 async def _auto_clear_achievement_percentages() -> None:
     """
     Clear achievement percentages notification after display duration.
     """
     global current_achievement_percentages, achievement_percentages_display_until
-    
+
     try:
         await asyncio.sleep(ACHIEVEMENT_PERCENTAGES_DISPLAY_DURATION)
-        
+
         async with state_lock:
             current_achievement_percentages = None
             achievement_percentages_display_until = None
-            
-        logging.info(f"🧽 [achievement_percentages] Auto-cleared notification after {ACHIEVEMENT_PERCENTAGES_DISPLAY_DURATION}s")
-        
+
+        logging.info(
+            f"🧽 [achievement_percentages] Auto-cleared notification after {ACHIEVEMENT_PERCENTAGES_DISPLAY_DURATION}s"
+        )
+
     except asyncio.CancelledError:
         logging.debug("⏳ [achievement_percentages] Auto-clear cancelled")
         return
@@ -3794,15 +4625,21 @@ def validate_achievement_data(data: Dict[str, Any]) -> bool:
     Validate that achievement data contains required fields.
     """
     required_fields = [
-        "achievement_title", "api_name", "description", "icon", 
-        "game_name", "app_id", "unlock_time", "steam_id"
+        "achievement_title",
+        "api_name",
+        "description",
+        "icon",
+        "game_name",
+        "app_id",
+        "unlock_time",
+        "steam_id",
     ]
-    
+
     for field in required_fields:
         if field not in data:
             logging.warning(f"❌ [achievement] Missing required field: {field}")
             return False
-    
+
     return True
 
 
@@ -3810,39 +4647,43 @@ def validate_achievement_data(data: Dict[str, Any]) -> bool:
 news_display_until = None
 NEWS_DISPLAY_DURATION = 30  # 30 seconds like other notifications
 
+
 async def display_news(news_data: Dict[str, Any]) -> None:
     """
     Display news notification at the bottom of the screen.
     """
     global current_news, news_display_until
-    
+
     async with state_lock:
         current_news = news_data.copy()
         news_display_until = time.time() + NEWS_DISPLAY_DURATION
-        
-        game_name = news_data.get('game_name', 'Unknown Game')
-        item_count = len(news_data.get('news_items', []))
-        
+
+        game_name = news_data.get("game_name", "Unknown Game")
+        item_count = len(news_data.get("news_items", []))
+
         logging.info(f"📰 [news] Displaying news: {item_count} items for {game_name}")
-        
+
         # Auto-clear after duration
         asyncio.create_task(_auto_clear_news())
+
 
 async def _auto_clear_news():
     """
     Clear news notification after display duration.
     """
     global current_news, news_display_until
-    
+
     try:
         await asyncio.sleep(NEWS_DISPLAY_DURATION)
-        
+
         async with state_lock:
             current_news = None
             news_display_until = None
-            
-        logging.info(f"🧽 [news] Auto-cleared notification after {NEWS_DISPLAY_DURATION}s")
-        
+
+        logging.info(
+            f"🧽 [news] Auto-cleared notification after {NEWS_DISPLAY_DURATION}s"
+        )
+
     except asyncio.CancelledError:
         logging.debug("⏳ [news] Auto-clear cancelled")
         return
@@ -3855,15 +4696,27 @@ async def update_live_overlay(action: str, project_key: str) -> None:
     """
     Update the live overlay state (per project) exposed at /overlay.
     """
-    global overlay_clear_task, last_overlay_output, last_action, last_sound, last_meme_url, last_video_url, last_video_duration, last_project, run_panel_visible_until
+    global \
+        overlay_clear_task, \
+        last_overlay_output, \
+        last_action, \
+        last_sound, \
+        last_meme_url, \
+        last_video_url, \
+        last_video_duration, \
+        last_project, \
+        run_panel_visible_until, \
+        last_synonyms
 
     async with state_lock:
         if action.lower() == "clear":
-            logging.info("🧹 [overlay] CLEAR action received; resetting counts and run stats.")
+            logging.info(
+                "🧹 [overlay] CLEAR action received; resetting counts and run stats."
+            )
 
             # Reset per-action overlay counts
             action_counts.clear()
-            
+
             # Clear action history
             action_history.clear()
 
@@ -3882,6 +4735,7 @@ async def update_live_overlay(action: str, project_key: str) -> None:
             last_video_url = None
             last_video_duration = None
             last_audio_duration = None
+            last_synonyms = None
             last_project = ""
 
             # Cancel any pending auto-clear timer
@@ -3897,14 +4751,14 @@ async def update_live_overlay(action: str, project_key: str) -> None:
         count_key = (project_key, key)
         count = action_counts.get(count_key, 0) + 1
         action_counts[count_key] = count
-        
+
         # Add to undo history (only for actions that change counts, not special actions)
         if key not in ["clear", "undo"]:
             add_action_to_history(action, project_key)
 
         # look up emoji for this game
         game_conf = GAMES_CONFIG.get(project_key, {})
-        actions_map = (game_conf.get("actions") or {})
+        actions_map = game_conf.get("actions") or {}
         emoji = actions_map.get(key, "")
 
         label = action
@@ -3916,14 +4770,17 @@ async def update_live_overlay(action: str, project_key: str) -> None:
         last_action = key
         last_project = project_key
 
+        # Generate synonyms for burst words
+        last_synonyms = get_synonyms_for_action(key, count=15)
+
         # --- MEDIA PICKER: YouTube videos only ---
         video_url, video_duration = await pick_media_for_action(key, project_key)
 
         last_sound = ""  # No audio files
-        last_meme_url = None  # No memes  
+        last_meme_url = None  # No memes
         last_video_url = video_url or None
         last_video_duration = video_duration
-        
+
         # CRITICAL: Calculate audio duration BEFORE setting globals to avoid race conditions
         calculated_audio_duration = None
         if last_sound and last_sound.startswith("/dsounds/"):
@@ -3932,13 +4789,19 @@ async def update_live_overlay(action: str, project_key: str) -> None:
             audio_file_path = DISCORD_SOUND_CACHE_DIR / audio_filename
             if audio_file_path.exists():
                 try:
-                    calculated_audio_duration = await get_audio_duration_from_file(str(audio_file_path))
+                    calculated_audio_duration = await get_audio_duration_from_file(
+                        str(audio_file_path)
+                    )
                     if calculated_audio_duration:
-                        logging.info(f"🎵 [overlay] Audio duration detected: {calculated_audio_duration}s for {audio_filename}")
+                        logging.info(
+                            f"🎵 [overlay] Audio duration detected: {calculated_audio_duration}s for {audio_filename}"
+                        )
                 except Exception as e:
-                    logging.warning(f"Failed to get audio duration for {audio_filename}: {e}")
-        
-        # Set the global AFTER calculation completes  
+                    logging.warning(
+                        f"Failed to get audio duration for {audio_filename}: {e}"
+                    )
+
+        # Set the global AFTER calculation completes
         last_audio_duration = calculated_audio_duration
 
         codepoints = " ".join(f"U+{ord(ch):04X}" for ch in output)
@@ -3959,33 +4822,50 @@ async def _auto_clear_overlay() -> None:
     """
     Clears overlay after a delay - ALWAYS respects media duration.
     - For Tenor + Discord audio: use audio duration
-    - For YouTube videos: use video duration  
+    - For YouTube videos: use video duration
     - For GIF + audio: use audio duration
     - NO fallback timing - only clear when media duration is known
     """
-    global overlay_clear_task, last_overlay_output, last_action, last_sound, last_meme_url, last_video_url, last_video_duration, last_audio_duration, last_project
+    global \
+        overlay_clear_task, \
+        last_overlay_output, \
+        last_action, \
+        last_sound, \
+        last_meme_url, \
+        last_video_url, \
+        last_video_duration, \
+        last_audio_duration, \
+        last_project
 
     try:
         clear_delay = None
-        
+
         # Determine appropriate duration based on media combination
         if last_video_url and last_audio_duration:
             # Tenor video + Discord audio: use audio duration (audio controls the timing)
             clear_delay = last_audio_duration + 1.0
-            logging.info(f"⏱️ [overlay] Tenor+Audio mode: Auto-clear scheduled after audio duration: {clear_delay}s")
+            logging.info(
+                f"⏱️ [overlay] Tenor+Audio mode: Auto-clear scheduled after audio duration: {clear_delay}s"
+            )
         elif last_video_url and last_video_duration:
             # YouTube video: use video duration (video controls the timing)
-            clear_delay = last_video_duration + 1.0  
-            logging.info(f"⏱️ [overlay] YouTube mode: Auto-clear scheduled after video duration: {clear_delay}s")
+            clear_delay = last_video_duration + 1.0
+            logging.info(
+                f"⏱️ [overlay] YouTube mode: Auto-clear scheduled after video duration: {clear_delay}s"
+            )
         elif last_audio_duration and (last_sound or last_meme_url):
             # GIF + Discord audio: use audio duration
             clear_delay = last_audio_duration + 1.0
-            logging.info(f"⏱️ [overlay] GIF+Audio mode: Auto-clear scheduled after audio duration: {clear_delay}s")
+            logging.info(
+                f"⏱️ [overlay] GIF+Audio mode: Auto-clear scheduled after audio duration: {clear_delay}s"
+            )
         else:
             # No timed media - don't auto-clear, let frontend handle it
-            logging.info(f"⏱️ [overlay] No timed media detected - no auto-clear scheduled")
+            logging.info(
+                f"⏱️ [overlay] No timed media detected - no auto-clear scheduled"
+            )
             return
-            
+
         await asyncio.sleep(clear_delay)
 
         async with state_lock:
@@ -4034,7 +4914,15 @@ async def handle_action(action: str, project: Optional[str]) -> None:
         if not success:
             # Show message that there's nothing to undo
             async with state_lock:
-                global last_overlay_output, last_action, last_project, last_sound, last_meme_url, last_video_url, last_video_duration, last_audio_duration
+                global \
+                    last_overlay_output, \
+                    last_action, \
+                    last_project, \
+                    last_sound, \
+                    last_meme_url, \
+                    last_video_url, \
+                    last_video_duration, \
+                    last_audio_duration
                 last_overlay_output = "Nothing to undo"
                 last_action = "undo"
                 last_project = project_key
@@ -4049,7 +4937,9 @@ async def handle_action(action: str, project: Optional[str]) -> None:
     if lower == "run_start":
         # If a run is already active for this project, end it first (split)
         if current_run_by_project.get(project_key):
-            logging.info(f"[run] run_start received while run active; splitting run for {project_key}")
+            logging.info(
+                f"[run] run_start received while run active; splitting run for {project_key}"
+            )
             await end_run_for_project(project_key)
 
         # Start next run
@@ -4069,7 +4959,9 @@ async def handle_action(action: str, project: Optional[str]) -> None:
 
         if not run_num:
             # No active run → do nothing (prevents double-trigger)
-            logging.info(f"[run] run_end received for {project_key} but no active run; ignoring.")
+            logging.info(
+                f"[run] run_end received for {project_key} but no active run; ignoring."
+            )
             return
 
         # End the active run (this pushes it into history)
@@ -4128,7 +5020,7 @@ def extract_from_payload(text: str) -> tuple[Optional[str], list[str], bool]:
       action=death
 
     And also bare actions like 'kill' if they exist in ANY game's actions.
-    
+
     Returns: (project, actions, is_authorized)
     """
     project: Optional[str] = None
@@ -4143,7 +5035,9 @@ def extract_from_payload(text: str) -> tuple[Optional[str], list[str], bool]:
         if not line:
             continue
 
-        logging.info(f"🔍 [parser] Checking line: {repr(line[:50])}{'...' if len(line) > 50 else ''}")
+        logging.info(
+            f"🔍 [parser] Checking line: {repr(line[:50])}{'...' if len(line) > 50 else ''}"
+        )
         lower = line.lower()
 
         if lower.startswith("token="):
@@ -4171,7 +5065,9 @@ def extract_from_payload(text: str) -> tuple[Optional[str], list[str], bool]:
             logging.info(f"✅ [parser] Parsed bare action: {token}")
             actions.append(token)
         else:
-            logging.info(f"⚠️ [parser] Line did not match project/action/token format: {repr(line)}")
+            logging.info(
+                f"⚠️ [parser] Line did not match project/action/token format: {repr(line)}"
+            )
 
     # Check authorization
     is_authorized = True
@@ -4188,7 +5084,9 @@ def extract_from_payload(text: str) -> tuple[Optional[str], list[str], bool]:
     return project, actions, is_authorized
 
 
-async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+async def handle_client(
+    reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+) -> None:
     addr = writer.get_extra_info("peername")
     logging.info(f"🔌 [tcp] Connection from {addr}")
 
@@ -4202,16 +5100,18 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
 
         text = data.decode("utf-8", errors="ignore")
         logging.info(f"📥 [tcp] Received {len(data)} bytes from {addr}")
-        logging.debug(f"📥 [tcp] Raw payload text: {repr(text[:100])}{'...' if len(text) > 100 else ''}")
+        logging.debug(
+            f"📥 [tcp] Raw payload text: {repr(text[:100])}{'...' if len(text) > 100 else ''}"
+        )
 
         project, actions, is_authorized = extract_from_payload(text)
-        
+
         if not is_authorized:
             logging.warning(f"🚫 [tcp] Unauthorized TCP request from {addr}")
             writer.close()
             await writer.wait_closed()
             return
-            
+
         if not actions:
             logging.info("⚠️ [tcp] No actions parsed from payload.")
         else:
@@ -4229,10 +5129,11 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
         logging.info(f"🔌 [tcp] Connection from {addr} closed.")
 
 
-
 # HTTP SERVER
 # -----------------------------
-async def handle_http(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+async def handle_http(
+    reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+) -> None:
     """
     Simple HTTP server:
       - GET /             => serves the HTML template
@@ -4248,9 +5149,9 @@ async def handle_http(reader: asyncio.StreamReader, writer: asyncio.StreamWriter
       - GET /dmemes/<...>  => serves cached Discord meme/image files
     """
     addr = writer.get_extra_info("peername")
-    # Declare global variables at function start to avoid scope issues  
+    # Declare global variables at function start to avoid scope issues
     global current_hotkey_mappings, last_hotkey_update, last_project
-    
+
     try:
         # Read the request line and headers
         request_line = await reader.readline()
@@ -4258,26 +5159,26 @@ async def handle_http(reader: asyncio.StreamReader, writer: asyncio.StreamWriter
             writer.close()
             await writer.wait_closed()
             return
-        
+
         req_text_parts = [request_line.decode("utf-8", errors="ignore").strip()]
-        
+
         # Read headers until an empty line is found
         content_length = 0
         while True:
             header_line = await reader.readline()
             if not header_line or header_line.strip() == b"":
                 break
-            
+
             decoded_header = header_line.decode("utf-8", errors="ignore").strip()
             req_text_parts.append(decoded_header)
-            
-            if decoded_header.lower().startswith('content-length:'):
+
+            if decoded_header.lower().startswith("content-length:"):
                 try:
-                    content_length = int(decoded_header.split(':', 1)[1].strip())
+                    content_length = int(decoded_header.split(":", 1)[1].strip())
                 except (ValueError, IndexError):
                     content_length = 0
-        
-        req_text = "\r\n".join(req_text_parts) # Reconstruct full request header text
+
+        req_text = "\r\n".join(req_text_parts)  # Reconstruct full request header text
 
         first_line_parts = req_text_parts[0].split()
         method = first_line_parts[0] if len(first_line_parts) > 0 else "GET"
@@ -4285,22 +5186,30 @@ async def handle_http(reader: asyncio.StreamReader, writer: asyncio.StreamWriter
 
         path = raw_path.split("?", 1)[0]  # strip query params
         logging.debug(f"🌐 [http] {method} {path}")
-        request_head = req_text # The full headers are now the "request_head"
-        logging.debug(f"🌐 [http] Raw request headers from {addr}:\n---\n{request_head}\n---")
-        
+        request_head = req_text  # The full headers are now the "request_head"
+        logging.debug(
+            f"🌐 [http] Raw request headers from {addr}:\n---\n{request_head}\n---"
+        )
+
         # Now read the body based on Content-Length
         body_data = b""
         if content_length > 0:
-            logging.debug(f"🔍 [http_body] Reading {content_length} bytes for request body.")
+            logging.debug(
+                f"🔍 [http_body] Reading {content_length} bytes for request body."
+            )
             body_data = await reader.readexactly(content_length)
-            logging.debug(f"🔍 [http_body] Read {len(body_data)} bytes for body (expected {content_length}).")
-        
+            logging.debug(
+                f"🔍 [http_body] Read {len(body_data)} bytes for body (expected {content_length})."
+            )
+
         # Now replace calls to _read_http_body with using body_data directly
         # The _read_http_body function itself will be removed later.
         # Selective authentication - only protect certain endpoints
         if requires_auth(path, method):
             if not check_auth_header(req_text):
-                logging.warning(f"🚫 [http] Unauthorized access attempt from {addr} to {method} {path}")
+                logging.warning(
+                    f"🚫 [http] Unauthorized access attempt from {addr} to {method} {path}"
+                )
                 send_unauthorized(writer)
                 await writer.drain()
                 return
@@ -4311,16 +5220,16 @@ async def handle_http(reader: asyncio.StreamReader, writer: asyncio.StreamWriter
         if method == "POST" and path == "/achievement":
             try:
                 # body_data is already available from the main http request parsing
-                if not body_data: # Already checks if body_data is empty
+                if not body_data:  # Already checks if body_data is empty
                     # Send error response
                     resp = b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
                     writer.write(resp)
                     await writer.drain()
                     return
-                
+
                 # Parse JSON
-                achievement_data = json.loads(body_data.decode('utf-8'))
-                
+                achievement_data = json.loads(body_data.decode("utf-8"))
+
                 # Validate data
                 if not validate_achievement_data(achievement_data):
                     error_msg = '{"error":"Invalid data"}'
@@ -4328,12 +5237,14 @@ async def handle_http(reader: asyncio.StreamReader, writer: asyncio.StreamWriter
                     writer.write(resp)
                     await writer.drain()
                     return
-                
+
                 # Display the achievement
                 await display_achievement_notification(achievement_data)
-                
+
                 # Send success response
-                response_body = json.dumps({"status": "success", "message": "Achievement displayed"}).encode('utf-8')
+                response_body = json.dumps(
+                    {"status": "success", "message": "Achievement displayed"}
+                ).encode("utf-8")
                 headers = (
                     "HTTP/1.1 200 OK\r\n"
                     "Content-Type: application/json\r\n"
@@ -4344,7 +5255,7 @@ async def handle_http(reader: asyncio.StreamReader, writer: asyncio.StreamWriter
                 writer.write(headers.encode("ascii") + response_body)
                 await writer.drain()
                 return
-                
+
             except json.JSONDecodeError as e:
                 logging.warning(f"❌ [achievement] Invalid JSON in POST body: {e}")
                 error_msg = '{"error":"Invalid JSON"}'
@@ -4353,7 +5264,9 @@ async def handle_http(reader: asyncio.StreamReader, writer: asyncio.StreamWriter
                 await writer.drain()
                 return
             except Exception as e:
-                logging.error(f"❗ [achievement] Error processing achievement: {e}", exc_info=True)
+                logging.error(
+                    f"❗ [achievement] Error processing achievement: {e}", exc_info=True
+                )
                 resp = b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
                 writer.write(resp)
                 await writer.drain()
@@ -4364,22 +5277,35 @@ async def handle_http(reader: asyncio.StreamReader, writer: asyncio.StreamWriter
             try:
                 # body_data is already available from the main http request parsing
                 if not body_data:
-                    resp = b"HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: 29\r\nConnection: close\r\n\r\n{\"error\":\"Request body is empty\"}"
+                    resp = b'HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: 29\r\nConnection: close\r\n\r\n{"error":"Request body is empty"}'
                     writer.write(resp)
                     await writer.drain()
                     return
 
                 # Parse JSON
-                playtime_data = json.loads(body_data.decode('utf-8'))
-                
+                playtime_data = json.loads(body_data.decode("utf-8"))
+
                 # Validate required fields
-                required_fields = ["steam_id", "app_id", "game_name", "total_playtime_minutes", "total_playtime_hours", "total_playtime_readable", "timestamp", "status"]
-                missing_fields = [field for field in required_fields if field not in playtime_data]
-                
+                required_fields = [
+                    "steam_id",
+                    "app_id",
+                    "game_name",
+                    "total_playtime_minutes",
+                    "total_playtime_hours",
+                    "total_playtime_readable",
+                    "timestamp",
+                    "status",
+                ]
+                missing_fields = [
+                    field for field in required_fields if field not in playtime_data
+                ]
+
                 if missing_fields:
-                    logging.warning(f"❌ [playtime] Missing required fields: {missing_fields}")
+                    logging.warning(
+                        f"❌ [playtime] Missing required fields: {missing_fields}"
+                    )
                     error_msg = f"Missing required fields: {', '.join(missing_fields)}"
-                    response_body = json.dumps({"error": error_msg}).encode('utf-8')
+                    response_body = json.dumps({"error": error_msg}).encode("utf-8")
                     resp_headers = (
                         "HTTP/1.1 400 Bad Request\r\n"
                         "Content-Type: application/json\r\n"
@@ -4393,9 +5319,11 @@ async def handle_http(reader: asyncio.StreamReader, writer: asyncio.StreamWriter
 
                 # Display the playtime notification
                 await display_playtime_notification(playtime_data)
-                
+
                 # Send success response
-                response_body = json.dumps({"status": "success", "message": "Playtime displayed"}).encode('utf-8')
+                response_body = json.dumps(
+                    {"status": "success", "message": "Playtime displayed"}
+                ).encode("utf-8")
                 headers = (
                     "HTTP/1.1 200 OK\r\n"
                     "Content-Type: application/json\r\n"
@@ -4406,15 +5334,17 @@ async def handle_http(reader: asyncio.StreamReader, writer: asyncio.StreamWriter
                 writer.write(headers.encode("ascii") + response_body)
                 await writer.drain()
                 return
-                
+
             except json.JSONDecodeError as e:
                 logging.warning(f"❌ [playtime] Invalid JSON in POST body: {e}")
-                resp = b"HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: 26\r\nConnection: close\r\n\r\n{\"error\":\"Invalid JSON\"}"
+                resp = b'HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: 26\r\nConnection: close\r\n\r\n{"error":"Invalid JSON"}'
                 writer.write(resp)
                 await writer.drain()
                 return
             except Exception as e:
-                logging.error(f"❗ [playtime] Error processing playtime: {e}", exc_info=True)
+                logging.error(
+                    f"❗ [playtime] Error processing playtime: {e}", exc_info=True
+                )
                 resp = b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
                 writer.write(resp)
                 await writer.drain()
@@ -4425,22 +5355,26 @@ async def handle_http(reader: asyncio.StreamReader, writer: asyncio.StreamWriter
             try:
                 # body_data is already available from the main http request parsing
                 if not body_data:
-                    resp = b"HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: 29\r\nConnection: close\r\n\r\n{\"error\":\"Request body is empty\"}"
+                    resp = b'HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: 29\r\nConnection: close\r\n\r\n{"error":"Request body is empty"}'
                     writer.write(resp)
                     await writer.drain()
                     return
 
                 # Parse JSON
-                achievement_data = json.loads(body_data.decode('utf-8'))
-                
+                achievement_data = json.loads(body_data.decode("utf-8"))
+
                 # Validate required top-level fields
                 required_fields = ["game_name", "achievements"]
-                missing_fields = [field for field in required_fields if field not in achievement_data]
-                
+                missing_fields = [
+                    field for field in required_fields if field not in achievement_data
+                ]
+
                 if missing_fields:
-                    logging.warning(f"❌ [achievement_percentages] Missing required fields: {missing_fields}")
+                    logging.warning(
+                        f"❌ [achievement_percentages] Missing required fields: {missing_fields}"
+                    )
                     error_msg = f"Missing required fields: {', '.join(missing_fields)}"
-                    response_body = json.dumps({"error": error_msg}).encode('utf-8')
+                    response_body = json.dumps({"error": error_msg}).encode("utf-8")
                     resp_headers = (
                         "HTTP/1.1 400 Bad Request\r\n"
                         "Content-Type: application/json\r\n"
@@ -4451,17 +5385,29 @@ async def handle_http(reader: asyncio.StreamReader, writer: asyncio.StreamWriter
                     writer.write(resp_headers.encode("ascii") + response_body)
                     await writer.drain()
                     return
-                
+
                 # Validate each achievement in the array
-                achievements_list = achievement_data['achievements']
+                achievements_list = achievement_data["achievements"]
                 for i, achievement in enumerate(achievements_list):
-                    required_achievement_fields = ["name", "percent", "display_name", "description", "icon"]
-                    missing_achievement_fields = [field for field in required_achievement_fields if field not in achievement]
-                    
+                    required_achievement_fields = [
+                        "name",
+                        "percent",
+                        "display_name",
+                        "description",
+                        "icon",
+                    ]
+                    missing_achievement_fields = [
+                        field
+                        for field in required_achievement_fields
+                        if field not in achievement
+                    ]
+
                     if missing_achievement_fields:
-                        logging.warning(f"❌ [achievement_percentages] Achievement {i}: Missing required fields: {missing_achievement_fields}")
+                        logging.warning(
+                            f"❌ [achievement_percentages] Achievement {i}: Missing required fields: {missing_achievement_fields}"
+                        )
                         error_msg = f"Achievement {i}: Missing required fields: {', '.join(missing_achievement_fields)}"
-                        response_body = json.dumps({"error": error_msg}).encode('utf-8')
+                        response_body = json.dumps({"error": error_msg}).encode("utf-8")
                         resp_headers = (
                             "HTTP/1.1 400 Bad Request\r\n"
                             "Content-Type: application/json\r\n"
@@ -4475,9 +5421,14 @@ async def handle_http(reader: asyncio.StreamReader, writer: asyncio.StreamWriter
 
                 # Display the achievement percentages notification
                 await display_achievement_percentages(achievement_data)
-                
+
                 # Send success response
-                response_body = json.dumps({"status": "success", "message": "Achievement percentages displayed"}).encode('utf-8')
+                response_body = json.dumps(
+                    {
+                        "status": "success",
+                        "message": "Achievement percentages displayed",
+                    }
+                ).encode("utf-8")
                 headers = (
                     "HTTP/1.1 200 OK\r\n"
                     "Content-Type: application/json\r\n"
@@ -4488,15 +5439,20 @@ async def handle_http(reader: asyncio.StreamReader, writer: asyncio.StreamWriter
                 writer.write(headers.encode("ascii") + response_body)
                 await writer.drain()
                 return
-                
+
             except json.JSONDecodeError as e:
-                logging.warning(f"❌ [achievement_percentages] Invalid JSON in POST body: {e}")
-                resp = b"HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: 26\r\nConnection: close\r\n\r\n{\"error\":\"Invalid JSON\"}"
+                logging.warning(
+                    f"❌ [achievement_percentages] Invalid JSON in POST body: {e}"
+                )
+                resp = b'HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: 26\r\nConnection: close\r\n\r\n{"error":"Invalid JSON"}'
                 writer.write(resp)
                 await writer.drain()
                 return
             except Exception as e:
-                logging.error(f"❗ [achievement_percentages] Error processing achievement percentages: {e}", exc_info=True)
+                logging.error(
+                    f"❗ [achievement_percentages] Error processing achievement percentages: {e}",
+                    exc_info=True,
+                )
                 resp = b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
                 writer.write(resp)
                 await writer.drain()
@@ -4507,21 +5463,21 @@ async def handle_http(reader: asyncio.StreamReader, writer: asyncio.StreamWriter
             try:
                 # body_data is already available from the main http request parsing
                 if not body_data:
-                    resp = b"HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: 29\r\nConnection: close\r\n\r\n{\"error\":\"Request body is empty\"}"
+                    resp = b'HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: 29\r\nConnection: close\r\n\r\n{"error":"Request body is empty"}'
                     writer.write(resp)
                     await writer.drain()
                     return
 
                 # Parse JSON
-                news_data = json.loads(body_data.decode('utf-8'))
-                
+                news_data = json.loads(body_data.decode("utf-8"))
+
                 logging.info("📰 [news] News endpoint called")
-                
+
                 # Validate auth token
                 if not check_auth_header(req_text):
                     logging.warning("❌ [news] Unauthorized request")
                     error_msg = "Unauthorized"
-                    response_body = json.dumps({"error": error_msg}).encode('utf-8')
+                    response_body = json.dumps({"error": error_msg}).encode("utf-8")
                     resp_headers = (
                         "HTTP/1.1 401 Unauthorized\r\n"
                         "Content-Type: application/json\r\n"
@@ -4532,18 +5488,33 @@ async def handle_http(reader: asyncio.StreamReader, writer: asyncio.StreamWriter
                     writer.write(resp_headers.encode("ascii") + response_body)
                     await writer.drain()
                     return
-                
+
                 # Log the received data
-                logging.info(f"📰 [news] Received news data: {json.dumps(news_data, indent=2)}")
-                
+                logging.info(
+                    f"📰 [news] Received news data: {json.dumps(news_data, indent=2)}"
+                )
+
                 # Validate required fields
-                required_fields = ["steam_id", "app_id", "game_name", "news_items", "timestamp", "timestamp_iso", "new_items_count", "total_items_fetched"]
-                missing_fields = [field for field in required_fields if field not in news_data]
-                
+                required_fields = [
+                    "steam_id",
+                    "app_id",
+                    "game_name",
+                    "news_items",
+                    "timestamp",
+                    "timestamp_iso",
+                    "new_items_count",
+                    "total_items_fetched",
+                ]
+                missing_fields = [
+                    field for field in required_fields if field not in news_data
+                ]
+
                 if missing_fields:
-                    logging.warning(f"❌ [news] Missing required fields: {missing_fields}")
+                    logging.warning(
+                        f"❌ [news] Missing required fields: {missing_fields}"
+                    )
                     error_msg = f"Missing required fields: {', '.join(missing_fields)}"
-                    response_body = json.dumps({"error": error_msg}).encode('utf-8')
+                    response_body = json.dumps({"error": error_msg}).encode("utf-8")
                     resp_headers = (
                         "HTTP/1.1 400 Bad Request\r\n"
                         "Content-Type: application/json\r\n"
@@ -4554,17 +5525,34 @@ async def handle_http(reader: asyncio.StreamReader, writer: asyncio.StreamWriter
                     writer.write(resp_headers.encode("ascii") + response_body)
                     await writer.drain()
                     return
-                
+
                 # Validate each news item in the array
-                news_list = news_data['news_items']
+                news_list = news_data["news_items"]
                 for i, news_item in enumerate(news_list):
-                    required_news_fields = ["gid", "title", "url", "author", "contents", "feedlabel", "date", "feedname", "feed_type", "appid"]
-                    missing_news_fields = [field for field in required_news_fields if field not in news_item]
-                    
+                    required_news_fields = [
+                        "gid",
+                        "title",
+                        "url",
+                        "author",
+                        "contents",
+                        "feedlabel",
+                        "date",
+                        "feedname",
+                        "feed_type",
+                        "appid",
+                    ]
+                    missing_news_fields = [
+                        field
+                        for field in required_news_fields
+                        if field not in news_item
+                    ]
+
                     if missing_news_fields:
-                        logging.warning(f"❌ [news] News item {i}: Missing required fields: {missing_news_fields}")
+                        logging.warning(
+                            f"❌ [news] News item {i}: Missing required fields: {missing_news_fields}"
+                        )
                         error_msg = f"News item {i}: Missing required fields: {', '.join(missing_news_fields)}"
-                        response_body = json.dumps({"error": error_msg}).encode('utf-8')
+                        response_body = json.dumps({"error": error_msg}).encode("utf-8")
                         resp_headers = (
                             "HTTP/1.1 400 Bad Request\r\n"
                             "Content-Type: application/json\r\n"
@@ -4578,9 +5566,11 @@ async def handle_http(reader: asyncio.StreamReader, writer: asyncio.StreamWriter
 
                 # Display the news notification
                 await display_news(news_data)
-                
+
                 # Send success response
-                response_body = json.dumps({"status": "success", "message": "News displayed"}).encode('utf-8')
+                response_body = json.dumps(
+                    {"status": "success", "message": "News displayed"}
+                ).encode("utf-8")
                 headers = (
                     "HTTP/1.1 200 OK\r\n"
                     "Content-Type: application/json\r\n"
@@ -4591,10 +5581,10 @@ async def handle_http(reader: asyncio.StreamReader, writer: asyncio.StreamWriter
                 writer.write(headers.encode("ascii") + response_body)
                 await writer.drain()
                 return
-                
+
             except json.JSONDecodeError as e:
                 logging.warning(f"❌ [news] Invalid JSON in POST body: {e}")
-                resp = b"HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: 26\r\nConnection: close\r\n\r\n{\"error\":\"Invalid JSON\"}"
+                resp = b'HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: 26\r\nConnection: close\r\n\r\n{"error":"Invalid JSON"}'
                 writer.write(resp)
                 await writer.drain()
                 return
@@ -4611,20 +5601,25 @@ async def handle_http(reader: asyncio.StreamReader, writer: asyncio.StreamWriter
             logging.info("[hotkeys] POST /hotkeys endpoint hit")
             try:
                 # body_data is already available from the main http request parsing
-                if body_data: # Already checks if body_data is not empty
-                    body_str = body_data.decode('utf-8')
-                    
+                if body_data:  # Already checks if body_data is not empty
+                    body_str = body_data.decode("utf-8")
+
                     try:
                         hotkey_data = json.loads(body_str)
-                        
+
                         # Update global hotkey mappings
-                        current_hotkey_mappings = hotkey_data.get('mappings', {})
+                        current_hotkey_mappings = hotkey_data.get("mappings", {})
                         last_hotkey_update = time.time()
-                        
-                        logging.info(f"[hotkeys] Updated hotkey mappings: {len(current_hotkey_mappings)} actions")
-                        
-                        response_data = {"status": "success", "message": "Hotkey mappings updated"}
-                        body_bytes = json.dumps(response_data).encode('utf-8')
+
+                        logging.info(
+                            f"[hotkeys] Updated hotkey mappings: {len(current_hotkey_mappings)} actions"
+                        )
+
+                        response_data = {
+                            "status": "success",
+                            "message": "Hotkey mappings updated",
+                        }
+                        body_bytes = json.dumps(response_data).encode("utf-8")
                         resp = (
                             "HTTP/1.1 200 OK\r\n"
                             "Content-Type: application/json\r\n"
@@ -4634,12 +5629,12 @@ async def handle_http(reader: asyncio.StreamReader, writer: asyncio.StreamWriter
                             "Access-Control-Allow-Headers: Content-Type, Authorization\r\n"
                             "Connection: close\r\n"
                             "\r\n"
-                        ).encode('ascii') + body_bytes
-                        
+                        ).encode("ascii") + body_bytes
+
                         writer.write(resp)
                         await writer.drain()
                         return
-                        
+
                     except json.JSONDecodeError:
                         resp = b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
                         writer.write(resp)
@@ -4650,9 +5645,11 @@ async def handle_http(reader: asyncio.StreamReader, writer: asyncio.StreamWriter
                     writer.write(resp)
                     await writer.drain()
                     return
-                    
+
             except Exception as e:
-                logging.error(f"❗ [http] Error in hotkeys endpoint: {e}", exc_info=True)
+                logging.error(
+                    f"❗ [http] Error in hotkeys endpoint: {e}", exc_info=True
+                )
                 resp = b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
                 writer.write(resp)
                 await writer.drain()
@@ -4664,10 +5661,10 @@ async def handle_http(reader: asyncio.StreamReader, writer: asyncio.StreamWriter
                 response_data = {
                     "mappings": current_hotkey_mappings,
                     "last_updated": last_hotkey_update,
-                    "status": "success"
+                    "status": "success",
                 }
-                
-                body_bytes = json.dumps(response_data).encode('utf-8')
+
+                body_bytes = json.dumps(response_data).encode("utf-8")
                 resp = (
                     "HTTP/1.1 200 OK\r\n"
                     "Content-Type: application/json\r\n"
@@ -4677,14 +5674,16 @@ async def handle_http(reader: asyncio.StreamReader, writer: asyncio.StreamWriter
                     "Access-Control-Allow-Headers: Content-Type, Authorization\r\n"
                     "Connection: close\r\n"
                     "\r\n"
-                ).encode('ascii') + body_bytes
-                
+                ).encode("ascii") + body_bytes
+
                 writer.write(resp)
                 await writer.drain()
                 return
-                
+
             except Exception as e:
-                logging.error(f"❗ [http] Error in GET hotkeys endpoint: {e}", exc_info=True)
+                logging.error(
+                    f"❗ [http] Error in GET hotkeys endpoint: {e}", exc_info=True
+                )
                 resp = b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
                 writer.write(resp)
                 await writer.drain()
@@ -4701,7 +5700,7 @@ async def handle_http(reader: asyncio.StreamReader, writer: asyncio.StreamWriter
                     "Content-Length: 0\r\n"
                     "Connection: close\r\n"
                     "\r\n"
-                ).encode('ascii')
+                ).encode("ascii")
                 writer.write(resp)
                 await writer.drain()
                 return
@@ -4711,26 +5710,35 @@ async def handle_http(reader: asyncio.StreamReader, writer: asyncio.StreamWriter
             try:
                 # body_data is already available from the main http request parsing
                 if body_data:
-                    body_str = body_data.decode('utf-8')
+                    body_str = body_data.decode("utf-8")
                     try:
                         data = json.loads(body_str)
-                        provided_token = data.get('token', '').strip()
-                        
+                        provided_token = data.get("token", "").strip()
+
                         # Debug logging
-                        logging.info(f"[auth] Provided token: '{provided_token}' (len={len(provided_token)})")
-                        logging.info(f"[auth] Server SS_TOKEN: '{SS_TOKEN}' (len={len(SS_TOKEN) if SS_TOKEN else 0})")
-                        logging.info(f"[auth] Tokens match: {provided_token == SS_TOKEN}")
-                        
+                        logging.info(
+                            f"[auth] Provided token: '{provided_token}' (len={len(provided_token)})"
+                        )
+                        logging.info(
+                            f"[auth] Server SS_TOKEN: '{SS_TOKEN}' (len={len(SS_TOKEN) if SS_TOKEN else 0})"
+                        )
+                        logging.info(
+                            f"[auth] Tokens match: {provided_token == SS_TOKEN}"
+                        )
+
                         # Validate token
                         if not SS_TOKEN:
                             # If no token is configured, allow access
-                            response_data = {"valid": True, "message": "No authentication required"}
+                            response_data = {
+                                "valid": True,
+                                "message": "No authentication required",
+                            }
                         elif provided_token == SS_TOKEN:
                             response_data = {"valid": True, "message": "Token valid"}
                         else:
                             response_data = {"valid": False, "message": "Invalid token"}
-                        
-                        body_bytes = json.dumps(response_data).encode('utf-8')
+
+                        body_bytes = json.dumps(response_data).encode("utf-8")
                         resp = (
                             "HTTP/1.1 200 OK\r\n"
                             "Content-Type: application/json\r\n"
@@ -4740,14 +5748,14 @@ async def handle_http(reader: asyncio.StreamReader, writer: asyncio.StreamWriter
                             "Access-Control-Allow-Headers: Content-Type\r\n"
                             "Connection: close\r\n"
                             "\r\n"
-                        ).encode('ascii') + body_bytes
-                        
+                        ).encode("ascii") + body_bytes
+
                         writer.write(resp)
                         await writer.drain()
                         return
-                        
+
                     except json.JSONDecodeError:
-                        resp = b"HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: 26\r\nConnection: close\r\n\r\n{\"error\":\"Invalid JSON\"}"
+                        resp = b'HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: 26\r\nConnection: close\r\n\r\n{"error":"Invalid JSON"}'
                         writer.write(resp)
                         await writer.drain()
                         return
@@ -4756,7 +5764,7 @@ async def handle_http(reader: asyncio.StreamReader, writer: asyncio.StreamWriter
                     writer.write(resp)
                     await writer.drain()
                     return
-                    
+
             except Exception as e:
                 logging.error(f"❗ [http] Error in auth endpoint: {e}", exc_info=True)
                 resp = b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
@@ -4768,26 +5776,32 @@ async def handle_http(reader: asyncio.StreamReader, writer: asyncio.StreamWriter
         if method == "POST" and path == "/action":
             try:
                 # body_data is already available from the main http request parsing
-                body_str = body_data.decode('utf-8', errors='ignore') # Decode body once
+                body_str = body_data.decode(
+                    "utf-8", errors="ignore"
+                )  # Decode body once
 
-                if not body_str.strip(): # Check if the decoded string is empty or just whitespace
-                    resp = b"HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: 38\r\nConnection: close\r\n\r\n{\"error\":\"Request body is empty or malformed\"}"
+                if (
+                    not body_str.strip()
+                ):  # Check if the decoded string is empty or just whitespace
+                    resp = b'HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: 38\r\nConnection: close\r\n\r\n{"error":"Request body is empty or malformed"}'
                     writer.write(resp)
                     await writer.drain()
                     return
 
                 # Parse JSON
-                logging.debug(f"🔍 [action] Raw body_str for JSON parsing: '{body_str}'")
+                logging.debug(
+                    f"🔍 [action] Raw body_str for JSON parsing: '{body_str}'"
+                )
                 action_data = json.loads(body_str)
-                
+
                 # Extract required fields
                 game = action_data.get("game", action_data.get("project"))
                 action = action_data.get("action")
-                
+
                 if not action:
                     logging.warning(f"❌ [action] Missing required field: action")
                     error_msg = "Missing required field: action"
-                    response_body = json.dumps({"error": error_msg}).encode('utf-8')
+                    response_body = json.dumps({"error": error_msg}).encode("utf-8")
                     resp_headers = (
                         "HTTP/1.1 400 Bad Request\r\n"
                         "Content-Type: application/json\r\n"
@@ -4803,7 +5817,7 @@ async def handle_http(reader: asyncio.StreamReader, writer: asyncio.StreamWriter
                 if action.lower() not in {a.lower() for a in ALL_ACTION_KEYS}:
                     logging.warning(f"❌ [action] Unknown action: {action}")
                     error_msg = f"Unknown action: {action}. Valid actions: {', '.join(sorted(ALL_ACTION_KEYS))}"
-                    response_body = json.dumps({"error": error_msg}).encode('utf-8')
+                    response_body = json.dumps({"error": error_msg}).encode("utf-8")
                     resp_headers = (
                         "HTTP/1.1 400 Bad Request\r\n"
                         "Content-Type: application/json\r\n"
@@ -4817,7 +5831,7 @@ async def handle_http(reader: asyncio.StreamReader, writer: asyncio.StreamWriter
 
                 # Process the action
                 await handle_action(action, game)
-                
+
                 # Get updated action count for live UI updates
                 try:
                     count_key = (game, action.lower())
@@ -4825,17 +5839,19 @@ async def handle_http(reader: asyncio.StreamReader, writer: asyncio.StreamWriter
                 except Exception as e:
                     logging.warning(f"Error getting action count: {e}")
                     current_count = 0
-                
+
                 # Send success response
-                response_body = json.dumps({
-                    "success": True,
-                    "status": "success", 
-                    "message": f"Action '{action}' processed successfully",
-                    "game": game,
-                    "action": action,
-                    "new_count": current_count
-                }).encode('utf-8')
-                
+                response_body = json.dumps(
+                    {
+                        "success": True,
+                        "status": "success",
+                        "message": f"Action '{action}' processed successfully",
+                        "game": game,
+                        "action": action,
+                        "new_count": current_count,
+                    }
+                ).encode("utf-8")
+
                 headers = (
                     "HTTP/1.1 200 OK\r\n"
                     "Content-Type: application/json\r\n"
@@ -4846,15 +5862,17 @@ async def handle_http(reader: asyncio.StreamReader, writer: asyncio.StreamWriter
                 writer.write(headers.encode("ascii") + response_body)
                 await writer.drain()
                 return
-                
+
             except json.JSONDecodeError as e:
                 logging.warning(f"❌ [action] Invalid JSON in POST body: {e}")
-                resp = b"HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: 26\r\nConnection: close\r\n\r\n{\"error\":\"Invalid JSON\"}"
+                resp = b'HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: 26\r\nConnection: close\r\n\r\n{"error":"Invalid JSON"}'
                 writer.write(resp)
                 await writer.drain()
                 return
             except Exception as e:
-                logging.error(f"❗ [action] Error processing action: {e}", exc_info=True)
+                logging.error(
+                    f"❗ [action] Error processing action: {e}", exc_info=True
+                )
                 resp = b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
                 writer.write(resp)
                 await writer.drain()
@@ -4867,12 +5885,17 @@ async def handle_http(reader: asyncio.StreamReader, writer: asyncio.StreamWriter
                 sound = last_sound or ""
                 meme = last_meme_url or ""
                 video = last_video_url or ""
-                video_duration = last_video_duration if last_video_duration is not None else 0.0
-                audio_duration = last_audio_duration if last_audio_duration is not None else 0.0
+                video_duration = (
+                    last_video_duration if last_video_duration is not None else 0.0
+                )
+                audio_duration = (
+                    last_audio_duration if last_audio_duration is not None else 0.0
+                )
                 project = last_project or ""
-                
+                synonyms = last_synonyms or []
+
                 # DEBUG: Log audio duration value when API is called
-                #logging.info(f"🔍 [overlay] API call - last_audio_duration={last_audio_duration}, final_audio_duration={audio_duration}")
+                # logging.info(f"🔍 [overlay] API call - last_audio_duration={last_audio_duration}, final_audio_duration={audio_duration}")
 
                 # ---- Build run summaries for the panel ----
                 runs_for_overlay: List[Dict[str, Any]] = []
@@ -4952,7 +5975,9 @@ async def handle_http(reader: asyncio.StreamReader, writer: asyncio.StreamWriter
                     if now < achievement_display_until:
                         achievement_notification = current_achievement.copy()
                         # Add remaining display time for frontend timing
-                        achievement_notification["remaining_time"] = max(0.0, achievement_display_until - now)
+                        achievement_notification["remaining_time"] = max(
+                            0.0, achievement_display_until - now
+                        )
 
                 # ---- Build playtime notification data ----
                 playtime_notification = None
@@ -4960,27 +5985,40 @@ async def handle_http(reader: asyncio.StreamReader, writer: asyncio.StreamWriter
                     if now < playtime_display_until:
                         playtime_notification = current_playtime.copy()
                         # Add remaining display time for frontend timing
-                        playtime_notification["remaining_time"] = max(0.0, playtime_display_until - now)
+                        playtime_notification["remaining_time"] = max(
+                            0.0, playtime_display_until - now
+                        )
                         # Add sound for frontend
                         playtime_notification["sound"] = "/sounds/ticking-clock.mp3"
 
                 # ---- Build achievement percentages notification data ----
                 achievement_percentages_notification = None
-                if current_achievement_percentages and achievement_percentages_display_until:
+                if (
+                    current_achievement_percentages
+                    and achievement_percentages_display_until
+                ):
                     if now < achievement_percentages_display_until:
-                        achievement_percentages_notification = current_achievement_percentages.copy()
+                        achievement_percentages_notification = (
+                            current_achievement_percentages.copy()
+                        )
                         # Add remaining display time for frontend timing
-                        remaining_time = max(0.0, achievement_percentages_display_until - now)
-                        
+                        remaining_time = max(
+                            0.0, achievement_percentages_display_until - now
+                        )
+
                         if isinstance(achievement_percentages_notification, list):
                             # For list of achievements, add remaining_time to each item
                             for achievement in achievement_percentages_notification:
                                 achievement["remaining_time"] = remaining_time
                         else:
                             # For single achievement, add directly
-                            achievement_percentages_notification["remaining_time"] = remaining_time
+                            achievement_percentages_notification["remaining_time"] = (
+                                remaining_time
+                            )
                         # Add sound for frontend
-                        achievement_percentages_notification["sound"] = "/sounds/achievements-progress.mp3"
+                        achievement_percentages_notification["sound"] = (
+                            "/sounds/achievements-progress.mp3"
+                        )
 
                 # ---- Build news notification data ----
                 news_notification = None
@@ -4988,7 +6026,9 @@ async def handle_http(reader: asyncio.StreamReader, writer: asyncio.StreamWriter
                     if now < news_display_until:
                         news_notification = current_news.copy()
                         # Add remaining display time for frontend timing
-                        news_notification["remaining_time"] = max(0.0, news_display_until - now) * 1000  # Convert to milliseconds
+                        news_notification["remaining_time"] = (
+                            max(0.0, news_display_until - now) * 1000
+                        )  # Convert to milliseconds
                         # Add sound for frontend
                         news_notification["sound"] = "/sounds/news.mp3"
 
@@ -5001,6 +6041,7 @@ async def handle_http(reader: asyncio.StreamReader, writer: asyncio.StreamWriter
                 "video_duration": video_duration,
                 "audio_duration": audio_duration,
                 "project": project,
+                "synonyms": synonyms,
                 "runs": runs_for_overlay,
                 "achievement": achievement_notification,
                 "playtime": playtime_notification,
@@ -5023,7 +6064,9 @@ async def handle_http(reader: asyncio.StreamReader, writer: asyncio.StreamWriter
             try:
                 body_str = CONFIG_PATH.read_text(encoding="utf-8")
             except Exception as e:
-                logging.error(f"❗ [http] Failed to read CONFIG YAML: {e}", exc_info=True)
+                logging.error(
+                    f"❗ [http] Failed to read CONFIG YAML: {e}", exc_info=True
+                )
                 body_str = "error: cannot read config"
 
             body_bytes = body_str.encode("utf-8")
@@ -5041,7 +6084,7 @@ async def handle_http(reader: asyncio.StreamReader, writer: asyncio.StreamWriter
             # Serve UI - the template handles its own authentication
             try:
                 template_path = "/app/ui_driver_template.html"
-                with open(template_path, 'r', encoding='utf-8') as f:
+                with open(template_path, "r", encoding="utf-8") as f:
                     body_str = f.read()
                 logging.info(f"[ui] Loaded UI template from {template_path}")
             except Exception as e:
@@ -5062,20 +6105,21 @@ async def handle_http(reader: asyncio.StreamReader, writer: asyncio.StreamWriter
             writer.write(headers.encode("ascii") + body_bytes)
             await writer.drain()
 
-
         elif path == "/ui_state":
             # Return current game state for UI initialization
             try:
                 available_games = list(GAMES_CONFIG.keys())
-                current_game = last_project or available_games[0] if available_games else "unknown"
-                
+                current_game = (
+                    last_project or available_games[0] if available_games else "unknown"
+                )
+
                 # Get action counts for current game
                 game_action_counts = {}
                 if current_game:
                     for (proj, action_key), count in action_counts.items():
                         if proj == current_game:
                             game_action_counts[action_key] = count
-                
+
                 # Get current run stats for current game
                 current_run_stats = None
                 current_run_num = current_run_by_project.get(current_game)
@@ -5086,17 +6130,17 @@ async def handle_http(reader: asyncio.StreamReader, writer: asyncio.StreamWriter
                         "run_number": current_run_num,
                         "kills": stats.get("kills", 0),
                         "deaths": stats.get("deaths", 0),
-                        "headshots": stats.get("headshots", 0)
+                        "headshots": stats.get("headshots", 0),
                     }
-                
+
                 response_data = {
                     "current_game": current_game,
                     "available_games": available_games,
                     "games_config": GAMES_CONFIG,
                     "action_counts": game_action_counts,
-                    "run_stats": current_run_stats
+                    "run_stats": current_run_stats,
                 }
-                
+
                 body_bytes = json.dumps(response_data).encode("utf-8")
                 headers = (
                     "HTTP/1.1 200 OK\r\n"
@@ -5127,9 +6171,12 @@ async def handle_http(reader: asyncio.StreamReader, writer: asyncio.StreamWriter
             try:
                 # Check authentication using existing auth function
                 is_authenticated = check_auth_header(req_text)
-                
+
                 if not is_authenticated:
-                    response_data = {"success": False, "error": "Authentication required"}
+                    response_data = {
+                        "success": False,
+                        "error": "Authentication required",
+                    }
                     body_bytes = json.dumps(response_data).encode("utf-8")
                     headers_str = (
                         "HTTP/1.1 401 Unauthorized\r\n"
@@ -5141,30 +6188,30 @@ async def handle_http(reader: asyncio.StreamReader, writer: asyncio.StreamWriter
                     writer.write(headers_str.encode("ascii") + body_bytes)
                     await writer.drain()
                     return
-                
+
                 body = await reader.read(4096)
-                data = json.loads(body.decode('utf-8'))
-                selected_game = data.get('game', '')
-                
+                data = json.loads(body.decode("utf-8"))
+                selected_game = data.get("game", "")
+
                 if selected_game in GAMES_CONFIG:
                     # Update the current project
                     async with state_lock:
                         last_project = selected_game
-                    
+
                     logging.info(f"🎮 [ui] Manual game selection: {selected_game}")
-                    
+
                     response_data = {
                         "success": True,
                         "game": selected_game,
-                        "message": f"Game changed to {selected_game}"
+                        "message": f"Game changed to {selected_game}",
                     }
                 else:
                     response_data = {
                         "success": False,
                         "error": f"Unknown game: {selected_game}",
-                        "available_games": list(GAMES_CONFIG.keys())
+                        "available_games": list(GAMES_CONFIG.keys()),
                     }
-                
+
                 body_bytes = json.dumps(response_data).encode("utf-8")
                 headers = (
                     "HTTP/1.1 200 OK\r\n"
@@ -5175,7 +6222,7 @@ async def handle_http(reader: asyncio.StreamReader, writer: asyncio.StreamWriter
                 )
                 writer.write(headers.encode("ascii") + body_bytes)
                 await writer.drain()
-                
+
             except Exception as e:
                 logging.error(f"❗ [http] Error in set_game: {e}", exc_info=True)
                 error_response = {"success": False, "error": str(e)}
@@ -5195,18 +6242,20 @@ async def handle_http(reader: asyncio.StreamReader, writer: asyncio.StreamWriter
             try:
                 logging.info("🔄 [debug] Manual Discord cache refresh triggered")
                 await refresh_discord_messages_cache()
-                
+
                 total_messages = len(discord_messages_cache)
-                game_counts = {game: len(msgs) for game, msgs in discord_game_caches.items()}
-                
+                game_counts = {
+                    game: len(msgs) for game, msgs in discord_game_caches.items()
+                }
+
                 debug_info = {
                     "success": True,
                     "total_messages": total_messages,
                     "game_caches": game_counts,
                     "hunt_showdown_messages": game_counts.get("hunt_showdown", 0),
-                    "message": "Discord cache refreshed successfully"
+                    "message": "Discord cache refreshed successfully",
                 }
-                
+
                 body_bytes = json.dumps(debug_info, indent=2).encode("utf-8")
                 headers = (
                     "HTTP/1.1 200 OK\r\n"
@@ -5218,9 +6267,11 @@ async def handle_http(reader: asyncio.StreamReader, writer: asyncio.StreamWriter
                 writer.write(headers.encode("ascii") + body_bytes)
                 await writer.drain()
                 return
-                
+
             except Exception as e:
-                logging.error(f"❗ [debug] Error refreshing Discord cache: {e}", exc_info=True)
+                logging.error(
+                    f"❗ [debug] Error refreshing Discord cache: {e}", exc_info=True
+                )
                 error_body = json.dumps({"error": str(e)}).encode("utf-8")
                 headers = (
                     "HTTP/1.1 500 Internal Server Error\r\n"
@@ -5237,18 +6288,23 @@ async def handle_http(reader: asyncio.StreamReader, writer: asyncio.StreamWriter
             # DEBUG ENDPOINT: Test video lookup for specific game/action
             try:
                 from urllib.parse import urlparse, parse_qs
+
                 parsed_url = urlparse(raw_path)
                 query_params = parse_qs(parsed_url.query)
-                
-                action = query_params.get('action', ['kill'])[0]
-                project = query_params.get('project', ['hunt_showdown'])[0]
-                
-                logging.info(f"🔍 [debug] Testing video lookup for action={action} project={project}")
-                
+
+                action = query_params.get("action", ["kill"])[0]
+                project = query_params.get("project", ["hunt_showdown"])[0]
+
+                logging.info(
+                    f"🔍 [debug] Testing video lookup for action={action} project={project}"
+                )
+
                 # Use our fixed video lookup
-                video_result = await get_cached_discord_video_with_weight(action, project)
+                video_result = await get_cached_discord_video_with_weight(
+                    action, project
+                )
                 video_url, weight, duration, original_url = video_result
-                
+
                 debug_info = {
                     "action": action,
                     "project": project,
@@ -5259,20 +6315,22 @@ async def handle_http(reader: asyncio.StreamReader, writer: asyncio.StreamWriter
                     "original_url": original_url,
                     "cache_directories_checked": [
                         str(DISCORD_VIDEO_CACHE_DIR),
-                        *[str(d) for d in ALTERNATIVE_VIDEO_CACHE_DIRS]
-                    ]
+                        *[str(d) for d in ALTERNATIVE_VIDEO_CACHE_DIRS],
+                    ],
                 }
-                
+
                 # Also check how many total videos are in cache
                 total_cached = 0
-                for cache_dir in [DISCORD_VIDEO_CACHE_DIR] + ALTERNATIVE_VIDEO_CACHE_DIRS:
+                for cache_dir in [
+                    DISCORD_VIDEO_CACHE_DIR
+                ] + ALTERNATIVE_VIDEO_CACHE_DIRS:
                     if cache_dir.exists():
                         mp4_count = len(list(cache_dir.glob("*.mp4")))
                         debug_info[f"videos_in_{cache_dir.name}"] = mp4_count
                         total_cached += mp4_count
-                
+
                 debug_info["total_cached_videos"] = total_cached
-                
+
                 body_bytes = json.dumps(debug_info, indent=2).encode("utf-8")
                 headers = (
                     "HTTP/1.1 200 OK\r\n"
@@ -5284,9 +6342,11 @@ async def handle_http(reader: asyncio.StreamReader, writer: asyncio.StreamWriter
                 writer.write(headers.encode("ascii") + body_bytes)
                 await writer.drain()
                 return
-                
+
             except Exception as e:
-                logging.error(f"❗ [debug] Error in video lookup test: {e}", exc_info=True)
+                logging.error(
+                    f"❗ [debug] Error in video lookup test: {e}", exc_info=True
+                )
                 error_body = json.dumps({"error": str(e)}).encode("utf-8")
                 headers = (
                     "HTTP/1.1 500 Internal Server Error\r\n"
@@ -5304,29 +6364,41 @@ async def handle_http(reader: asyncio.StreamReader, writer: asyncio.StreamWriter
             try:
                 import os
                 from pathlib import Path
+
                 video_dir = Path("/discord/discord_videos")
                 video_files = list(video_dir.glob("*.mp4"))
-                
+
                 if video_files:
                     # Select first video file
                     video_file = video_files[0]
                     video_filename = video_file.name
-                    
+
                     # Get duration
                     duration = None
                     try:
-                        result = subprocess.run([
-                            'ffprobe', '-v', 'quiet', '-show_entries', 'format=duration',
-                            '-of', 'default=noprint_wrappers=1:nokey=1', str(video_file)
-                        ], capture_output=True, text=True, timeout=10)
-                        
+                        result = subprocess.run(
+                            [
+                                "ffprobe",
+                                "-v",
+                                "quiet",
+                                "-show_entries",
+                                "format=duration",
+                                "-of",
+                                "default=noprint_wrappers=1:nokey=1",
+                                str(video_file),
+                            ],
+                            capture_output=True,
+                            text=True,
+                            timeout=10,
+                        )
+
                         if result.returncode == 0:
                             duration_str = result.stdout.strip()
                             if duration_str:
                                 duration = float(duration_str)
                     except Exception:
                         duration = 10.0  # fallback
-                    
+
                     # Create debug response
                     debug_response = {
                         "text": "🎬 DEBUG VIDEO",
@@ -5337,16 +6409,18 @@ async def handle_http(reader: asyncio.StreamReader, writer: asyncio.StreamWriter
                         "video_duration": duration or 10.0,
                         "audio_duration": 0.0,
                         "project": "debug",
-                        "runs": []
+                        "runs": [],
                     }
-                    
+
                     body_bytes = json.dumps(debug_response).encode("utf-8")
                 else:
-                    body_bytes = json.dumps({"error": "No cached videos found"}).encode("utf-8")
-                    
+                    body_bytes = json.dumps({"error": "No cached videos found"}).encode(
+                        "utf-8"
+                    )
+
             except Exception as e:
                 body_bytes = json.dumps({"error": str(e)}).encode("utf-8")
-            
+
             headers = (
                 "HTTP/1.1 200 OK\r\n"
                 "Content-Type: application/json; charset=utf-8\r\n"
@@ -5359,14 +6433,16 @@ async def handle_http(reader: asyncio.StreamReader, writer: asyncio.StreamWriter
 
         elif path.startswith("/dsounds/"):
             # Static served cached Discord audio
-            rel = path[len("/dsounds/"):].lstrip("/")
+            rel = path[len("/dsounds/") :].lstrip("/")
             fs_path = (DISCORD_SOUND_CACHE_DIR / rel).resolve()
 
             # Security: ensure it's inside DISCORD_SOUND_CACHE_DIR
             try:
                 fs_path.relative_to(DISCORD_SOUND_CACHE_DIR.resolve())
             except ValueError:
-                logging.warning(f"🚫 [http] Attempted path escape for dsounds: {fs_path}")
+                logging.warning(
+                    f"🚫 [http] Attempted path escape for dsounds: {fs_path}"
+                )
                 resp = b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
                 writer.write(resp)
                 await writer.drain()
@@ -5384,7 +6460,10 @@ async def handle_http(reader: asyncio.StreamReader, writer: asyncio.StreamWriter
                 mime, _ = mimetypes.guess_type(fs_path.name)
                 mime = mime or "audio/ogg"
             except Exception as e:
-                logging.error(f"❗ [http] Failed to read cached sound file {fs_path}: {e}", exc_info=True)
+                logging.error(
+                    f"❗ [http] Failed to read cached sound file {fs_path}: {e}",
+                    exc_info=True,
+                )
                 resp = b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
                 writer.write(resp)
                 await writer.drain()
@@ -5402,8 +6481,8 @@ async def handle_http(reader: asyncio.StreamReader, writer: asyncio.StreamWriter
 
         elif path.startswith("/dvideos/"):
             # Static served cached Discord videos
-            rel = path[len("/dvideos/"):].lstrip("/")
-            
+            rel = path[len("/dvideos/") :].lstrip("/")
+
             # Use fallback mechanism to find the video file
             fs_path = find_cached_video_file(rel)
             if not fs_path:
@@ -5422,9 +6501,11 @@ async def handle_http(reader: asyncio.StreamReader, writer: asyncio.StreamWriter
                     break
                 except (ValueError, OSError):
                     continue
-                    
+
             if not is_safe:
-                logging.warning(f"🚫 [http] Video file outside safe directories: {fs_path}")
+                logging.warning(
+                    f"🚫 [http] Video file outside safe directories: {fs_path}"
+                )
                 resp = b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
                 writer.write(resp)
                 await writer.drain()
@@ -5435,7 +6516,10 @@ async def handle_http(reader: asyncio.StreamReader, writer: asyncio.StreamWriter
                 mime, _ = mimetypes.guess_type(fs_path.name)
                 mime = mime or "video/mp4"
             except Exception as e:
-                logging.error(f"❗ [http] Failed to read cached video file {fs_path}: {e}", exc_info=True)
+                logging.error(
+                    f"❗ [http] Failed to read cached video file {fs_path}: {e}",
+                    exc_info=True,
+                )
                 resp = b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
                 writer.write(resp)
                 await writer.drain()
@@ -5453,14 +6537,16 @@ async def handle_http(reader: asyncio.StreamReader, writer: asyncio.StreamWriter
 
         elif path.startswith("/dmemes/"):
             # Static served cached Discord memes
-            rel = path[len("/dmemes/"):].lstrip("/")
+            rel = path[len("/dmemes/") :].lstrip("/")
             fs_path = (DISCORD_MEME_CACHE_DIR / rel).resolve()
 
             # Security: ensure it's inside DISCORD_MEME_CACHE_DIR
             try:
                 fs_path.relative_to(DISCORD_MEME_CACHE_DIR.resolve())
             except ValueError:
-                logging.warning(f"🚫 [http] Attempted path escape for dmemes: {fs_path}")
+                logging.warning(
+                    f"🚫 [http] Attempted path escape for dmemes: {fs_path}"
+                )
                 resp = b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
                 writer.write(resp)
                 await writer.drain()
@@ -5478,7 +6564,10 @@ async def handle_http(reader: asyncio.StreamReader, writer: asyncio.StreamWriter
                 mime, _ = mimetypes.guess_type(fs_path.name)
                 mime = mime or "image/png"
             except Exception as e:
-                logging.error(f"❗ [http] Failed to read cached meme file {fs_path}: {e}", exc_info=True)
+                logging.error(
+                    f"❗ [http] Failed to read cached meme file {fs_path}: {e}",
+                    exc_info=True,
+                )
                 resp = b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
                 writer.write(resp)
                 await writer.drain()
@@ -5495,15 +6584,18 @@ async def handle_http(reader: asyncio.StreamReader, writer: asyncio.StreamWriter
             await writer.drain()
 
         elif path.startswith("/sounds/"):
-            # Static served local sound files  
+            # Static served local sound files
             import os.path
-            rel = path[len("/sounds/"):].lstrip("/")
+
+            rel = path[len("/sounds/") :].lstrip("/")
             sounds_dir = "/sounds"
             fs_path = os.path.join(sounds_dir, rel)
-            
+
             # Security: ensure it's inside sounds directory
             if not os.path.abspath(fs_path).startswith(os.path.abspath(sounds_dir)):
-                logging.warning(f"🚫 [http] Attempted path escape for sounds: {fs_path}")
+                logging.warning(
+                    f"🚫 [http] Attempted path escape for sounds: {fs_path}"
+                )
                 resp = b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
                 writer.write(resp)
                 await writer.drain()
@@ -5517,22 +6609,24 @@ async def handle_http(reader: asyncio.StreamReader, writer: asyncio.StreamWriter
                 return
 
             # Determine MIME type
-            if fs_path.endswith('.mp3'):
+            if fs_path.endswith(".mp3"):
                 mime = "audio/mpeg"
-            elif fs_path.endswith('.wav'):
+            elif fs_path.endswith(".wav"):
                 mime = "audio/wav"
-            elif fs_path.endswith('.ogg'):
+            elif fs_path.endswith(".ogg"):
                 mime = "audio/ogg"
-            elif fs_path.endswith('.m4a'):
+            elif fs_path.endswith(".m4a"):
                 mime = "audio/mp4"
             else:
                 mime = "audio/mpeg"  # Default fallback
 
             try:
-                with open(fs_path, 'rb') as f:
+                with open(fs_path, "rb") as f:
                     body_bytes = f.read()
             except Exception as e:
-                logging.error(f"❗ [http] Failed to read sound file {fs_path}: {e}", exc_info=True)
+                logging.error(
+                    f"❗ [http] Failed to read sound file {fs_path}: {e}", exc_info=True
+                )
                 resp = b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
                 writer.write(resp)
                 await writer.drain()
@@ -5554,10 +6648,14 @@ async def handle_http(reader: asyncio.StreamReader, writer: asyncio.StreamWriter
                 if TEMPLATE_FILE.exists():
                     body_str = TEMPLATE_FILE.read_text(encoding="utf-8")
                 else:
-                    logging.warning("⚠️ TEMPLATE_FILE missing; using bare fallback HTML.")
+                    logging.warning(
+                        "⚠️ TEMPLATE_FILE missing; using bare fallback HTML."
+                    )
                     body_str = "<html><body>Socket Sentinel Overlay</body></html>"
             except Exception as e:
-                logging.error(f"❗ [http] Failed to read TEMPLATE_FILE: {e}", exc_info=True)
+                logging.error(
+                    f"❗ [http] Failed to read TEMPLATE_FILE: {e}", exc_info=True
+                )
                 body_str = "<html><body>Socket Sentinel Overlay Error</body></html>"
 
             body_bytes = body_str.encode("utf-8")
@@ -5594,18 +6692,24 @@ async def main() -> None:
 
     # Security configuration logging
     if SS_TOKEN:
-        logging.info(f"🔐 Security: Token authentication ENABLED (token length: {len(SS_TOKEN)})")
+        logging.info(
+            f"🔐 Security: Token authentication ENABLED (token length: {len(SS_TOKEN)})"
+        )
         logging.info(f"🔐 Security: Token starts with: '{SS_TOKEN[:10]}...'")
     else:
-        logging.warning("⚠️ Security: Token authentication DISABLED - set SS_TOKEN for security!")
+        logging.warning(
+            "⚠️ Security: Token authentication DISABLED - set SS_TOKEN for security!"
+        )
 
     # ---- Discord cache bootstrap ----
     if DISCORD_BOT_TOKEN and DISCORD_CHANNEL_ID:
-        logging.info("[discord] Bot token + channel id present; building initial meme/sound cache...")
-        
+        logging.info(
+            "[discord] Bot token + channel id present; building initial meme/sound cache..."
+        )
+
         # Load failed videos list before warm caching
         await load_failed_videos()
-        
+
         asyncio.create_task(refresh_discord_messages_cache())
         # Warm cache ALL media files on startup for instant playback
         logging.info("[warm_cache] Starting initial warm cache of all media...")
@@ -5615,7 +6719,9 @@ async def main() -> None:
         # Start cache cleanup task
         asyncio.create_task(cache_cleanup_task())
     else:
-        logging.info("[discord] Bot token or channel id missing; meme/sound cache disabled.")
+        logging.info(
+            "[discord] Bot token or channel id missing; meme/sound cache disabled."
+        )
 
     logging.info(f"📡 TCP listening on {HOST}:{PORT}")
     tcp_server = await asyncio.start_server(handle_client, HOST, PORT)
@@ -5640,4 +6746,3 @@ if __name__ == "__main__":
         asyncio.run(main())
     except KeyboardInterrupt:
         logging.info("👋 Shutting down obs-socket-sentinel.")
-

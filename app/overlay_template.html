@@ -1009,6 +1009,8 @@
     // burst word
     let wordBurstActive = false;
     let wordBurstText = "";
+    let wordBurstSynonyms = [];  // Array of synonyms from backend
+    let synonymIndex = 0;  // Track which synonym to show next
     let lastBurstMs = 0;
 
     const themeMap = {
@@ -1118,8 +1120,20 @@
       return "";
     }
 
-    function spawnBurstWord(word) {
-      if (!word) return;
+    function spawnBurstWord() {
+      // Use synonyms if available, otherwise fall back to wordBurstText
+      let word;
+      
+      if (wordBurstSynonyms && wordBurstSynonyms.length > 0) {
+        // Get next synonym in sequence (cycle through them)
+        word = wordBurstSynonyms[synonymIndex % wordBurstSynonyms.length];
+        synonymIndex++;
+      } else if (wordBurstText) {
+        // Fallback to original behavior
+        word = wordBurstText;
+      } else {
+        return;  // Nothing to display
+      }
 
       const el = document.createElement("div");
       el.className = "burst-word";
@@ -1212,7 +1226,7 @@
           const cooldownOk = now - lastBurstMs > 140;
 
           if (loudEnough && inWindow && cooldownOk) {
-            spawnBurstWord(wordBurstText);
+            spawnBurstWord();  // No parameter needed - uses global state
             lastBurstMs = now;
           }
         }
@@ -2176,6 +2190,7 @@
         const video = data.video || "";
         const videoDuration = data.video_duration || 0;
         const audioDuration = data.audio_duration || 0;
+        const synonyms = Array.isArray(data.synonyms) ? data.synonyms : [];
         const runs = Array.isArray(data.runs) ? data.runs : [];
         const achievement = data.achievement || null;
         const playtime = data.playtime || null;
@@ -2264,6 +2279,15 @@
         lastMeme = meme;
         lastVideo = video;
         lastVideoDuration = videoDuration;
+        
+        // Update burst word synonyms
+        if (synonyms && synonyms.length > 0) {
+          wordBurstSynonyms = synonyms;
+          synonymIndex = 0;  // Reset to start of synonym list
+          console.log(`[synonyms] Loaded ${synonyms.length} synonyms:`, synonyms.slice(0, 5));
+        } else {
+          wordBurstSynonyms = [];
+        }
 
         if (!text) {
           boxEl.classList.remove("visible");

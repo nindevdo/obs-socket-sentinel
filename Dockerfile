@@ -19,8 +19,11 @@ COPY app/ /app/
 # Make sure Docker secrets are available to the app
 RUN mkdir -p /run/secrets
 
-# Install dependencies
-RUN pip install --no-cache-dir aiohttp watchdog obsws-python pyyaml yt_dlp
+# Install Python dependencies
+RUN pip install --no-cache-dir aiohttp watchdog obsws-python pyyaml yt_dlp nltk
+
+# Download NLTK WordNet corpus for synonym generation
+RUN python -c "import nltk; nltk.download('wordnet', quiet=True); nltk.download('omw-1.4', quiet=True)"
 
 # Default command
 CMD ["python", "main.py"]
