@@ -481,6 +481,22 @@ ACTION_SYNONYMS = {
         "ZEROED",
         "BLANK",
     ],
+    "explosion": [
+        "KABOOM",
+        "BOOM",
+        "DETONATED",
+        "NUKED",
+        "VAPORIZED",
+        "ATOMIZED",
+        "OBLITERATED",
+        "BLOWN UP",
+        "DEMOLISHED",
+        "ANNIHILATED",
+        "DISINTEGRATED",
+        "FRAGMENTED",
+        "COMBUSTED",
+        "BIG BADA BOOM",
+    ],
 }
 
 
@@ -498,26 +514,34 @@ def get_synonyms_for_action(action_key: str, count: int = 10) -> List[str]:
     try:
         from nltk.corpus import wordnet
 
+        # Try verb synsets first
         synsets = wordnet.synsets(action_lower, pos=wordnet.VERB)
+        
+        # If no verb synsets, try noun synsets
+        if not synsets:
+            synsets = wordnet.synsets(action_lower, pos=wordnet.NOUN)
+            logging.info(f"[synonyms] Trying noun synsets for '{action_key}' (no verb synsets found)")
+
+        logging.info(f"[synonyms] Found {len(synsets)} WordNet synsets for '{action_key}'")
 
         for synset in synsets[:3]:  # Get synonyms from first 3 synsets
             for lemma in synset.lemmas():
                 word = lemma.name().replace("_", " ").upper()
                 if word != action_key.upper() and word not in synonyms:
                     synonyms.append(word)
-                    if len(synonyms) >= count:
+                    if len(synonyms) >= count // 2:  # Get half from WordNet, half from curated
                         break
-            if len(synonyms) >= count:
+            if len(synonyms) >= count // 2:
                 break
 
         if synonyms:
-            logging.debug(
-                f"[synonyms] Found {len(synonyms)} WordNet synonyms for '{action_key}'"
+            logging.info(
+                f"[synonyms] Got {len(synonyms)} WordNet synonyms for '{action_key}': {synonyms}"
             )
     except ImportError:
-        logging.debug(f"[synonyms] NLTK not available, using fallback dictionary")
+        logging.info(f"[synonyms] NLTK not available, using fallback dictionary")
     except Exception as e:
-        logging.debug(f"[synonyms] WordNet error: {e}, using fallback")
+        logging.warning(f"[synonyms] WordNet error for '{action_key}': {e}, using fallback")
 
     # Fallback or supplement with predefined synonyms
     if not synonyms or len(synonyms) < count:
@@ -863,6 +887,7 @@ def requires_auth(path: str, method: str = "GET") -> bool:
     - GET /dsounds/* (cached audio files for overlay)
     - GET /dvideos/* (cached video files for overlay)
     - GET /dmemes/* (cached meme files for overlay)
+    - GET /fonts/* (font files for overlay)
 
     Protected endpoints (auth required):
     - POST requests (if any)
@@ -886,6 +911,7 @@ def requires_auth(path: str, method: str = "GET") -> bool:
         or path.startswith("/dvideos/")
         or path.startswith("/dmemes/")
         or path.startswith("/sounds/")
+        or path.startswith("/fonts/")
     ):
         return False
 
@@ -6758,6 +6784,63 @@ async def handle_http(
                 "HTTP/1.1 200 OK\r\n"
                 f"Content-Type: {mime}\r\n"
                 f"Content-Length: {len(body_bytes)}\r\n"
+                "Connection: close\r\n"
+                "\r\n"
+            )
+            writer.write(headers.encode("ascii") + body_bytes)
+            await writer.drain()
+
+        elif path.startswith("/fonts/"):
+            # Serve font files from _data/fonts/
+            rel = path[len("/fonts/"):].lstrip("/")
+            from pathlib import Path as PathLib
+            fonts_dir = PathLib("/app/_data/fonts")
+            fs_path = (fonts_dir / rel).resolve()
+
+            # Security: ensure it's inside fonts directory
+            try:
+                fs_path.relative_to(fonts_dir.resolve())
+            except ValueError:
+                logging.warning(f"🚫 [http] Attempted path escape for fonts: {fs_path}")
+                resp = b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                writer.write(resp)
+                await writer.drain()
+                return
+
+            if not fs_path.exists() or not fs_path.is_file():
+                logging.warning(f"❓ [http] Font file not found: {fs_path}")
+                resp = b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                writer.write(resp)
+                await writer.drain()
+                return
+
+            try:
+                body_bytes = fs_path.read_bytes()
+                # Determine MIME type based on font extension
+                ext = fs_path.suffix.lower()
+                if ext == ".ttf":
+                    mime = "font/ttf"
+                elif ext == ".otf":
+                    mime = "font/otf"
+                elif ext == ".woff":
+                    mime = "font/woff"
+                elif ext == ".woff2":
+                    mime = "font/woff2"
+                else:
+                    mime = "application/octet-stream"
+            except Exception as e:
+                logging.error(f"❗ [http] Failed to read font file {fs_path}: {e}", exc_info=True)
+                resp = b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                writer.write(resp)
+                await writer.drain()
+                return
+
+            headers = (
+                "HTTP/1.1 200 OK\r\n"
+                f"Content-Type: {mime}\r\n"
+                f"Content-Length: {len(body_bytes)}\r\n"
+                "Cache-Control: public, max-age=31536000\r\n"  # Cache fonts for 1 year
+                "Access-Control-Allow-Origin: *\r\n"
                 "Connection: close\r\n"
                 "\r\n"
             )
