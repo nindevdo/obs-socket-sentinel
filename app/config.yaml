@@ -6,12 +6,10 @@ games:
       clear: "🧹"
       death: "☠️"
       downed: "🤬"
-      explosion: "💥"
+      explosion: "🔥"
       extract: "⛵"
-      funny: "😂"
       kill: "💀"
       loot: "💎"
-      revive: "❤️"
       run_end: "⏹️"
       run_start: "▶️"
       stealth: "🕵️"
@@ -48,11 +46,11 @@ games:
       revive: "✨"
       teleport: "🌀"
   chivalry2:
-    emoji: ["🤺"]
+    emoji: ["⚔️"]
     actions:
       clear: "🧹"
-      death: "🩸"
-      kill: "☠️"
+      kill: "💀"
+      death: "☠️"
   fortnite:
     emoji: ["🍆"]
     actions:

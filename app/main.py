@@ -701,7 +701,7 @@ def track_played_media(url: str, action_key: str) -> None:
 # LOGGING
 # -----------------------------
 logging.basicConfig(
-    level=logging.DEBUG,  # set to DEBUG while tuning if you want more logs
+    level=logging.INFO,  # Use INFO for production, DEBUG for troubleshooting
     format="%(asctime)s [%(levelname)s] %(message)s",
     handlers=[
         logging.StreamHandler(),
@@ -4589,7 +4589,7 @@ async def _auto_clear_playtime() -> None:
 
 async def display_achievement_percentages(achievement_data: Dict[str, Any]) -> None:
     """
-    Display achievement percentages notification for 5 minutes.
+    Display achievement percentages notification for 30 seconds.
     """
     global current_achievement_percentages, achievement_percentages_display_until
 
@@ -4603,17 +4603,16 @@ async def display_achievement_percentages(achievement_data: Dict[str, Any]) -> N
             time.time() + ACHIEVEMENT_PERCENTAGES_DISPLAY_DURATION
         )
 
-        # Log what we're displaying
+        # Log what we're displaying with full details
         game_name = achievement_data.get("game_name", "Unknown")
         achievements_list = achievement_data.get("achievements", [])
-        achievement_names = [
-            f"{a.get('display_name', a.get('name', 'Unknown'))} ({a.get('percent', 0)}%)"
-            for a in achievements_list
-        ]
-
-        logging.info(
-            f"🏆 [achievement_percentages] Displaying {len(achievements_list)} achievements for {game_name}: {', '.join(achievement_names)}"
-        )
+        
+        logging.info(f"🏆 [achievement_percentages] Displaying {len(achievements_list)} achievements for {game_name}")
+        for i, achievement in enumerate(achievements_list):
+            name = achievement.get("display_name") or achievement.get("name") or "Unknown Achievement"
+            percent = achievement.get("percent", 0)
+            desc = achievement.get("description", "No description")
+            logging.info(f"   {i+1}. {name} - {percent}% - {desc[:50]}{'...' if len(desc) > 50 else ''}")
 
         # Auto-clear after duration
         asyncio.create_task(_auto_clear_achievement_percentages())
@@ -5163,6 +5162,8 @@ async def handle_http(
       - POST /achievement => accepts Steam achievement notification data (requires auth)
       - POST /playtime    => accepts Steam playtime notification data (requires auth)
       - POST /global-achievement-percentages => accepts Steam achievement percentages data (requires auth)
+      - POST /closest-achievements => alias for /global-achievement-percentages (requires auth)
+      - POST /achievement-progress => alias for /global-achievement-percentages (requires auth)
       - POST /action      => accepts game action triggers (replaces TCP server, requires auth)
       - GET /sounds/<...> => serves local sound files from _data/sounds/
       - GET /dsounds/<...> => serves cached Discord audio files
@@ -5208,9 +5209,7 @@ async def handle_http(
         path = raw_path.split("?", 1)[0]  # strip query params
         logging.debug(f"🌐 [http] {method} {path}")
         request_head = req_text  # The full headers are now the "request_head"
-        logging.debug(
-            f"🌐 [http] Raw request headers from {addr}:\n---\n{request_head}\n---"
-        )
+        # Verbose header logging removed - too noisy in production
 
         # Now read the body based on Content-Length
         body_data = b""
@@ -5407,38 +5406,44 @@ async def handle_http(
                     await writer.drain()
                     return
 
-                # Validate each achievement in the array
+                # Validate each achievement in the array - support multiple formats
                 achievements_list = achievement_data["achievements"]
+                normalized_achievements = []
+                
+                logging.info(f"[achievement_percentages] Normalizing {len(achievements_list)} achievements")
+                
                 for i, achievement in enumerate(achievements_list):
-                    required_achievement_fields = [
-                        "name",
-                        "percent",
-                        "display_name",
-                        "description",
-                        "icon",
-                    ]
-                    missing_achievement_fields = [
-                        field
-                        for field in required_achievement_fields
-                        if field not in achievement
-                    ]
-
-                    if missing_achievement_fields:
-                        logging.warning(
-                            f"❌ [achievement_percentages] Achievement {i}: Missing required fields: {missing_achievement_fields}"
-                        )
-                        error_msg = f"Achievement {i}: Missing required fields: {', '.join(missing_achievement_fields)}"
-                        response_body = json.dumps({"error": error_msg}).encode("utf-8")
-                        resp_headers = (
-                            "HTTP/1.1 400 Bad Request\r\n"
-                            "Content-Type: application/json\r\n"
-                            f"Content-Length: {len(response_body)}\r\n"
-                            "Connection: close\r\n"
-                            "\r\n"
-                        )
-                        writer.write(resp_headers.encode("ascii") + response_body)
-                        await writer.drain()
-                        return
+                    # Normalize the achievement data to standard format
+                    normalized = {}
+                    
+                    # Handle different field names
+                    # New format: achievement_title
+                    # Old format: display_name or name
+                    normalized["name"] = achievement.get("name") or achievement.get("achievement_title") or f"achievement_{i}"
+                    normalized["display_name"] = achievement.get("display_name") or achievement.get("achievement_title") or achievement.get("name") or "Unknown Achievement"
+                    normalized["description"] = achievement.get("description", "")
+                    normalized["icon"] = achievement.get("icon", "")
+                    
+                    # Handle progress percentage
+                    # New format: player_progress.progress_percent
+                    # Old format: percent
+                    if "player_progress" in achievement and achievement["player_progress"]:
+                        progress = achievement["player_progress"]
+                        normalized["percent"] = progress.get("progress_percent", 0)
+                        logging.info(f"   [{i}] Using player_progress: {normalized['display_name']} = {normalized['percent']}%")
+                    elif "percent" in achievement:
+                        normalized["percent"] = achievement["percent"]
+                        logging.info(f"   [{i}] Using percent field: {normalized['display_name']} = {normalized['percent']}%")
+                    else:
+                        # If no progress, treat as 0% or unlocked (100%)
+                        normalized["percent"] = 100.0 if achievement.get("unlock_time") else 0.0
+                        logging.info(f"   [{i}] No progress data, defaulting: {normalized['display_name']} = {normalized['percent']}%")
+                    
+                    normalized_achievements.append(normalized)
+                
+                # Replace original achievements with normalized ones
+                achievement_data["achievements"] = normalized_achievements
+                logging.info(f"[achievement_percentages] Normalization complete, displaying {len(normalized_achievements)} achievements")
 
                 # Display the achievement percentages notification
                 await display_achievement_percentages(achievement_data)
@@ -5474,6 +5479,102 @@ async def handle_http(
                     f"❗ [achievement_percentages] Error processing achievement percentages: {e}",
                     exc_info=True,
                 )
+                resp = b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                writer.write(resp)
+                await writer.drain()
+                return
+
+        # Handle POST /closest-achievements endpoint (alias for /global-achievement-percentages)
+        if method == "POST" and path == "/closest-achievements":
+            logging.info("[achievement_percentages] /closest-achievements endpoint hit (routing to global-achievement-percentages logic)")
+            # Reuse the same logic as /global-achievement-percentages
+            try:
+                if not body_data:
+                    resp = b'HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: 29\r\nConnection: close\r\n\r\n{"error":"Request body is empty"}'
+                    writer.write(resp)
+                    await writer.drain()
+                    return
+
+                achievement_data = json.loads(body_data.decode("utf-8"))
+                await display_achievement_percentages(achievement_data)
+
+                response_body = json.dumps({"status": "success", "message": "Closest achievements displayed"}).encode("utf-8")
+                headers = (
+                    "HTTP/1.1 200 OK\r\n"
+                    "Content-Type: application/json\r\n"
+                    f"Content-Length: {len(response_body)}\r\n"
+                    "Connection: close\r\n"
+                    "\r\n"
+                )
+                writer.write(headers.encode("ascii") + response_body)
+                await writer.drain()
+                return
+
+            except Exception as e:
+                logging.error(f"❗ [achievement_percentages] Error processing closest achievements: {e}", exc_info=True)
+                resp = b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                writer.write(resp)
+                await writer.drain()
+                return
+
+        # Handle POST /achievement-progress endpoint (alias for /global-achievement-percentages)
+        if method == "POST" and path == "/achievement-progress":
+            logging.info("[achievement_percentages] /achievement-progress endpoint hit (routing to global-achievement-percentages logic)")
+            # Reuse the same logic as /global-achievement-percentages
+            try:
+                if not body_data:
+                    resp = b'HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: 29\r\nConnection: close\r\n\r\n{"error":"Request body is empty"}'
+                    writer.write(resp)
+                    await writer.drain()
+                    return
+
+                achievement_data = json.loads(body_data.decode("utf-8"))
+                await display_achievement_percentages(achievement_data)
+
+                response_body = json.dumps({"status": "success", "message": "Achievement progress displayed"}).encode("utf-8")
+                headers = (
+                    "HTTP/1.1 200 OK\r\n"
+                    "Content-Type: application/json\r\n"
+                    f"Content-Length: {len(response_body)}\r\n"
+                    "Connection: close\r\n"
+                    "\r\n"
+                )
+                writer.write(headers.encode("ascii") + response_body)
+                await writer.drain()
+                return
+
+            except Exception as e:
+                logging.error(f"❗ [achievement_percentages] Error processing achievement progress: {e}", exc_info=True)
+                resp = b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                writer.write(resp)
+                await writer.drain()
+                return
+
+        # Handle POST /clear-achievements endpoint (manual clear for stuck achievements)
+        if method == "POST" and path == "/clear-achievements":
+            logging.info("[achievement_percentages] Manual clear endpoint hit")
+            try:
+                async with state_lock:
+                    global current_achievement_percentages, achievement_percentages_display_until
+                    current_achievement_percentages = None
+                    achievement_percentages_display_until = None
+                
+                logging.info("🧽 [achievement_percentages] Manually cleared via /clear-achievements endpoint")
+                
+                response_body = json.dumps({"status": "success", "message": "Achievement percentages cleared"}).encode("utf-8")
+                headers = (
+                    "HTTP/1.1 200 OK\r\n"
+                    "Content-Type: application/json\r\n"
+                    f"Content-Length: {len(response_body)}\r\n"
+                    "Connection: close\r\n"
+                    "\r\n"
+                )
+                writer.write(headers.encode("ascii") + response_body)
+                await writer.drain()
+                return
+
+            except Exception as e:
+                logging.error(f"❗ [achievement_percentages] Error clearing achievements: {e}", exc_info=True)
                 resp = b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
                 writer.write(resp)
                 await writer.drain()

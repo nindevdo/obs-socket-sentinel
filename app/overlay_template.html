@@ -601,8 +601,8 @@
       pointer-events: none;
       z-index: 13900;
       
-      max-width: 500px;
-      min-width: 400px;
+      max-width: 450px;
+      width: 450px;
       background: rgba(26, 26, 46, 0.95);
       border: 3px solid #FFD700;
       border-radius: 16px;
@@ -617,6 +617,11 @@
       transition: 
         transform 0.6s cubic-bezier(0.22, 1, 0.36, 1),
         opacity 0.4s ease-out;
+      
+      /* Ensure it doesn't extend past viewport */
+      max-height: 70vh;
+      overflow-y: auto;
+      overflow-x: hidden;
     }
 
     #achievement-percentages-notification.visible {
@@ -632,9 +637,10 @@
       font-size: 1.2rem;
       font-weight: 700;
       text-transform: uppercase;
-      letter-spacing: 0.1em;
+      letter-spacing: 0;
       text-shadow: 0 2px 4px rgba(0, 0, 0, 0.8);
       color: #FFD700;
+      font-family: "ProggyClean Nerd Font", "Noto Color Emoji", sans-serif;
     }
 
     .achievement-percentages-content {
@@ -663,6 +669,7 @@
       border: 2px solid rgba(255, 215, 0, 0.4);
       display: block;
       image-rendering: crisp-edges;
+      /* Remove opacity transition to prevent flashing */
     }
     
     .achievement-percentages-icon-fallback {
@@ -694,6 +701,8 @@
       margin: 0 0 10px 0;
       text-shadow: 0 2px 4px rgba(0, 0, 0, 0.8);
       color: #FFD700;
+      letter-spacing: 0;
+      font-family: "ProggyClean Nerd Font", "Noto Color Emoji", sans-serif;
     }
 
     .achievement-percentages-name {
@@ -702,6 +711,8 @@
       margin: 0 0 4px 0;
       color: #FFA500;
       text-shadow: 0 2px 4px rgba(0, 0, 0, 0.8);
+      letter-spacing: 0;
+      font-family: "ProggyClean Nerd Font", "Noto Color Emoji", sans-serif;
     }
     
     .achievement-percentages-description {
@@ -712,6 +723,8 @@
       text-shadow: 0 1px 2px rgba(0, 0, 0, 0.6);
       opacity: 0.9;
       line-height: 1.3;
+      letter-spacing: 0;
+      font-family: "ProggyClean Nerd Font", "Noto Color Emoji", sans-serif;
     }
 
     .achievement-percentages-progress {
@@ -754,7 +767,8 @@
         0 1px 3px rgba(255, 255, 255, 0.5),
         0 0 6px rgba(255, 255, 255, 0.4);
       z-index: 10;
-      letter-spacing: 0.05em;
+      letter-spacing: 0;
+      font-family: "ProggyClean Nerd Font", "Noto Color Emoji", sans-serif;
     }
 
     /* News notification styles (bottom of screen) */
@@ -985,8 +999,10 @@
 
     // Achievement percentages notification state
     let lastAchievementPercentages = null;
+    let lastAchievementPercentagesHash = null; // Track if content actually changed
     let achievementPercentagesTimeoutId = null;
     let achievementPercentagesSoundPlayed = false;
+    let lastAchievementPercentagesShowTime = 0; // Prevent rapid re-displays
 
     // News notification state
     let lastNews = null;
@@ -1491,11 +1507,63 @@
         // Single achievement object
         achievements = [achievementPercentages];
       }
+      
+      // Filter out achievements with missing/invalid data
+      achievements = achievements.filter(a => {
+        const hasName = (a.display_name || a.name || a.achievement_name);
+        if (!hasName || hasName === 'Unknown Achievement') {
+          console.warn('[achievement_percentages] Filtering out achievement with no name:', a);
+          return false;
+        }
+        return true;
+      });
+      
+      // If no valid achievements, hide
+      if (achievements.length === 0) {
+        console.warn('[achievement_percentages] No valid achievements to display, hiding panel');
+        hideAchievementPercentages();
+        return;
+      }
 
-      // Clear content and populate with achievements
+      // Sort by percent complete (descending) and take top 3
+      const maxAchievements = 3;
+      const sortedAchievements = [...achievements].sort((a, b) => {
+        const percentA = parseFloat(a.percent || a.percent_complete || 0);
+        const percentB = parseFloat(b.percent || b.percent_complete || 0);
+        return percentB - percentA; // Highest percent first
+      });
+      
+      const achievementsToShow = sortedAchievements.slice(0, maxAchievements);
+      
+      // Create hash of achievements to detect actual content changes
+      const achievementsHash = achievementsToShow.map(a => 
+        `${a.name || a.achievement_name}-${a.percent || a.percent_complete}`
+      ).join('|');
+      
+      // Only rebuild DOM if content actually changed OR panel is not visible
+      const isVisible = achievementPercentagesNotification.classList.contains('visible');
+      const now = Date.now();
+      const timeSinceLastShow = now - lastAchievementPercentagesShowTime;
+      const minTimeBetweenShows = 5000; // 5 seconds minimum between shows
+      
+      if (achievementsHash === lastAchievementPercentagesHash && isVisible) {
+        console.log('[achievement_percentages] Already showing same content, ignoring');
+        return; // Don't even reset timer - let it finish naturally
+      }
+      
+      // Prevent rapid re-displays of same content
+      if (achievementsHash === lastAchievementPercentagesHash && timeSinceLastShow < minTimeBetweenShows) {
+        console.log(`[achievement_percentages] Same content shown ${(timeSinceLastShow/1000).toFixed(1)}s ago, ignoring (cooldown: ${minTimeBetweenShows/1000}s)`);
+        return;
+      }
+      
+      lastAchievementPercentagesHash = achievementsHash;
+      lastAchievementPercentagesShowTime = now;
+
+      // Clear content and populate with achievements (top 3 closest to completion)
       achievementPercentagesContent.innerHTML = '';
       
-      achievements.forEach((achievement, index) => {
+      achievementsToShow.forEach((achievement, index) => {
         const item = document.createElement('div');
         item.className = 'achievement-percentages-item';
         
@@ -1505,10 +1573,8 @@
           iconElement = document.createElement('img');
           iconElement.className = 'achievement-percentages-icon';
           iconElement.src = achievement.icon;
-          iconElement.style.opacity = '0';
-          iconElement.style.transition = 'opacity 0.3s ease';
+          // Remove opacity transitions to prevent flashing
           iconElement.onload = () => {
-            iconElement.style.opacity = '1';
             iconElement.onerror = null;
           };
           iconElement.onerror = () => {
@@ -2222,14 +2288,13 @@
         }
 
         // Handle achievement percentages notifications
-        const achievementPercentagesChanged = !lastAchievementPercentages && achievement_percentages || 
-                                            lastAchievementPercentages && !achievement_percentages ||
-                                            lastAchievementPercentages && achievement_percentages && 
-                                            JSON.stringify(lastAchievementPercentages) !== JSON.stringify(achievement_percentages);
-        
-        if (achievementPercentagesChanged) {
+        // Only show if data exists and actually changed (hash check inside showAchievementPercentages)
+        if (achievement_percentages) {
           showAchievementPercentages(achievement_percentages);
-          lastAchievementPercentages = achievement_percentages;
+        } else if (!achievement_percentages && lastAchievementPercentages) {
+          // Hide if went from having data to not having data
+          hideAchievementPercentages();
+          lastAchievementPercentages = null;
         }
 
         // Handle news notifications
