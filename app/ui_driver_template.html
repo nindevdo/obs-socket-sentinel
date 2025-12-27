@@ -4,6 +4,10 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, maximum-scale=1.0">
     <title>OBS Socket Sentinel - Action UI</title>
+    
+    <!-- Embedded OBS Actions - replaced by server -->
+    <script>window.EMBEDDED_OBS_ACTIONS = {};</script>
+    
     <style>
         @font-face {
             font-family: "ProggyClean Nerd Font";
@@ -266,6 +270,29 @@
         .system-actions .action-btn {
             background: linear-gradient(135deg, rgba(251, 191, 36, 0.1) 0%, rgba(245, 158, 11, 0.1) 100%);
             border-color: rgba(251, 191, 36, 0.3);
+        }
+        
+        .obs-actions {
+            padding-bottom: 0.5rem;
+            margin-bottom: 0.5rem;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .obs-actions h3 {
+            color: #10b981;
+            font-size: 0.875rem;
+            margin: 0 0 0.5rem 0;
+            text-align: center;
+            text-transform: uppercase;
+        }
+
+        .obs-actions .actions-grid {
+            grid-template-columns: repeat(auto-fit, minmax(7rem, 1fr));
+        }
+
+        .obs-actions .action-btn {
+            background: linear-gradient(135deg, rgba(16, 185, 129, 0.1) 0%, rgba(5, 150, 105, 0.1) 100%);
+            border-color: rgba(16, 185, 129, 0.3);
         }
         
         .game-actions {
@@ -1041,24 +1068,17 @@
                     this.actionCounts = data.action_counts || {};
                     this.runStats = data.run_stats || null;
                     
-                    if (!this.config.games) {
-                        throw new Error('No games found in configuration');
-                    }
+                    // Load OBS actions from embedded data (set by server on page load)
+                    this.obsActions = window.EMBEDDED_OBS_ACTIONS || data.obs_actions || {};
                     
                     console.log('Loaded config:', this.config);
                     console.log('Current game:', this.currentGame);
-                    console.log('Action counts:', this.actionCounts);
-                    console.log('Run stats:', this.runStats);
+                    console.log('OBS actions:', this.obsActions);
                     
-                    // Also load hotkey mappings
-                    await this.loadHotkeyMappings();
-                    
-                    // Start periodic hotkey refresh
-                    this.startHotkeyRefresh();
-                    
-                    this.reconnectDelay = 1000; // Reset delay on success
+                    return true;
                 } catch (error) {
-                    throw new Error(`Failed to load config: ${error.message}`);
+                    console.error('Failed to load config:', error);
+                    throw error;
                 }
             }
 
@@ -1192,7 +1212,7 @@
             }
 
             render() {
-                if (!this.config || !this.currentGame) {
+                if (!this.config) {
                     this.contentEl.innerHTML = '<div class="loading"><div class="spinner"></div><p>Loading game data...</p></div>';
                     return;
                 }
@@ -1200,13 +1220,9 @@
                 // Update the game title display
                 this.updateCurrentGameDisplay();
 
-                const gameConfig = this.config.games[this.currentGame];
-                if (!gameConfig || !gameConfig.actions) {
-                    this.contentEl.innerHTML = '<div class="error">No actions found for current game</div>';
-                    return;
-                }
-
-                const actions = gameConfig.actions;
+                // Get game actions if available
+                const gameConfig = this.currentGame ? this.config.games[this.currentGame] : null;
+                const actions = (gameConfig && gameConfig.actions) ? gameConfig.actions : {};
                 const systemActions = ['intro', 'undo', 'clear', 'start'];
                 const gameActions = Object.keys(actions).filter(action => !systemActions.includes(action));
 
@@ -1224,6 +1240,21 @@
                 html += '</div>';
                 html += '</div>';
 
+                // OBS Remote Controls (if available)
+                if (this.obsActions && Object.keys(this.obsActions).length > 0) {
+                    html += '<div class="obs-actions">';
+                    html += '<h3>🎬 OBS Remote Control</h3>';
+                    html += '<div class="actions-grid">';
+                    for (const [action, display] of Object.entries(this.obsActions)) {
+                        // Extract emoji from display name
+                        const emoji = display.match(/^([\u{1F300}-\u{1F9FF}])/u)?.[0] || '🎬';
+                        const label = display.replace(/^[\u{1F300}-\u{1F9FF}]\s*/u, '');
+                        html += this.createActionButton(action, emoji, '', false, label);
+                    }
+                    html += '</div>';
+                    html += '</div>';
+                }
+
                 // Game-specific actions BELOW
                 if (gameActions.length > 0) {
                     html += '<div class="actions-grid game-actions">';
@@ -1233,6 +1264,8 @@
                         html += this.createActionButton(action, emoji, hotkey, false);
                     });
                     html += '</div>';
+                } else if (!this.currentGame) {
+                    html += '<div class="info" style="text-align: center; padding: 20px; color: #a0aec0; background: rgba(45, 55, 72, 0.5); border-radius: 8px; margin: 10px 0;">ℹ️ Select a game to see game-specific actions</div>';
                 }
 
                 // Add run stats if available
@@ -1252,8 +1285,8 @@
                 this.contentEl.innerHTML = html;
             }
 
-            createActionButton(action, emoji, hotkey, isSystem = false) {
-                const label = this.formatActionName(action);
+            createActionButton(action, emoji, hotkey, isSystem = false, customLabel = null) {
+                const label = customLabel || this.formatActionName(action);
                 const count = this.actionCounts[action] || 0;
                 const countDisplay = count > 0 ? ` (${count})` : '';
                 // Only show hotkey info if we have a real mapping

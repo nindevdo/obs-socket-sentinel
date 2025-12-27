@@ -4983,6 +4983,8 @@ async def handle_action(action: str, project: Optional[str]) -> None:
     """
     Handle a single parsed 'action' from TCP, with an optional game/project.
     """
+    global last_overlay_output, last_action, last_project, last_sound, last_meme_url, last_video_url, last_video_duration, last_audio_duration
+    
     action = action.strip()
     if not action:
         logging.info("⚠️ [handler] Ignoring empty action.")
@@ -4999,6 +5001,29 @@ async def handle_action(action: str, project: Optional[str]) -> None:
     logging.info(f"🎯 [handler] Received action={action} for project={project_key}")
     lower = action.lower()
 
+    # ---- OBS Remote Control Actions ----
+    if lower.startswith(("scene_", "transition_", "obs_")):
+        try:
+            from obs_controller import get_obs_controller, handle_obs_action
+            
+            obs_ctrl = await get_obs_controller()
+            if obs_ctrl and obs_ctrl.connected:
+                success = await handle_obs_action(lower, obs_ctrl)
+                if success:
+                    logging.info(f"✅ [obs] Action '{action}' executed")
+                    # Update overlay without changing project
+                    async with state_lock:
+                        last_overlay_output = f"🎬 {action.replace('_', ' ').title()}"
+                        last_action = action
+                        # Don't change last_project - keep current game context
+                else:
+                    logging.warning(f"⚠️ [obs] Action '{action}' failed")
+            else:
+                logging.error("❌ [obs] OBS not connected")
+        except Exception as e:
+            logging.error(f"❌ [obs] Error: {e}", exc_info=True)
+        return
+
     # ---- Global system action: Intro ----
     if lower == "intro":
         await trigger_intro()
@@ -5010,15 +5035,6 @@ async def handle_action(action: str, project: Optional[str]) -> None:
         if not success:
             # Show message that there's nothing to undo
             async with state_lock:
-                global \
-                    last_overlay_output, \
-                    last_action, \
-                    last_project, \
-                    last_sound, \
-                    last_meme_url, \
-                    last_video_url, \
-                    last_video_duration, \
-                    last_audio_duration
                 last_overlay_output = "Nothing to undo"
                 last_action = "undo"
                 last_project = project_key
@@ -6079,8 +6095,12 @@ async def handle_http(
                     await writer.drain()
                     return
 
-                # Validate action exists in config
-                if action.lower() not in {a.lower() for a in ALL_ACTION_KEYS}:
+                # Validate action exists in config (allow OBS actions dynamically)
+                action_lower = action.lower()
+                is_obs_action = action_lower.startswith(("scene_", "transition_", "obs_"))
+                is_valid_action = action_lower in {a.lower() for a in ALL_ACTION_KEYS} or is_obs_action
+                
+                if not is_valid_action:
                     logging.warning(f"❌ [action] Unknown action: {action}")
                     error_msg = f"Unknown action: {action}. Valid actions: {', '.join(sorted(ALL_ACTION_KEYS))}"
                     response_body = json.dumps({"error": error_msg}).encode("utf-8")
@@ -6349,6 +6369,52 @@ async def handle_http(
             writer.write(headers.encode("ascii") + body_bytes)
             await writer.drain()
 
+        elif path == "/obs/actions":
+            # Return dynamic OBS actions
+            try:
+                from obs_controller import get_obs_controller
+                
+                obs_ctrl = await get_obs_controller()
+                if obs_ctrl and obs_ctrl.connected:
+                    # Refresh OBS state
+                    await obs_ctrl.refresh_state()
+                    obs_actions = obs_ctrl.get_dynamic_actions()
+                    
+                    response_body = json.dumps(obs_actions, indent=2).encode("utf-8")
+                    resp_headers = (
+                        "HTTP/1.1 200 OK\r\n"
+                        "Content-Type: application/json\r\n"
+                        f"Content-Length: {len(response_body)}\r\n"
+                        "Connection: close\r\n"
+                        "\r\n"
+                    )
+                    writer.write(resp_headers.encode("ascii") + response_body)
+                    await writer.drain()
+                else:
+                    response_body = b'{"error":"OBS not connected"}'
+                    resp_headers = (
+                        "HTTP/1.1 503 Service Unavailable\r\n"
+                        "Content-Type: application/json\r\n"
+                        f"Content-Length: {len(response_body)}\r\n"
+                        "Connection: close\r\n"
+                        "\r\n"
+                    )
+                    writer.write(resp_headers.encode("ascii") + response_body)
+                    await writer.drain()
+            except Exception as e:
+                logging.error(f"Error getting OBS actions: {e}")
+                response_body = json.dumps({"error": str(e)}).encode("utf-8")
+                resp_headers = (
+                    "HTTP/1.1 500 Internal Server Error\r\n"
+                    "Content-Type: application/json\r\n"
+                    f"Content-Length: {len(response_body)}\r\n"
+                    "Connection: close\r\n"
+                    "\r\n"
+                )
+                writer.write(resp_headers.encode("ascii") + response_body)
+                await writer.drain()
+            return
+
         elif path == "/config":
             # Serve the raw YAML config
             try:
@@ -6371,11 +6437,45 @@ async def handle_http(
             await writer.drain()
 
         elif path == "/ui":
-            # Serve UI - the template handles its own authentication
+            # Serve UI with all data embedded - single endpoint for everything
             try:
+                # Get OBS actions if available
+                obs_actions = {}
+                try:
+                    from obs_controller import get_obs_controller
+                    obs_ctrl = await get_obs_controller()
+                    if obs_ctrl and obs_ctrl.connected:
+                        await obs_ctrl.refresh_state()
+                        obs_actions = obs_ctrl.get_dynamic_actions()
+                        logging.info(f"[ui] Loaded {len(obs_actions)} OBS actions")
+                    else:
+                        logging.info("[ui] OBS not connected")
+                except ImportError:
+                    logging.debug("[ui] obs_controller module not available")
+                except Exception as e:
+                    logging.warning(f"[ui] OBS connection failed: {e}")
+                
+                # Load UI template
                 template_path = "/app/ui_driver_template.html"
                 with open(template_path, "r", encoding="utf-8") as f:
                     body_str = f.read()
+                
+                # Embed OBS actions as JSON in the HTML
+                obs_actions_json = json.dumps(obs_actions)
+                
+                # Inject OBS actions into the template
+                if "window.EMBEDDED_OBS_ACTIONS = {};" in body_str:
+                    body_str = body_str.replace(
+                        "window.EMBEDDED_OBS_ACTIONS = {};",
+                        f"window.EMBEDDED_OBS_ACTIONS = {obs_actions_json};"
+                    )
+                else:
+                    # Add it before closing head tag
+                    body_str = body_str.replace(
+                        "</head>",
+                        f"<script>window.EMBEDDED_OBS_ACTIONS = {obs_actions_json};</script>\n</head>"
+                    )
+                
                 logging.info(f"[ui] Loaded UI template from {template_path}")
             except Exception as e:
                 logging.error(f"❗ [http] Failed to load UI: {e}", exc_info=True)
@@ -6423,12 +6523,27 @@ async def handle_http(
                         "headshots": stats.get("headshots", 0),
                     }
 
+                # Get OBS actions if available
+                obs_actions = {}
+                try:
+                    from obs_controller import get_obs_controller
+                    obs_ctrl = await get_obs_controller()
+                    if obs_ctrl and obs_ctrl.connected:
+                        await obs_ctrl.refresh_state()
+                        obs_actions = obs_ctrl.get_dynamic_actions()
+                        logging.info(f"[ui_state] Loaded {len(obs_actions)} OBS actions")
+                except ImportError:
+                    logging.debug("[ui_state] obs_controller module not available")
+                except Exception as e:
+                    logging.debug(f"[ui_state] OBS not available: {e}")
+
                 response_data = {
                     "current_game": current_game,
                     "available_games": available_games,
                     "games_config": GAMES_CONFIG,
                     "action_counts": game_action_counts,
                     "run_stats": current_run_stats,
+                    "obs_actions": obs_actions,  # Add OBS actions
                 }
 
                 body_bytes = json.dumps(response_data).encode("utf-8")

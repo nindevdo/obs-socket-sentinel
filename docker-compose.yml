@@ -17,6 +17,9 @@ services:
       - SS_TOKEN=${SS_TOKEN}
       - TEMPLATE_FILE=/app/overlay_template.html
       - WATCH_DIR=/markers
+      - OBS_IP=${OBS_IP:-192.168.0.181}
+      - OBS_PORT=${OBS_PORT:-4455}
+      - OBS_PASSWORD=${OBS_PASSWORD}
     volumes:
       - ./_data/markers:/markers:rw
       - ./_data/discord:/discord:rw
