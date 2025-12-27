@@ -249,6 +249,10 @@ class OBSController:
             'controls': {}
         }
         
+        logger.info(f"[get_dynamic_actions] scenes type: {type(self.scenes)}, count: {len(self.scenes) if self.scenes else 0}")
+        if self.scenes and len(self.scenes) > 0:
+            logger.info(f"[get_dynamic_actions] First scene: {self.scenes[0]}")
+        
         # Get current recording/streaming status without using asyncio in sync context
         is_recording = False
         is_streaming = False
@@ -263,13 +267,15 @@ class OBSController:
         
         # Scene switching actions
         for scene in self.scenes:
-            scene_name = scene.get('sceneName', '')
+            scene_name = scene.get('sceneName', '') if isinstance(scene, dict) else (scene.sceneName if hasattr(scene, 'sceneName') else str(scene))
             safe_name = f"scene_{scene_name.lower().replace(' ', '_')}"
             is_active = scene_name == self.current_scene
             actions['scenes'][safe_name] = {
                 'label': f"🎬 {scene_name}",
                 'active': is_active
             }
+        
+        logger.info(f"[get_dynamic_actions] Generated {len(actions['scenes'])} scenes, {len(actions['transitions'])} transitions")
         
         # Transition actions
         for transition in self.transitions:
