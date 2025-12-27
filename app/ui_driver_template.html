@@ -24,107 +24,91 @@
             color: #ffffff;
             height: 100vh;
             width: 100vw;
-            padding: 0;
             margin: 0;
+            padding: 0;
             overflow: hidden;
-            position: fixed;
-            top: 0;
-            left: 0;
         }
 
         .container {
-            width: 100%;
+            width: 100vw;
             height: 100vh;
-            display: flex;
-            flex-direction: column;
-            padding: min(2vh, 20px);
+            display: grid;
+            grid-template-rows: auto 1fr auto;
+            gap: 0.5rem;
+            padding: 0.5rem;
             box-sizing: border-box;
-            max-width: 100vw;
+            overflow: hidden;
         }
 
         .header {
             text-align: center;
-            padding: min(1.5vh, 1.5vw, 15px);
+            padding: 0.5rem;
             background: rgba(255, 255, 255, 0.05);
-            border-radius: min(1.2vh, 12px);
+            border-radius: 0.5rem;
             border: 1px solid rgba(255, 255, 255, 0.1);
-            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
-            flex-shrink: 0;
-            position: relative;
-            margin-bottom: min(2vh, 20px);
         }
 
         .title {
-            font-size: min(max(3vh, 3vw), 40px);
+            font-size: 1.5rem;
             font-weight: 700;
             color: #00ffcc;
-            margin-bottom: min(0.8vh, 8px);
-            text-shadow: 0 0 20px rgba(0, 255, 204, 0.3);
-            line-height: 1;
+            margin: 0;
         }
 
         .subtitle {
-            font-size: min(max(1.8vh, 1.8vw), 18px);
+            font-size: 0.75rem;
             color: #a0a0a0;
-            margin-bottom: min(1vh, 10px);
-            line-height: 1.1;
+            margin: 0.25rem 0 0 0;
         }
 
         .current-game {
-            font-size: min(max(2.2vh, 2.2vw), 24px);
+            font-size: 1rem;
             font-weight: 600;
             color: #ffd700;
-            margin-bottom: min(0.8vh, 8px);
-            line-height: 1;
+            margin: 0.25rem 0 0 0;
         }
 
         .main-content {
-            flex: 1;
             display: flex;
             flex-direction: column;
-            min-height: 0;
+            gap: 0.5rem;
             overflow: hidden;
+            min-height: 0;
         }
 
         .actions-container {
-            flex: 1;
             display: flex;
             flex-direction: column;
+            overflow: hidden;
             min-height: 0;
-            overflow-y: auto;
         }
 
         .actions-grid {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(min(max(20vw, 180px), 280px), 1fr));
-            gap: min(1.5vh, 1.5vw, 15px);
-            margin-bottom: min(2vh, 20px);
-            flex: 1;
+            grid-template-columns: repeat(auto-fit, minmax(7rem, 1fr));
+            gap: 0.5rem;
+            height: 100%;
             align-content: start;
         }
 
         .action-btn {
             background: linear-gradient(135deg, rgba(59, 130, 246, 0.1) 0%, rgba(147, 51, 234, 0.1) 100%);
             border: 2px solid rgba(59, 130, 246, 0.3);
-            border-radius: min(1.6vh, 16px);
-            padding: min(max(1.5vh, 1.5vw), 20px);
+            border-radius: 0.5rem;
+            padding: 0.5rem;
             color: #ffffff;
-            font-size: min(max(1.8vh, 1.8vw), 18px);
+            font-size: 0.875rem;
             font-weight: 600;
             cursor: pointer;
-            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-            position: relative;
-            overflow: hidden;
-            min-height: min(max(8vh, 8vw), 100px);
-            max-height: min(max(12vh, 12vw), 140px);
+            transition: all 0.2s;
             display: flex;
             flex-direction: column;
             align-items: center;
             justify-content: center;
             text-align: center;
-            gap: min(0.8vh, 8px);
+            gap: 0.25rem;
             user-select: none;
-            backdrop-filter: blur(10px);
+            min-height: 0;
         }
 
         .game-emoji {
@@ -262,32 +246,31 @@
         }
 
         .system-actions {
-            border-top: 1px solid rgba(255, 255, 255, 0.1);
-            padding-top: min(1.5vh, 15px);
-            flex-shrink: 0;
+            padding-bottom: 0.5rem;
+            margin-bottom: 0.5rem;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
         }
 
         .system-actions h3 {
             color: #fbbf24;
-            font-size: min(max(2vh, 2vw), 22px);
-            margin-bottom: min(1.2vh, 12px);
+            font-size: 0.875rem;
+            margin: 0 0 0.5rem 0;
             text-align: center;
             text-transform: uppercase;
-            letter-spacing: 1px;
-            line-height: 1;
         }
 
         .system-actions .actions-grid {
-            grid-template-columns: repeat(auto-fit, minmax(min(max(15vw, 120px), 180px), 1fr));
-            gap: min(1vh, 1vw, 10px);
-            margin-bottom: 0;
+            grid-template-columns: repeat(auto-fit, minmax(7rem, 1fr));
         }
 
         .system-actions .action-btn {
-            min-height: min(max(6vh, 6vw), 70px);
-            max-height: min(max(8vh, 8vw), 90px);
-            padding: min(max(1vh, 1vw), 12px);
             background: linear-gradient(135deg, rgba(251, 191, 36, 0.1) 0%, rgba(245, 158, 11, 0.1) 100%);
+            border-color: rgba(251, 191, 36, 0.3);
+        }
+        
+        .game-actions {
+            /* Same as main actions-grid */
+        }
             border-color: rgba(251, 191, 36, 0.3);
         }
 
@@ -1224,23 +1207,12 @@
                 }
 
                 const actions = gameConfig.actions;
-                const systemActions = ['undo', 'clear', 'start'];
+                const systemActions = ['intro', 'undo', 'clear', 'start'];
                 const gameActions = Object.keys(actions).filter(action => !systemActions.includes(action));
 
                 let html = '';
 
-                // Game-specific actions
-                if (gameActions.length > 0) {
-                    html += '<div class="actions-grid">';
-                    gameActions.forEach(action => {
-                        const emoji = actions[action];
-                        const hotkey = this.getHotkeyForAction(action);
-                        html += this.createActionButton(action, emoji, hotkey, false);
-                    });
-                    html += '</div>';
-                }
-
-                // System actions
+                // System actions FIRST (at top)
                 html += '<div class="system-actions">';
                 html += '<h3>🛠️ System Actions</h3>';
                 html += '<div class="actions-grid">';
@@ -1251,6 +1223,17 @@
                 });
                 html += '</div>';
                 html += '</div>';
+
+                // Game-specific actions BELOW
+                if (gameActions.length > 0) {
+                    html += '<div class="actions-grid game-actions">';
+                    gameActions.forEach(action => {
+                        const emoji = actions[action];
+                        const hotkey = this.getHotkeyForAction(action);
+                        html += this.createActionButton(action, emoji, hotkey, false);
+                    });
+                    html += '</div>';
+                }
 
                 // Add run stats if available
                 if (this.runStats) {
@@ -1295,6 +1278,7 @@
 
             getSystemActionEmoji(action) {
                 const systemEmojis = {
+                    'intro': '🎬',
                     'undo': '↩️',
                     'clear': '🧹',
                     'start': '🎬'
@@ -1315,10 +1299,13 @@
 
 
             async triggerAction(action, game, buttonEl) {
+                // Prevent double-clicks
+                if (buttonEl.disabled) return;
+                buttonEl.disabled = true;
+
                 try {
-                    // Add triggered animation
+                    // Add triggered animation (single time)
                     buttonEl.classList.add('triggered');
-                    setTimeout(() => buttonEl.classList.remove('triggered'), 600);
 
                     const response = await fetch(`${this.serverUrl}/action`, {
                         method: 'POST',
@@ -1356,6 +1343,12 @@
                     setTimeout(() => {
                         this.setStatus('connected', '✅ Connected to server');
                     }, 3000);
+                } finally {
+                    // Clean up animation and re-enable button
+                    setTimeout(() => {
+                        buttonEl.classList.remove('triggered');
+                        buttonEl.disabled = false;
+                    }, 600);
                 }
             }
 

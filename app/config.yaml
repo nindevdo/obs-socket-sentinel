@@ -1,4 +1,9 @@
 project_name: hunt_showdown
+
+# Global system actions available across all games
+global_system_actions:
+  intro: "🎬"
+
 games:
   arc_raiders:
     emoji: ["🚀"]

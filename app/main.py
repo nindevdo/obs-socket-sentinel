@@ -250,6 +250,7 @@ async def remove_failed_video(url: str) -> None:
 GAMES_CONFIG: Dict[str, Dict[str, Any]] = {}
 GAME_EMOJI_MAP: Dict[str, set] = {}
 ALL_ACTION_KEYS: set[str] = set()  # union of all games' actions
+GLOBAL_SYSTEM_ACTIONS: Dict[str, str] = {}  # global actions available across all games
 DEFAULT_PROJECT_NAME: Optional[str] = None  # used as fallback for chapters / overlay
 
 # -----------------------------
@@ -302,6 +303,11 @@ merch_cta_display_until: Optional[float] = None
 last_merch_cta_time: float = 0.0  # When we last triggered merch CTA
 MERCH_CTA_INTERVAL = 22 * 60  # 22 minutes in seconds
 MERCH_CTA_DURATION = 12.0  # Show for 12 seconds
+
+# Three.js intro state
+current_intro: Optional[Dict[str, Any]] = None
+intro_display_until: Optional[float] = None
+INTRO_DISPLAY_DURATION = 8.0  # Show intro for 8 seconds
 
 # Chapter file/session state
 current_chapter_file: Optional[Path] = None
@@ -959,7 +965,7 @@ def load_overlay_config() -> None:
     NOTE: YAML no longer needs (or uses) 'project_name'.
           Only 'games' is required.
     """
-    global GAMES_CONFIG, GAME_EMOJI_MAP, ALL_ACTION_KEYS, DEFAULT_PROJECT_NAME
+    global GAMES_CONFIG, GAME_EMOJI_MAP, ALL_ACTION_KEYS, GLOBAL_SYSTEM_ACTIONS, DEFAULT_PROJECT_NAME
 
     if not CONFIG_PATH.exists():
         logging.error(
@@ -981,6 +987,11 @@ def load_overlay_config() -> None:
         logging.error("❌ Config must define 'games' with at least one game.")
         raise SystemExit(1)
 
+    # Load global system actions (available across all games)
+    GLOBAL_SYSTEM_ACTIONS = cfg.get("global_system_actions", {}) or {}
+    if GLOBAL_SYSTEM_ACTIONS:
+        logging.info(f"🌐 Loaded {len(GLOBAL_SYSTEM_ACTIONS)} global system actions: {list(GLOBAL_SYSTEM_ACTIONS.keys())}")
+
     # Build emoji map per game
     GAME_EMOJI_MAP = {}
     for game_key, gconf in GAMES_CONFIG.items():
@@ -996,6 +1007,9 @@ def load_overlay_config() -> None:
     for gconf in GAMES_CONFIG.values():
         acts = gconf.get("actions") or {}
         ALL_ACTION_KEYS.update(acts.keys())
+
+    # Add global system actions
+    ALL_ACTION_KEYS.update(GLOBAL_SYSTEM_ACTIONS.keys())
 
     # Add special system actions that are always available
     ALL_ACTION_KEYS.add("undo")
@@ -4944,6 +4958,24 @@ async def _auto_clear_overlay() -> None:
         return
 
 
+async def trigger_intro() -> None:
+    """
+    Trigger the Three.js intro animation.
+    """
+    global current_intro, intro_display_until
+    
+    async with state_lock:
+        now = time.time()
+        current_intro = {
+            "trigger": True,
+            "text": "The Cam Bros",
+            "timestamp": now
+        }
+        intro_display_until = now + INTRO_DISPLAY_DURATION
+    
+    logging.info(f"🎬 [intro] Three.js intro triggered for {INTRO_DISPLAY_DURATION}s")
+
+
 # -----------------------------
 # ACTION HANDLING / TCP PARSE
 # -----------------------------
@@ -4966,6 +4998,11 @@ async def handle_action(action: str, project: Optional[str]) -> None:
 
     logging.info(f"🎯 [handler] Received action={action} for project={project_key}")
     lower = action.lower()
+
+    # ---- Global system action: Intro ----
+    if lower == "intro":
+        await trigger_intro()
+        return
 
     # ---- Undo action ----
     if lower == "undo":
@@ -6273,6 +6310,15 @@ async def handle_http(
                     if now < merch_cta_display_until:
                         merch_cta_notification = {"trigger": True}
 
+                # ---- Build intro notification data ----
+                intro_notification = None
+                if current_intro and intro_display_until:
+                    if now < intro_display_until:
+                        intro_notification = current_intro.copy()
+                        intro_notification["remaining_time"] = max(
+                            0.0, intro_display_until - now
+                        )
+
             body_obj = {
                 "text": text,
                 "action": action,
@@ -6290,6 +6336,7 @@ async def handle_http(
                 "news": news_notification,
                 "subscribe_cta": subscribe_cta_notification,
                 "merch_cta": merch_cta_notification,
+                "intro": intro_notification,
             }
             body_bytes = json.dumps(body_obj).encode("utf-8")
             headers = (

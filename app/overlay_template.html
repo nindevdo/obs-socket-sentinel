@@ -3,6 +3,9 @@
 <head>
   <meta charset="utf-8">
   <title>Socket Sentinel Overlay</title>
+  
+  <!-- Three.js for 3D intro animation -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 
   <style>
     @font-face {
@@ -947,30 +950,35 @@
 
     .subscribe-cta-title {
       color: #FFFFFF;
-      font-size: 2.5rem;
-      font-weight: 800;
+      font-size: 4rem;
+      font-weight: 900;
       margin-bottom: 20px;
       text-shadow: 
-        0 4px 8px rgba(0, 0, 0, 0.9),
-        0 0 20px rgba(255, 215, 0, 0.6);
-      letter-spacing: 0.05em;
+        0 4px 8px rgba(0, 0, 0, 1),
+        0 0 30px rgba(255, 0, 0, 0.8),
+        0 0 60px rgba(255, 0, 0, 0.4);
+      letter-spacing: 0.1em;
       text-transform: uppercase;
     }
 
     .subscribe-cta-message {
-      color: #FFF;
-      font-size: 1.8rem;
-      font-weight: 600;
+      color: #FFFF00;
+      font-size: 2.5rem;
+      font-weight: 700;
       line-height: 1.6;
-      text-shadow: 0 2px 4px rgba(0, 0, 0, 0.8);
+      text-shadow: 
+        0 3px 6px rgba(0, 0, 0, 1),
+        0 0 20px rgba(255, 255, 0, 0.8);
       margin-bottom: 10px;
     }
 
     .subscribe-cta-subtext {
-      color: #FFD700;
-      font-size: 1.3rem;
-      font-weight: 500;
-      text-shadow: 0 2px 4px rgba(0, 0, 0, 0.8);
+      color: #FFFFFF;
+      font-size: 2rem;
+      font-weight: 600;
+      text-shadow: 
+        0 3px 6px rgba(0, 0, 0, 1),
+        0 0 15px rgba(255, 255, 255, 0.5);
       margin-top: 15px;
     }
 
@@ -1125,10 +1133,34 @@
       text-shadow: 0 2px 4px rgba(0, 0, 0, 0.8);
     }
 
+    /* ============================= */
+    /* THREE.JS INTRO CANVAS         */
+    /* ============================= */
+
+    #intro-canvas {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100vw;
+      height: 100vh;
+      pointer-events: none;
+      z-index: 20000;
+      opacity: 0;
+      transition: opacity 0.5s ease-in-out;
+      background: transparent;
+    }
+
+    #intro-canvas.visible {
+      opacity: 1;
+    }
+
   </style>
 </head>
 
 <body>
+  <!-- Three.js Intro Canvas -->
+  <canvas id="intro-canvas"></canvas>
+
   <div id="overlay-root">
     <div class="counter-box" id="counter-box">
       <span class="counter-text" id="counter-text"></span>
@@ -1245,6 +1277,296 @@
   </div>
 
   <script>
+    // ===========================
+    // THREE.JS INTRO ANIMATION
+    // ===========================
+    
+    const introCanvas = document.getElementById('intro-canvas');
+    let introScene, introCamera, introRenderer;
+    let introTextMesh, fireTexture, fireMaterial;
+    let introAnimationId;
+    let introActive = false;
+    let time = 0;
+    
+    function initThreeJsIntro() {
+      // Scene
+      introScene = new THREE.Scene();
+      
+      // Camera
+      introCamera = new THREE.PerspectiveCamera(
+        75,
+        window.innerWidth / window.innerHeight,
+        0.1,
+        1000
+      );
+      introCamera.position.z = 8;
+      
+      // Renderer
+      introRenderer = new THREE.WebGLRenderer({
+        canvas: introCanvas,
+        alpha: true,
+        antialias: true
+      });
+      introRenderer.setSize(window.innerWidth, window.innerHeight);
+      introRenderer.setClearColor(0x000000, 0);
+      
+      // Create fire text
+      createFireText();
+      
+      // Lighting for depth
+      const ambientLight = new THREE.AmbientLight(0xff6600, 0.3);
+      introScene.add(ambientLight);
+      
+      const pointLight = new THREE.PointLight(0xff4400, 1.5, 100);
+      pointLight.position.set(0, 2, 5);
+      introScene.add(pointLight);
+      
+      console.log('[intro] Three.js fire intro initialized');
+    }
+    
+    function createFireText() {
+      // Wait for font to load before creating texture
+      document.fonts.ready.then(() => {
+        createTextureAndShader();
+      });
+    }
+    
+    function createTextureAndShader() {
+      // Create canvas for text
+      const canvas = document.createElement('canvas');
+      canvas.width = 2048;
+      canvas.height = 1024; // Taller for flames extending above
+      const ctx = canvas.getContext('2d');
+      
+      // Use exact ProggyClean Nerd Font that's loaded
+      ctx.font = 'bold 220px "ProggyClean Nerd Font", "ProggyCleanNerdFontMono-Regular"';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillStyle = 'white';
+      
+      // Draw text at TOP so flames trail DOWN below it
+      const textY = canvas.height * 0.25; // Top 25% - flames will trail downward
+      ctx.fillText('The Cam Bros', canvas.width / 2, textY);
+      
+      // Create texture from text
+      const texture = new THREE.CanvasTexture(canvas);
+      texture.needsUpdate = true;
+      
+      // Fire shader uniforms
+      const fireUniforms = {
+        time: { value: 0.0 },
+        textTexture: { value: texture },
+        color1: { value: new THREE.Color(0xffffff) }, // White hot tips
+        color2: { value: new THREE.Color(0xffaa00) }, // Yellow-orange
+        color3: { value: new THREE.Color(0xff3000) }, // Red base
+        resolution: { value: new THREE.Vector2(canvas.width, canvas.height) }
+      };
+      
+      // Vertex shader
+      const vertexShader = `
+        varying vec2 vUv;
+        void main() {
+          vUv = uv;
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }
+      `;
+      
+      // Fragment shader with flames extending beyond text
+      const fragmentShader = `
+        uniform float time;
+        uniform sampler2D textTexture;
+        uniform vec3 color1;
+        uniform vec3 color2;
+        uniform vec3 color3;
+        uniform vec2 resolution;
+        varying vec2 vUv;
+        
+        // Better noise function
+        float hash(vec2 p) {
+          return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123);
+        }
+        
+        float noise(vec2 p) {
+          vec2 i = floor(p);
+          vec2 f = fract(p);
+          f = f * f * (3.0 - 2.0 * f);
+          
+          float a = hash(i);
+          float b = hash(i + vec2(1.0, 0.0));
+          float c = hash(i + vec2(0.0, 1.0));
+          float d = hash(i + vec2(1.0, 1.0));
+          
+          return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+        }
+        
+        float fbm(vec2 p) {
+          float value = 0.0;
+          float amplitude = 0.5;
+          
+          for(int i = 0; i < 6; i++) {
+            value += amplitude * noise(p);
+            p *= 2.0;
+            amplitude *= 0.5;
+          }
+          return value;
+        }
+        
+        void main() {
+          vec2 uv = vUv;
+          vec4 textColor = texture2D(textTexture, uv);
+          
+          float t = time * 0.8;
+          
+          // Multi-layer turbulence
+          float noise1 = fbm(vec2(uv.x * 3.0 + t * 0.1, uv.y * 2.0 - t * 0.6));
+          float noise2 = fbm(vec2(uv.x * 5.0 - t * 0.15, uv.y * 4.0 - t * 1.2));
+          float turbulence = noise1 * 0.6 + noise2 * 0.4;
+          
+          // Initialize fire intensity
+          float fireIntensity = 0.0;
+          
+          // Text is the base of the fire
+          if(textColor.a > 0.1) {
+            fireIntensity = textColor.a;
+          }
+          
+          // EXTEND FLAMES DOWNWARD FROM TEXT (like real fire dripping/trailing down)
+          float flameSource = 0.0;
+          
+          // Check ABOVE for text (creates flames trailing DOWNWARD)
+          for(float dy = 0.05; dy < 0.6; dy += 0.05) {
+            // Look UP (decrease y) to find text above
+            vec2 samplePos = vec2(uv.x + (turbulence - 0.5) * 0.08, uv.y - dy);
+            vec4 aboveText = texture2D(textTexture, samplePos);
+            
+            if(aboveText.a > 0.1) {
+              // Found text above current pixel - create flame trailing DOWN
+              float distance = dy;
+              float flameHeight = turbulence * 0.5 + 0.4; // Long trailing flames
+              
+              if(distance < flameHeight) {
+                float strength = (1.0 - distance / flameHeight) * aboveText.a;
+                flameSource = max(flameSource, strength * 0.95);
+              }
+            }
+          }
+          
+          // Combine text and flames extending from it
+          fireIntensity = max(fireIntensity, flameSource);
+          
+          if(fireIntensity < 0.05) {
+            discard;
+          }
+          
+          // Heat calculation - hotter at top (text), cooler as flames trail down
+          float heightFactor = 1.0 - uv.y; // Hotter at top (lower Y), cooler at bottom
+          float heat = fireIntensity * heightFactor;
+          heat += turbulence * 0.3;
+          heat = clamp(heat, 0.0, 1.2);
+          
+          // Intense flickering
+          float flicker = sin(time * 20.0 + uv.x * 40.0) * 0.08 + 
+                         sin(time * 12.0 + uv.y * 25.0) * 0.05 + 0.92;
+          heat *= flicker;
+          
+          // Fire color gradient - realistic fire colors
+          vec3 fireColor;
+          if(heat > 0.8) {
+            // White hot tips
+            fireColor = mix(color2, color1, (heat - 0.8) / 0.4);
+          } else if(heat > 0.45) {
+            // Orange to yellow
+            fireColor = mix(color3, color2, (heat - 0.45) / 0.35);
+          } else {
+            // Dark red base
+            fireColor = mix(vec3(0.2, 0.0, 0.0), color3, heat / 0.45);
+          }
+          
+          // Glow
+          float glow = pow(heat, 0.8) * 2.0;
+          fireColor *= glow;
+          
+          // Alpha falloff for smooth edges
+          float alpha = fireIntensity * (0.5 + heat * 0.5);
+          
+          gl_FragColor = vec4(fireColor, alpha);
+        }
+      `;
+      
+      fireMaterial = new THREE.ShaderMaterial({
+        uniforms: fireUniforms,
+        vertexShader: vertexShader,
+        fragmentShader: fragmentShader,
+        transparent: true,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+        side: THREE.DoubleSide
+      });
+      
+      // Create plane for fire text (taller for flames)
+      const geometry = new THREE.PlaneGeometry(16, 8);
+      introTextMesh = new THREE.Mesh(geometry, fireMaterial);
+      introTextMesh.position.set(0, 0, 0);
+      introScene.add(introTextMesh);
+      
+      console.log('[intro] Fire text created with ProggyClean font');
+    }
+    
+    function animateIntro() {
+      if (!introActive) return;
+      
+      introAnimationId = requestAnimationFrame(animateIntro);
+      
+      time += 0.016; // ~60fps
+      
+      // Update fire shader
+      if (fireMaterial) {
+        fireMaterial.uniforms.time.value = time;
+      }
+      
+      // NO movement - keep text stationary so fire looks good
+      
+      introRenderer.render(introScene, introCamera);
+    }
+    
+    function showIntro() {
+      if (!introScene) {
+        initThreeJsIntro();
+      }
+      
+      time = 0; // Reset time
+      introActive = true;
+      introCanvas.classList.add('visible');
+      animateIntro();
+      
+      console.log('[intro] Showing Three.js fire intro animation');
+    }
+    
+    function hideIntro() {
+      introActive = false;
+      introCanvas.classList.remove('visible');
+      
+      if (introAnimationId) {
+        cancelAnimationFrame(introAnimationId);
+        introAnimationId = null;
+      }
+      
+      console.log('[intro] Hiding Three.js fire intro animation');
+    }
+    
+    // Handle window resize
+    window.addEventListener('resize', () => {
+      if (introCamera && introRenderer) {
+        introCamera.aspect = window.innerWidth / window.innerHeight;
+        introCamera.updateProjectionMatrix();
+        introRenderer.setSize(window.innerWidth, window.innerHeight);
+      }
+    });
+
+    // ===========================
+    // EXISTING OVERLAY CODE
+    // ===========================
+    
     const POLL_INTERVAL_MS = 500;
 
     const boxEl = document.getElementById("counter-box");
@@ -2698,6 +3020,20 @@
         const merch_cta = data.merch_cta || null;
         if (merch_cta && merch_cta.trigger) {
           showMerchCTA();
+        }
+
+        // Handle intro notifications (backend-triggered)
+        const intro = data.intro || null;
+        if (intro && intro.trigger) {
+          showIntro();
+          
+          // Auto-hide after remaining time
+          const remainingTime = (intro.remaining_time || 8) * 1000;
+          setTimeout(() => {
+            hideIntro();
+          }, remainingTime);
+          
+          console.log(`[intro] Triggered Three.js intro for ${remainingTime/1000}s`);
         }
 
         const prevRunsLen = lastRunsSnapshot.length;
