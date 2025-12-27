@@ -4998,6 +4998,10 @@ async def handle_action(action: str, project: Optional[str]) -> None:
         )
         project_key = DEFAULT_PROJECT_NAME
 
+    # Update last_project with the current game
+    async with state_lock:
+        last_project = project_key
+
     logging.info(f"🎯 [handler] Received action={action} for project={project_key}")
     lower = action.lower()
 
@@ -7239,8 +7243,14 @@ async def cta_scheduler_task() -> None:
 
 
 async def main() -> None:
+    global last_project
+    
     # Load YAML config (required) before anything else
     load_overlay_config()
+    
+    # Initialize last_project with DEFAULT_PROJECT_NAME so UI shows game on first load
+    last_project = DEFAULT_PROJECT_NAME
+    logging.info(f"🎮 Initial game set to: {last_project}")
 
     ensure_paths()
     logging.info("🚀 obs-socket-sentinel starting up...")
