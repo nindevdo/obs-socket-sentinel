@@ -6126,17 +6126,32 @@ async def handle_http(
                     logging.warning(f"Error getting action count: {e}")
                     current_count = 0
 
+                # Check if this was a clear or undo action - need to send all counts
+                action_lower = action.lower()
+                all_counts = None
+                if action_lower in ('clear', 'undo'):
+                    # Return all current counts so UI can update everything
+                    all_counts = {}
+                    async with state_lock:
+                        for (g, a), cnt in action_counts.items():
+                            key = f"{g}::{a}"
+                            all_counts[key] = cnt
+
                 # Send success response
-                response_body = json.dumps(
-                    {
-                        "success": True,
-                        "status": "success",
-                        "message": f"Action '{action}' processed successfully",
-                        "game": game,
-                        "action": action,
-                        "new_count": current_count,
-                    }
-                ).encode("utf-8")
+                response_data = {
+                    "success": True,
+                    "status": "success",
+                    "message": f"Action '{action}' processed successfully",
+                    "game": game,
+                    "action": action,
+                    "new_count": current_count,
+                }
+                
+                # Include all counts if this was clear/undo
+                if all_counts is not None:
+                    response_data["all_counts"] = all_counts
+                
+                response_body = json.dumps(response_data).encode("utf-8")
 
                 headers = (
                     "HTTP/1.1 200 OK\r\n"
@@ -6464,6 +6479,7 @@ async def handle_http(
                     for game_key in GAMES_CONFIG.keys():
                         if game_key.lower() in current_scene.lower():
                             current_game = game_key
+                            last_project = game_key  # Set it globally so it persists
                             logging.info(f"[ui] Auto-detected game '{current_game}' from scene '{current_scene}'")
                             break
                 

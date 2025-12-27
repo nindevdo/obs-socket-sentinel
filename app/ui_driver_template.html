@@ -1437,11 +1437,14 @@
                     const result = await response.json();
                     console.log('Action triggered successfully:', result);
 
-                    // Update action count if provided
-                    if (result.new_count !== undefined) {
+                    // If all_counts is provided (from clear/undo), update all counts
+                    if (result.all_counts) {
+                        this.actionCounts = result.all_counts;
+                        this.render();
+                    } else if (result.new_count !== undefined) {
+                        // Update single action count if provided
                         const countKey = result.game ? `${result.game}::${action}` : action;
                         this.actionCounts[countKey] = result.new_count;
-                        // Re-render to show updated count
                         this.render();
                     }
 
