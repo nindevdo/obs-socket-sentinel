@@ -6467,13 +6467,14 @@ async def handle_http(
                         await obs_ctrl.refresh_state()
                         obs_actions = obs_ctrl.get_dynamic_actions()
                         total_actions = sum(len(group) for group in obs_actions.values() if isinstance(group, dict))
-                        logging.info(f"[ui] Loaded {total_actions} OBS actions in {len(obs_actions)} groups")
+                        logging.info(f"[ui] Loaded {total_actions} OBS actions in {len(obs_actions)} groups: {list(obs_actions.keys())}")
+                        logging.info(f"[ui] OBS scenes: {len(obs_ctrl.scenes)}, transitions: {len(obs_ctrl.transitions)}")
                     else:
                         logging.info("[ui] OBS not connected")
                 except ImportError:
                     logging.debug("[ui] obs_controller module not available")
                 except Exception as e:
-                    logging.warning(f"[ui] OBS connection failed: {e}")
+                    logging.warning(f"[ui] OBS connection failed: {e}", exc_info=True)
                 
                 # Get current game - try to detect from OBS scene if not set
                 current_game = last_project
@@ -6565,16 +6566,30 @@ window.EMBEDDED_ACTION_COUNTS = {action_counts_json};
                 
                 # Get fresh OBS state
                 obs_actions = {}
+                current_scene = ""
+                current_transition = ""
+                is_recording = False
+                is_streaming = False
                 try:
                     from obs_controller import get_obs_controller
                     obs_ctrl = await get_obs_controller()
                     if obs_ctrl and obs_ctrl.connected:
                         await obs_ctrl.refresh_state()
                         obs_actions = obs_ctrl.get_dynamic_actions()
+                        current_scene = obs_ctrl.current_scene
+                        current_transition = obs_ctrl.current_transition
+                        is_recording = obs_ctrl.is_recording
+                        is_streaming = obs_ctrl.is_streaming
                 except Exception as e:
                     logging.debug(f"[obs_state] Could not fetch OBS state: {e}")
                 
-                body_bytes = json.dumps({"obs_actions": obs_actions}).encode("utf-8")
+                body_bytes = json.dumps({
+                    "obs_actions": obs_actions,
+                    "current_scene": current_scene,
+                    "current_transition": current_transition,
+                    "is_recording": is_recording,
+                    "is_streaming": is_streaming
+                }).encode("utf-8")
                 headers_str = (
                     "HTTP/1.1 200 OK\r\n"
                     "Content-Type: application/json\r\n"

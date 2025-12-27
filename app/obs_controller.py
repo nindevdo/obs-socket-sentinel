@@ -27,6 +27,7 @@ class OBSController:
         self.scenes: List[Dict] = []
         self.current_scene: str = ""
         self.transitions: List[str] = []
+        self.current_transition: str = ""
         self.sources: List[Dict] = []
         
     async def connect(self):
@@ -76,6 +77,7 @@ class OBSController:
             self.scenes = state['scenes']
             self.current_scene = state['current_scene']
             self.transitions = state['transitions']
+            self.current_transition = state['current_transition']
             self.sources = state['sources']
             logger.info(f"📡 OBS State: {len(self.scenes)} scenes, {len(self.transitions)} transitions, {len(self.sources)} sources")
             
@@ -93,8 +95,10 @@ class OBSController:
         try:
             trans_resp = self.client.get_scene_transition_list()
             transitions = [t['transitionName'] for t in trans_resp.transitions] if hasattr(trans_resp, 'transitions') else []
+            current_transition = trans_resp.current_scene_transition_name if hasattr(trans_resp, 'current_scene_transition_name') else ""
         except:
             transitions = []
+            current_transition = ""
         
         # Get sources
         try:
@@ -107,6 +111,7 @@ class OBSController:
             'scenes': scenes,
             'current_scene': current_scene,
             'transitions': transitions,
+            'current_transition': current_transition,
             'sources': sources
         }
     
@@ -269,9 +274,10 @@ class OBSController:
         # Transition actions
         for transition in self.transitions:
             safe_name = f"transition_{transition.lower().replace(' ', '_')}"
+            is_active = transition == self.current_transition
             actions['transitions'][safe_name] = {
                 'label': f"✨ {transition}",
-                'active': False
+                'active': is_active
             }
         
         # Streaming/Recording controls - toggle buttons
