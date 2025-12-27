@@ -890,6 +890,241 @@
       opacity: 0.8;
     }
 
+    /* Subscribe CTA notification styles (center of screen) */
+    #subscribe-cta {
+      position: fixed;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%) scale(0.8);
+      opacity: 0;
+      pointer-events: none;
+      z-index: 16000;
+      
+      min-width: 600px;
+      max-width: 800px;
+      background: linear-gradient(135deg, rgba(255, 0, 100, 0.95), rgba(255, 100, 0, 0.95));
+      border: 4px solid #FFD700;
+      border-radius: 24px;
+      padding: 40px 50px;
+      box-shadow: 
+        0 16px 64px rgba(0, 0, 0, 0.9),
+        0 0 40px rgba(255, 215, 0, 0.8),
+        inset 0 4px 16px rgba(255, 255, 255, 0.2);
+      backdrop-filter: blur(12px);
+      
+      font-family: "ProggyClean Nerd Font", "Noto Color Emoji", sans-serif;
+      
+      transition: 
+        transform 0.6s cubic-bezier(0.34, 1.56, 0.64, 1),
+        opacity 0.4s ease-out;
+    }
+
+    #subscribe-cta.visible {
+      opacity: 1;
+      transform: translate(-50%, -50%) scale(1);
+    }
+
+    .subscribe-cta-content {
+      text-align: center;
+    }
+
+    .subscribe-cta-icon {
+      font-size: 4rem;
+      margin-bottom: 20px;
+      animation: subscribe-pulse 2s ease-in-out infinite;
+    }
+
+    @keyframes subscribe-pulse {
+      0%, 100% {
+        transform: scale(1);
+        filter: drop-shadow(0 0 10px rgba(255, 215, 0, 0.8));
+      }
+      50% {
+        transform: scale(1.1);
+        filter: drop-shadow(0 0 20px rgba(255, 215, 0, 1));
+      }
+    }
+
+    .subscribe-cta-title {
+      color: #FFFFFF;
+      font-size: 2.5rem;
+      font-weight: 800;
+      margin-bottom: 20px;
+      text-shadow: 
+        0 4px 8px rgba(0, 0, 0, 0.9),
+        0 0 20px rgba(255, 215, 0, 0.6);
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+    }
+
+    .subscribe-cta-message {
+      color: #FFF;
+      font-size: 1.8rem;
+      font-weight: 600;
+      line-height: 1.6;
+      text-shadow: 0 2px 4px rgba(0, 0, 0, 0.8);
+      margin-bottom: 10px;
+    }
+
+    .subscribe-cta-subtext {
+      color: #FFD700;
+      font-size: 1.3rem;
+      font-weight: 500;
+      text-shadow: 0 2px 4px rgba(0, 0, 0, 0.8);
+      margin-top: 15px;
+    }
+
+    /* Merch Showcase CTA (bottom of screen, horizontal layout) */
+    #merch-cta {
+      position: fixed;
+      bottom: 20px;
+      left: 50%;
+      transform: translateX(-50%) translateY(200px);
+      opacity: 0;
+      pointer-events: none;
+      z-index: 15000;
+      
+      width: 85vw;
+      max-width: 1400px;
+      height: 180px;
+      background: linear-gradient(90deg, rgba(30, 30, 40, 0.98), rgba(50, 40, 60, 0.98));
+      border: 3px solid #9370DB;
+      border-radius: 16px;
+      padding: 20px 30px;
+      box-shadow: 
+        0 12px 48px rgba(0, 0, 0, 0.9),
+        0 0 30px rgba(147, 112, 219, 0.6),
+        inset 0 3px 12px rgba(255, 255, 255, 0.1);
+      backdrop-filter: blur(10px);
+      
+      font-family: "ProggyClean Nerd Font", "Noto Color Emoji", sans-serif;
+      
+      display: flex;
+      align-items: center;
+      gap: 25px;
+      
+      transition: 
+        transform 0.5s cubic-bezier(0.34, 1.56, 0.64, 1),
+        opacity 0.3s ease-out;
+    }
+
+    #merch-cta.visible {
+      opacity: 1;
+      transform: translateX(-50%) translateY(0);
+    }
+
+    .merch-header {
+      flex-shrink: 0;
+      text-align: center;
+      padding-right: 20px;
+      border-right: 2px solid rgba(147, 112, 219, 0.5);
+    }
+
+    .merch-icon {
+      font-size: 2.5rem;
+      margin-bottom: 8px;
+      animation: merch-bounce 3s ease-in-out infinite;
+    }
+
+    @keyframes merch-bounce {
+      0%, 100% {
+        transform: translateY(0);
+      }
+      50% {
+        transform: translateY(-8px);
+      }
+    }
+
+    .merch-title {
+      color: #FFD700;
+      font-size: 1.4rem;
+      font-weight: 700;
+      text-shadow: 
+        0 2px 4px rgba(0, 0, 0, 0.9),
+        0 0 10px rgba(255, 215, 0, 0.5);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    .merch-items-container {
+      flex: 1;
+      display: flex;
+      gap: 15px;
+      overflow: hidden;
+    }
+
+    .merch-item {
+      flex: 1;
+      background: rgba(147, 112, 219, 0.15);
+      border: 2px solid rgba(147, 112, 219, 0.4);
+      border-radius: 10px;
+      padding: 12px;
+      text-align: center;
+      transition: all 0.3s ease;
+    }
+
+    .merch-item:hover {
+      background: rgba(147, 112, 219, 0.25);
+      border-color: rgba(147, 112, 219, 0.7);
+      transform: translateY(-3px);
+    }
+
+    .merch-item-icon {
+      font-size: 2rem;
+      margin-bottom: 6px;
+    }
+
+    .merch-item-name {
+      color: #FFFFFF;
+      font-size: 1.1rem;
+      font-weight: 600;
+      margin-bottom: 4px;
+      text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
+    }
+
+    .merch-item-price {
+      color: #FFD700;
+      font-size: 1rem;
+      font-weight: 700;
+      text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
+    }
+
+    .merch-qr-section {
+      flex-shrink: 0;
+      text-align: center;
+      padding-left: 20px;
+      border-left: 2px solid rgba(147, 112, 219, 0.5);
+    }
+
+    .merch-qr-placeholder {
+      width: 120px;
+      height: 120px;
+      background: #FFFFFF;
+      border: 3px solid #9370DB;
+      border-radius: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 3rem;
+      margin-bottom: 8px;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.6);
+    }
+
+    .merch-qr-text {
+      color: #FFD700;
+      font-size: 0.95rem;
+      font-weight: 600;
+      text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
+    }
+
+    .merch-shop-text {
+      color: #FFFFFF;
+      font-size: 1.2rem;
+      font-weight: 700;
+      margin-top: 8px;
+      text-shadow: 0 2px 4px rgba(0, 0, 0, 0.8);
+    }
+
   </style>
 </head>
 
@@ -950,6 +1185,62 @@
     <div class="news-header">📰 GAME NEWS</div>
     <div class="news-content" id="news-content">
       <!-- News items will be dynamically populated here -->
+    </div>
+  </div>
+
+  <!-- Subscribe CTA notification (center of screen) -->
+  <div id="subscribe-cta">
+    <div class="subscribe-cta-content">
+      <div class="subscribe-cta-icon">🔔</div>
+      <div class="subscribe-cta-title">Subscribe Now!</div>
+      <div class="subscribe-cta-message">Support Linux Gaming Content</div>
+      <div class="subscribe-cta-subtext">👍 Like • 🔔 Subscribe • 💬 Comment</div>
+    </div>
+  </div>
+
+  <!-- Merch Showcase CTA (bottom of screen) -->
+  <div id="merch-cta">
+    <div class="merch-header">
+      <div class="merch-icon">🛍️</div>
+      <div class="merch-title">Merch Shop</div>
+    </div>
+    
+    <div class="merch-items-container">
+      <div class="merch-item">
+        <div class="merch-item-icon">👕</div>
+        <div class="merch-item-name">T-Shirts</div>
+        <div class="merch-item-price">$24.99</div>
+      </div>
+      
+      <div class="merch-item">
+        <div class="merch-item-icon">👔</div>
+        <div class="merch-item-name">Hoodies</div>
+        <div class="merch-item-price">$44.99</div>
+      </div>
+      
+      <div class="merch-item">
+        <div class="merch-item-icon">☕</div>
+        <div class="merch-item-name">Mugs</div>
+        <div class="merch-item-price">$14.99</div>
+      </div>
+      
+      <div class="merch-item">
+        <div class="merch-item-icon">🧢</div>
+        <div class="merch-item-name">Hats</div>
+        <div class="merch-item-price">$19.99</div>
+      </div>
+      
+      <div class="merch-item">
+        <div class="merch-item-icon">🎒</div>
+        <div class="merch-item-name">Bags</div>
+        <div class="merch-item-price">$29.99</div>
+      </div>
+    </div>
+    
+    <div class="merch-qr-section">
+      <div class="merch-qr-placeholder">📱</div>
+      <div class="merch-qr-text">SCAN TO SHOP</div>
+      <div class="merch-shop-text">shop.nindevdo.com</div>
     </div>
   </div>
 
@@ -1015,6 +1306,21 @@
 
     // News notification state
     let lastNews = null;
+
+    // Subscribe CTA state
+    const subscribeCTA = document.getElementById("subscribe-cta");
+    const SUBSCRIBE_CTA_INTERVAL = 15 * 60 * 1000; // 15 minutes in milliseconds
+    const SUBSCRIBE_CTA_DURATION = 10 * 1000; // Show for 10 seconds
+    let subscribeCTATimeoutId = null;
+    let subscribeCTAHideTimeoutId = null;
+
+    // Merch CTA state
+    const merchCTA = document.getElementById("merch-cta");
+    const MERCH_CTA_INTERVAL = 22 * 60 * 1000; // 22 minutes in milliseconds
+    const MERCH_CTA_DURATION = 12 * 1000; // Show for 12 seconds
+    let merchCTATimeoutId = null;
+    let merchCTAHideTimeoutId = null;
+    let merchCTANextShowTime = 0; // Track when to show next
 
     // Web Audio for GIF+audio
     let audioCtx = null;
@@ -1833,6 +2139,70 @@
       console.log(`[news] Hidden`);
     }
 
+    function showSubscribeCTA() {
+      console.log('[subscribe-cta] Showing subscribe CTA');
+      
+      subscribeCTA.classList.add('visible');
+      
+      // Play subscribe CTA sound
+      const subscribeSound = new Audio('/sounds/subscribe-cta.mp3');
+      subscribeSound.volume = 0.5;
+      subscribeSound.play().catch(err => {
+        console.warn('[subscribe-cta] Sound play failed:', err);
+      });
+      
+      // Auto-hide after duration
+      if (subscribeCTAHideTimeoutId) {
+        clearTimeout(subscribeCTAHideTimeoutId);
+      }
+      
+      subscribeCTAHideTimeoutId = setTimeout(() => {
+        hideSubscribeCTA();
+      }, SUBSCRIBE_CTA_DURATION);
+    }
+
+    function hideSubscribeCTA() {
+      console.log('[subscribe-cta] Hiding subscribe CTA');
+      subscribeCTA.classList.remove('visible');
+      
+      if (subscribeCTAHideTimeoutId) {
+        clearTimeout(subscribeCTAHideTimeoutId);
+        subscribeCTAHideTimeoutId = null;
+      }
+    }
+
+    function showMerchCTA() {
+      console.log('[merch-cta] Showing merch CTA');
+      
+      merchCTA.classList.add('visible');
+      
+      // Play merch CTA sound
+      const merchSound = new Audio('/sounds/merch-cta.mp3');
+      merchSound.volume = 0.5;
+      merchSound.play().catch(err => {
+        console.warn('[merch-cta] Sound play failed:', err);
+      });
+      
+      // Auto-hide after duration
+      if (merchCTAHideTimeoutId) {
+        clearTimeout(merchCTAHideTimeoutId);
+      }
+      
+      merchCTAHideTimeoutId = setTimeout(() => {
+        hideMerchCTA();
+      }, MERCH_CTA_DURATION);
+    }
+
+    function hideMerchCTA() {
+      console.log('[merch-cta] Hiding merch CTA');
+      merchCTA.classList.remove('visible');
+      
+      if (merchCTAHideTimeoutId) {
+        clearTimeout(merchCTAHideTimeoutId);
+        merchCTAHideTimeoutId = null;
+      }
+    }
+
     function playSoundAndAnimate(soundUrl, memeUrl, videoUrl, audioDuration = 0) {
       const hasVideo = !!videoUrl;
       const hasMeme = !!memeUrl;
@@ -2318,6 +2688,18 @@
           lastNews = news;
         }
 
+        // Handle subscribe CTA notifications (backend-triggered)
+        const subscribe_cta = data.subscribe_cta || null;
+        if (subscribe_cta && subscribe_cta.trigger) {
+          showSubscribeCTA();
+        }
+
+        // Handle merch CTA notifications (backend-triggered)
+        const merch_cta = data.merch_cta || null;
+        if (merch_cta && merch_cta.trigger) {
+          showMerchCTA();
+        }
+
         const prevRunsLen = lastRunsSnapshot.length;
 
         renderRuns(runs);
@@ -2391,6 +2773,28 @@
 
     pollOverlay();
     setInterval(pollOverlay, POLL_INTERVAL_MS);
+    
+    // Check if test mode is enabled via URL parameter (?test=1)
+    const urlParams = new URLSearchParams(window.location.search);
+    const testMode = urlParams.get('test') === '1';
+    
+    if (testMode) {
+      console.log('🧪 TEST MODE ENABLED - CTAs will show in 5 and 10 seconds (client-side test)');
+      // Show subscribe CTA after 5 seconds
+      setTimeout(() => {
+        console.log('🧪 TEST: Showing subscribe CTA');
+        showSubscribeCTA();
+      }, 5000);
+      
+      // Show merch CTA after 10 seconds
+      setTimeout(() => {
+        console.log('🧪 TEST: Showing merch CTA');
+        showMerchCTA();
+      }, 10000);
+    }
+    
+    // CTAs are now backend-controlled via /overlay endpoint
+    console.log('[cta] CTAs controlled by backend scheduler - no client-side timers');
   </script>
 </body>
 </html>

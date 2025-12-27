@@ -290,6 +290,19 @@ ACHIEVEMENT_PERCENTAGES_DISPLAY_DURATION = (
 current_news: Optional[Dict[str, Any]] = None
 news_display_until: Optional[float] = None
 
+# CTA (Call-To-Action) notification state
+current_subscribe_cta: Optional[Dict[str, Any]] = None
+subscribe_cta_display_until: Optional[float] = None
+last_subscribe_cta_time: float = 0.0  # When we last triggered subscribe CTA
+SUBSCRIBE_CTA_INTERVAL = 15 * 60  # 15 minutes in seconds
+SUBSCRIBE_CTA_DURATION = 10.0  # Show for 10 seconds
+
+current_merch_cta: Optional[Dict[str, Any]] = None
+merch_cta_display_until: Optional[float] = None
+last_merch_cta_time: float = 0.0  # When we last triggered merch CTA
+MERCH_CTA_INTERVAL = 22 * 60  # 22 minutes in seconds
+MERCH_CTA_DURATION = 12.0  # Show for 12 seconds
+
 # Chapter file/session state
 current_chapter_file: Optional[Path] = None
 session_start_wall: Optional[float] = None  # time.time() when "start" was received
@@ -5743,6 +5756,74 @@ async def handle_http(
                 await writer.drain()
                 return
 
+        # Handle POST /subscribe-cta endpoint
+        if method == "POST" and path == "/subscribe-cta":
+            global current_subscribe_cta, subscribe_cta_display_until, last_subscribe_cta_time
+            try:
+                # Trigger subscribe CTA
+                async with state_lock:
+                    now = time.time()
+                    current_subscribe_cta = {"trigger": True}
+                    subscribe_cta_display_until = now + SUBSCRIBE_CTA_DURATION
+                    last_subscribe_cta_time = now
+                
+                logging.info(f"[cta] 🔔 Subscribe CTA triggered via POST endpoint")
+                
+                # Send success response
+                response_body = json.dumps(
+                    {"status": "success", "message": "Subscribe CTA triggered"}
+                ).encode("utf-8")
+                headers = (
+                    "HTTP/1.1 200 OK\r\n"
+                    "Content-Type: application/json\r\n"
+                    f"Content-Length: {len(response_body)}\r\n"
+                    "Connection: close\r\n"
+                    "\r\n"
+                )
+                writer.write(headers.encode("ascii") + response_body)
+                await writer.drain()
+                return
+            except Exception as e:
+                logging.error(f"❗ [cta] Error triggering subscribe CTA: {e}", exc_info=True)
+                resp = b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                writer.write(resp)
+                await writer.drain()
+                return
+
+        # Handle POST /merch-cta endpoint
+        if method == "POST" and path == "/merch-cta":
+            global current_merch_cta, merch_cta_display_until, last_merch_cta_time
+            try:
+                # Trigger merch CTA
+                async with state_lock:
+                    now = time.time()
+                    current_merch_cta = {"trigger": True}
+                    merch_cta_display_until = now + MERCH_CTA_DURATION
+                    last_merch_cta_time = now
+                
+                logging.info(f"[cta] 🛍️ Merch CTA triggered via POST endpoint")
+                
+                # Send success response
+                response_body = json.dumps(
+                    {"status": "success", "message": "Merch CTA triggered"}
+                ).encode("utf-8")
+                headers = (
+                    "HTTP/1.1 200 OK\r\n"
+                    "Content-Type: application/json\r\n"
+                    f"Content-Length: {len(response_body)}\r\n"
+                    "Connection: close\r\n"
+                    "\r\n"
+                )
+                writer.write(headers.encode("ascii") + response_body)
+                await writer.drain()
+                return
+            except Exception as e:
+                logging.error(f"❗ [cta] Error triggering merch CTA: {e}", exc_info=True)
+                resp = b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                writer.write(resp)
+                await writer.drain()
+                return
+
         # Handle POST /hotkeys endpoint (hotkey mapping updates)
         if method == "POST" and path == "/hotkeys":
             global current_hotkey_mappings, last_hotkey_update
@@ -6180,6 +6261,18 @@ async def handle_http(
                         # Add sound for frontend
                         news_notification["sound"] = "/sounds/news.mp3"
 
+                # ---- Build subscribe CTA notification data ----
+                subscribe_cta_notification = None
+                if current_subscribe_cta and subscribe_cta_display_until:
+                    if now < subscribe_cta_display_until:
+                        subscribe_cta_notification = {"trigger": True}
+
+                # ---- Build merch CTA notification data ----
+                merch_cta_notification = None
+                if current_merch_cta and merch_cta_display_until:
+                    if now < merch_cta_display_until:
+                        merch_cta_notification = {"trigger": True}
+
             body_obj = {
                 "text": text,
                 "action": action,
@@ -6195,6 +6288,8 @@ async def handle_http(
                 "playtime": playtime_notification,
                 "achievement_percentages": achievement_percentages_notification,
                 "news": news_notification,
+                "subscribe_cta": subscribe_cta_notification,
+                "merch_cta": merch_cta_notification,
             }
             body_bytes = json.dumps(body_obj).encode("utf-8")
             headers = (
@@ -6888,6 +6983,55 @@ async def handle_http(
 # -----------------------------
 # MAIN ENTRY
 # -----------------------------
+async def cta_scheduler_task() -> None:
+    """
+    Background task that triggers Subscribe and Merch CTAs on schedule.
+    Runs continuously and triggers CTAs at specified intervals.
+    """
+    global current_subscribe_cta, subscribe_cta_display_until, last_subscribe_cta_time
+    global current_merch_cta, merch_cta_display_until, last_merch_cta_time
+    
+    # Wait a bit after startup before first CTA
+    await asyncio.sleep(60)  # Wait 1 minute after startup
+    
+    logging.info("[cta] CTA scheduler started - Subscribe: every 15min, Merch: every 22min")
+    
+    while True:
+        try:
+            now = time.time()
+            
+            # Check if we should trigger Subscribe CTA
+            if now - last_subscribe_cta_time >= SUBSCRIBE_CTA_INTERVAL:
+                async with state_lock:
+                    current_subscribe_cta = {"trigger": True}
+                    subscribe_cta_display_until = now + SUBSCRIBE_CTA_DURATION
+                    last_subscribe_cta_time = now
+                logging.info(f"[cta] 🔔 Triggered Subscribe CTA (will display for {SUBSCRIBE_CTA_DURATION}s)")
+            
+            # Check if we should trigger Merch CTA
+            # Add collision detection - don't show if subscribe CTA just triggered
+            time_since_subscribe = now - last_subscribe_cta_time
+            if now - last_merch_cta_time >= MERCH_CTA_INTERVAL:
+                # Avoid overlap: if subscribe CTA triggered in last 2 minutes, wait 3 more minutes
+                if time_since_subscribe < 120:  # Within 2 minutes
+                    logging.info(f"[cta] 🛍️ Merch CTA delayed to avoid overlap with Subscribe CTA")
+                    await asyncio.sleep(180)  # Wait 3 more minutes
+                    now = time.time()  # Update time after delay
+                
+                async with state_lock:
+                    current_merch_cta = {"trigger": True}
+                    merch_cta_display_until = now + MERCH_CTA_DURATION
+                    last_merch_cta_time = now
+                logging.info(f"[cta] 🛍️ Triggered Merch CTA (will display for {MERCH_CTA_DURATION}s)")
+            
+            # Sleep for 30 seconds before checking again
+            await asyncio.sleep(30)
+            
+        except Exception as e:
+            logging.error(f"[cta] Error in CTA scheduler: {e}", exc_info=True)
+            await asyncio.sleep(60)  # Wait a bit before retrying on error
+
+
 async def main() -> None:
     # Load YAML config (required) before anything else
     load_overlay_config()
@@ -6927,6 +7071,10 @@ async def main() -> None:
         logging.info(
             "[discord] Bot token or channel id missing; meme/sound cache disabled."
         )
+    
+    # ---- Start CTA scheduler ----
+    logging.info("[cta] Starting CTA scheduler task...")
+    asyncio.create_task(cta_scheduler_task())
 
     logging.info(f"📡 TCP listening on {HOST}:{PORT}")
     tcp_server = await asyncio.start_server(handle_client, HOST, PORT)
