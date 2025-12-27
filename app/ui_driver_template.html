@@ -31,6 +31,11 @@
             margin: 0;
             padding: 0;
             overflow: hidden;
+            letter-spacing: normal;
+            word-spacing: normal;
+            text-rendering: optimizeLegibility;
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
         }
 
         .container {
@@ -113,6 +118,8 @@
             gap: 0.25rem;
             user-select: none;
             min-height: 0;
+            letter-spacing: normal;
+            word-spacing: normal;
         }
 
         .game-emoji {
@@ -1065,8 +1072,10 @@
                     this.render();
                     this.setStatus('connected', '✅ Connected to server');
                     
-                    // Poll for game changes every 5 seconds
-                    setInterval(() => this.loadConfig().then(() => this.render()), 5000);
+                    // Poll for state changes every 2 seconds - UPDATE incrementally
+                    setInterval(async () => {
+                        await this.refreshState();
+                    }, 2000);
                 } catch (error) {
                     console.error('Failed to initialize:', error);
                     this.setStatus('disconnected', '❌ Failed to connect to server');
@@ -1079,29 +1088,12 @@
 
             async loadConfig() {
                 try {
-                    const response = await fetch(`${this.serverUrl}/ui_state`, {
-                        headers: {
-                            'Authorization': `Bearer ${this.authToken}`
-                        }
-                    });
-                    
-                    if (response.status === 401) {
-                        this.logout();
-                        return;
-                    }
-                    
-                    if (!response.ok) {
-                        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-                    }
-                    
-                    const data = await response.json();
-                    this.config = { games: data.games_config };
-                    this.currentGame = data.current_game;
-                    this.actionCounts = data.action_counts || {};
-                    this.runStats = data.run_stats || null;
-                    
-                    // Load OBS actions from embedded data (set by server on page load)
-                    this.obsActions = window.EMBEDDED_OBS_ACTIONS || data.obs_actions || {};
+                    // All data is embedded in the page, no need to fetch
+                    this.config = { games: window.EMBEDDED_GAMES_CONFIG || {} };
+                    this.currentGame = window.EMBEDDED_CURRENT_GAME || '';
+                    this.actionCounts = window.EMBEDDED_ACTION_COUNTS || {};
+                    this.runStats = window.EMBEDDED_RUN_STATS || null;
+                    this.obsActions = window.EMBEDDED_OBS_ACTIONS || {};
                     
                     console.log('Loaded config:', this.config);
                     console.log('Current game:', this.currentGame);
@@ -1141,37 +1133,74 @@
                 }
             }
 
-            // Periodically try to refresh hotkey mappings and OBS state
-            startHotkeyRefresh() {
-                // Try to refresh hotkeys every 30 seconds
-                setInterval(async () => {
-                    await this.loadHotkeyMappings();
-                    // Also refresh OBS actions to get updated active states
-                    await this.loadOBSActions();
-                    // Re-render UI if hotkeys were updated
-                    if (this.isAuthenticated && this.config && this.currentGame) {
-                        this.render();
-        
-                    }
-                }, 3000); // Poll every 3 seconds for better responsiveness
-            }
-            
             async loadOBSActions() {
-                // Load fresh OBS state from server
                 try {
-                    const response = await fetch(`${this.serverUrl}/ui_state`, {
+                    const response = await fetch(`${this.serverUrl}/obs_state`, {
                         headers: {
                             'Authorization': `Bearer ${this.authToken}`
                         }
                     });
+                    
                     if (response.ok) {
                         const data = await response.json();
-                        if (data.obs_actions) {
-                            this.obsActions = data.obs_actions;
-                        }
+                        this.obsActions = data.obs_actions || {};
+                        console.log('🔄 Refreshed OBS state:', this.obsActions);
+                        return true;
                     }
-                } catch (e) {
-                    console.error('Failed to refresh OBS actions:', e);
+                } catch (error) {
+                    console.log('⚠️ Cannot refresh OBS state:', error.message);
+                }
+                return false;
+            }
+
+            // Fetch fresh state from server without full page reload
+            async refreshState() {
+                try {
+                    const response = await fetch(`${this.serverUrl}/obs_state`, {
+                        headers: {
+                            'Authorization': `Bearer ${this.authToken}`
+                        }
+                    });
+                    
+                    if (!response.ok) return;
+                    
+                    const data = await response.json();
+                    
+                    // Update OBS actions
+                    const newObsActions = data.obs_actions || {};
+                    
+                    // Only update UI if something changed
+                    if (JSON.stringify(this.obsActions) !== JSON.stringify(newObsActions)) {
+                        this.obsActions = newObsActions;
+                        this.updateOBSButtons();
+                    }
+                    
+                    // Update current game if changed
+                    if (data.current_game && data.current_game !== this.currentGame) {
+                        this.currentGame = data.current_game;
+                        this.updateCurrentGameDisplay();
+                        // Game changed - need full re-render for game actions
+                        this.render();
+                    }
+                } catch (error) {
+                    // Silently fail - don't spam console
+                }
+            }
+            
+            // Update only OBS button states without re-rendering everything
+            updateOBSButtons() {
+                if (!this.obsActions) return;
+                
+                for (const [action, data] of Object.entries(this.obsActions)) {
+                    const button = this.contentEl.querySelector(`button[data-action="${action}"]`);
+                    if (!button) continue;
+                    
+                    const isActive = typeof data === 'object' ? data.active : false;
+                    const isRecording = typeof data === 'object' ? data.recording : false;
+                    
+                    // Update classes
+                    button.classList.toggle('active', isActive);
+                    button.classList.toggle('recording', isRecording);
                 }
             }
 

@@ -5,18 +5,18 @@ ENV PYTHONPATH=/app
 
 # Install system dependencies including ffmpeg for video duration detection
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ffmpeg \
-    nodejs \
-    npm \
-    wget \
-    unzip \
-    && rm -rf /var/lib/apt/lists/*
+  ffmpeg \
+  nodejs \
+  npm \
+  wget \
+  unzip \
+  && rm -rf /var/lib/apt/lists/*
 
 # Download and install ProggyClean Nerd Font for serving
 RUN mkdir -p /app/_data/fonts && \
-    wget -q https://github.com/ryanoasis/nerd-fonts/releases/download/v3.1.1/ProggyClean.zip -O /tmp/ProggyClean.zip && \
-    unzip -q /tmp/ProggyClean.zip -d /app/_data/fonts/ && \
-    rm /tmp/ProggyClean.zip
+  wget -q https://github.com/ryanoasis/nerd-fonts/releases/download/v3.1.1/ProggyClean.zip -O /tmp/ProggyClean.zip && \
+  unzip -q /tmp/ProggyClean.zip -d /app/_data/fonts/ && \
+  rm /tmp/ProggyClean.zip
 
 # Set working directory
 WORKDIR /app

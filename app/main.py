@@ -6455,28 +6455,48 @@ async def handle_http(
                 except Exception as e:
                     logging.warning(f"[ui] OBS connection failed: {e}")
                 
+                # Get current game - try to detect from OBS scene if not set
+                current_game = last_project
+                if not current_game and obs_actions:
+                    # Try to detect game from current scene name
+                    current_scene = obs_actions.get('current_scene', {}).get('display', '')
+                    for game_key in GAMES_CONFIG.keys():
+                        if game_key.lower() in current_scene.lower():
+                            current_game = game_key
+                            logging.info(f"[ui] Auto-detected game '{current_game}' from scene '{current_scene}'")
+                            break
+                
+                # Embed the full games config so UI can access all game actions
+                games_config_for_ui = {}
+                for game_key, game_data in GAMES_CONFIG.items():
+                    games_config_for_ui[game_key] = {
+                        "emoji": game_data.get("emoji", "🎮"),
+                        "actions": game_data.get("actions", {})
+                    }
+                
                 # Load UI template
                 template_path = "/app/ui_driver_template.html"
                 with open(template_path, "r", encoding="utf-8") as f:
                     body_str = f.read()
                 
-                # Embed OBS actions as JSON in the HTML
+                # Embed all data as JSON in the HTML
                 obs_actions_json = json.dumps(obs_actions)
+                games_config_json = json.dumps(games_config_for_ui)
+                current_game_json = json.dumps(current_game or "")
                 
-                # Inject OBS actions into the template
-                if "window.EMBEDDED_OBS_ACTIONS = {};" in body_str:
-                    body_str = body_str.replace(
-                        "window.EMBEDDED_OBS_ACTIONS = {};",
-                        f"window.EMBEDDED_OBS_ACTIONS = {obs_actions_json};"
-                    )
+                # Inject data into the template
+                embed_script = f"""<script>
+window.EMBEDDED_OBS_ACTIONS = {obs_actions_json};
+window.EMBEDDED_GAMES_CONFIG = {games_config_json};
+window.EMBEDDED_CURRENT_GAME = {current_game_json};
+</script>"""
+                
+                if "</head>" in body_str:
+                    body_str = body_str.replace("</head>", f"{embed_script}\n</head>")
                 else:
-                    # Add it before closing head tag
-                    body_str = body_str.replace(
-                        "</head>",
-                        f"<script>window.EMBEDDED_OBS_ACTIONS = {obs_actions_json};</script>\n</head>"
-                    )
+                    body_str = embed_script + body_str
                 
-                logging.info(f"[ui] Loaded UI template from {template_path}")
+                logging.info(f"[ui] Loaded UI template from {template_path} - game={current_game}, {len(obs_actions)} OBS actions")
             except Exception as e:
                 logging.error(f"❗ [http] Failed to load UI: {e}", exc_info=True)
                 body_str = f"<!DOCTYPE html><html><body><h1>Error loading UI</h1><p>{e}</p></body></html>"
@@ -6495,58 +6515,37 @@ async def handle_http(
             writer.write(headers.encode("ascii") + body_bytes)
             await writer.drain()
 
-        elif path == "/ui_state":
-            # Return current game state for UI initialization
+        elif path == "/obs_state" and method == "GET":
+            # Return current OBS state for UI updates
             try:
-                available_games = list(GAMES_CONFIG.keys())
-                current_game = (
-                    last_project or available_games[0] if available_games else "unknown"
-                )
-
-                # Get action counts for current game
-                game_action_counts = {}
-                if current_game:
-                    for (proj, action_key), count in action_counts.items():
-                        if proj == current_game:
-                            game_action_counts[action_key] = count
-
-                # Get current run stats for current game
-                current_run_stats = None
-                current_run_num = current_run_by_project.get(current_game)
-                if current_run_num:
-                    run_key = (current_game, current_run_num)
-                    stats = run_stats_by_project.get(run_key, {})
-                    current_run_stats = {
-                        "run_number": current_run_num,
-                        "kills": stats.get("kills", 0),
-                        "deaths": stats.get("deaths", 0),
-                        "headshots": stats.get("headshots", 0),
-                    }
-
-                # Get OBS actions if available
+                # Check authentication
+                is_authenticated = check_auth_header(req_text)
+                if not is_authenticated:
+                    body_bytes = json.dumps({"error": "Authentication required"}).encode("utf-8")
+                    headers_str = (
+                        "HTTP/1.1 401 Unauthorized\r\n"
+                        "Content-Type: application/json\r\n"
+                        f"Content-Length: {len(body_bytes)}\r\n"
+                        "Connection: close\r\n"
+                        "\r\n"
+                    )
+                    writer.write(headers_str.encode("ascii") + body_bytes)
+                    await writer.drain()
+                    return
+                
+                # Get fresh OBS state
                 obs_actions = {}
                 try:
                     from obs_controller import get_obs_controller
                     obs_ctrl = await get_obs_controller()
                     if obs_ctrl and obs_ctrl.connected:
+                        await obs_ctrl.refresh_state()
                         obs_actions = obs_ctrl.get_dynamic_actions()
-                        logging.info(f"[ui_state] Loaded {len(obs_actions)} OBS actions")
-                except ImportError:
-                    logging.debug("[ui_state] obs_controller module not available")
                 except Exception as e:
-                    logging.debug(f"[ui_state] OBS not available: {e}")
-
-                response_data = {
-                    "current_game": current_game,
-                    "available_games": available_games,
-                    "games_config": GAMES_CONFIG,
-                    "action_counts": game_action_counts,
-                    "run_stats": current_run_stats,
-                    "obs_actions": obs_actions,  # Add OBS actions
-                }
-
-                body_bytes = json.dumps(response_data).encode("utf-8")
-                headers = (
+                    logging.debug(f"[obs_state] Could not fetch OBS state: {e}")
+                
+                body_bytes = json.dumps({"obs_actions": obs_actions}).encode("utf-8")
+                headers_str = (
                     "HTTP/1.1 200 OK\r\n"
                     "Content-Type: application/json\r\n"
                     f"Content-Length: {len(body_bytes)}\r\n"
@@ -6554,21 +6553,22 @@ async def handle_http(
                     "Connection: close\r\n"
                     "\r\n"
                 )
-                writer.write(headers.encode("ascii") + body_bytes)
+                writer.write(headers_str.encode("ascii") + body_bytes)
                 await writer.drain()
+                return
             except Exception as e:
-                logging.error(f"❗ [http] Failed to get UI state: {e}", exc_info=True)
-                error_data = {"error": str(e)}
-                body_bytes = json.dumps(error_data).encode("utf-8")
-                headers = (
+                logging.error(f"[obs_state] Error: {e}", exc_info=True)
+                body_bytes = json.dumps({"error": str(e)}).encode("utf-8")
+                headers_str = (
                     "HTTP/1.1 500 Internal Server Error\r\n"
                     "Content-Type: application/json\r\n"
                     f"Content-Length: {len(body_bytes)}\r\n"
                     "Connection: close\r\n"
                     "\r\n"
                 )
-                writer.write(headers.encode("ascii") + body_bytes)
+                writer.write(headers_str.encode("ascii") + body_bytes)
                 await writer.drain()
+                return
 
         elif path == "/set_game" and method == "POST":
             # Set the current game manually via dropdown selection
