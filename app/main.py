@@ -6447,7 +6447,8 @@ async def handle_http(
                     if obs_ctrl and obs_ctrl.connected:
                         await obs_ctrl.refresh_state()
                         obs_actions = obs_ctrl.get_dynamic_actions()
-                        logging.info(f"[ui] Loaded {len(obs_actions)} OBS actions")
+                        total_actions = sum(len(group) for group in obs_actions.values() if isinstance(group, dict))
+                        logging.info(f"[ui] Loaded {total_actions} OBS actions in {len(obs_actions)} groups")
                     else:
                         logging.info("[ui] OBS not connected")
                 except ImportError:
@@ -6479,16 +6480,25 @@ async def handle_http(
                 with open(template_path, "r", encoding="utf-8") as f:
                     body_str = f.read()
                 
+                # Get action counts for display
+                action_counts_for_ui = {}
+                async with state_lock:
+                    for (game, action), count in action_counts.items():
+                        key = f"{game}::{action}"
+                        action_counts_for_ui[key] = count
+                
                 # Embed all data as JSON in the HTML
                 obs_actions_json = json.dumps(obs_actions)
                 games_config_json = json.dumps(games_config_for_ui)
                 current_game_json = json.dumps(current_game or "")
+                action_counts_json = json.dumps(action_counts_for_ui)
                 
                 # Inject data into the template
                 embed_script = f"""<script>
 window.EMBEDDED_OBS_ACTIONS = {obs_actions_json};
 window.EMBEDDED_GAMES_CONFIG = {games_config_json};
 window.EMBEDDED_CURRENT_GAME = {current_game_json};
+window.EMBEDDED_ACTION_COUNTS = {action_counts_json};
 </script>"""
                 
                 if "</head>" in body_str:

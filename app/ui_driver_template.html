@@ -81,30 +81,34 @@
             display: flex;
             flex-direction: column;
             gap: 0.5rem;
-            overflow: hidden;
+            overflow-y: auto;
+            overflow-x: hidden;
             min-height: 0;
         }
 
-        .actions-container {
-            display: flex;
-            flex-direction: column;
-            overflow: hidden;
-            min-height: 0;
+        .section-header {
+            font-size: 1rem;
+            font-weight: 700;
+            color: #00ffcc;
+            margin: 0.5rem 0 0.25rem 0;
+            padding: 0.25rem 0.5rem;
+            background: rgba(0, 255, 204, 0.1);
+            border-left: 3px solid #00ffcc;
+            border-radius: 0.25rem;
         }
 
         .actions-grid {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(7rem, 1fr));
+            grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
             gap: 0.5rem;
-            height: 100%;
-            align-content: start;
+            margin-bottom: 0.5rem;
         }
 
         .action-btn {
             background: linear-gradient(135deg, rgba(59, 130, 246, 0.1) 0%, rgba(147, 51, 234, 0.1) 100%);
             border: 2px solid rgba(59, 130, 246, 0.3);
             border-radius: 0.5rem;
-            padding: 0.5rem;
+            padding: 0.75rem;
             color: #ffffff;
             font-size: 0.875rem;
             font-weight: 600;
@@ -117,23 +121,32 @@
             text-align: center;
             gap: 0.25rem;
             user-select: none;
-            min-height: 0;
+            min-height: 80px;
+            height: 100%;
             letter-spacing: normal;
             word-spacing: normal;
+            position: relative;
         }
 
         .game-emoji {
-            font-size: 2rem;
-            margin: 0 5px;
+            font-size: 1.5rem;
+            margin: 0;
         }
 
-        .status {
-            padding: 10px 20px;
-            border-radius: 8px;
-            margin: 10px auto;
-            max-width: 400px;
-            text-align: center;
-            font-weight: 500;
+        .action-btn:hover {
+            background: linear-gradient(135deg, rgba(59, 130, 246, 0.2) 0%, rgba(147, 51, 234, 0.2) 100%);
+            border-color: rgba(59, 130, 246, 0.6);
+            transform: translateY(-2px);
+        }
+
+        .action-btn:active {
+            transform: translateY(0);
+        }
+
+        .action-btn.triggered {
+            animation: actionTrigger 0.6s cubic-bezier(0.4, 0, 0.2, 1);
+            background: linear-gradient(135deg, rgba(34, 197, 94, 0.2) 0%, rgba(16, 185, 129, 0.2) 100%);
+            border-color: rgba(34, 197, 94, 0.6);
         }
 
         .status.connected {
@@ -152,69 +165,6 @@
             background: rgba(251, 191, 36, 0.2);
             border: 1px solid rgba(251, 191, 36, 0.5);
             color: #fbbf24;
-        }
-
-        .actions-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-            gap: 20px;
-            margin-bottom: 30px;
-        }
-
-        .action-btn {
-            background: linear-gradient(135deg, rgba(59, 130, 246, 0.1) 0%, rgba(147, 51, 234, 0.1) 100%);
-            border: 2px solid rgba(59, 130, 246, 0.3);
-            border-radius: 16px;
-            padding: 24px 20px;
-            color: #ffffff;
-            font-size: 1.2rem;
-            font-weight: 600;
-            cursor: pointer;
-            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-            position: relative;
-            overflow: hidden;
-            min-height: 100px;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            justify-content: center;
-            text-align: center;
-            gap: 8px;
-            user-select: none;
-            backdrop-filter: blur(10px);
-        }
-
-        .action-btn::before {
-            content: '';
-            position: absolute;
-            top: 0;
-            left: -100%;
-            width: 100%;
-            height: 100%;
-            background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.1), transparent);
-            transition: left 0.5s;
-        }
-
-        .action-btn:hover {
-            background: linear-gradient(135deg, rgba(59, 130, 246, 0.2) 0%, rgba(147, 51, 234, 0.2) 100%);
-            border-color: rgba(59, 130, 246, 0.6);
-            transform: translateY(-4px) scale(1.02);
-            box-shadow: 0 20px 40px rgba(59, 130, 246, 0.15);
-        }
-
-        .action-btn:hover::before {
-            left: 100%;
-        }
-
-        .action-btn:active {
-            transform: translateY(-2px) scale(0.98);
-            box-shadow: 0 10px 20px rgba(59, 130, 246, 0.2);
-        }
-
-        .action-btn.triggered {
-            animation: actionTrigger 0.6s cubic-bezier(0.4, 0, 0.2, 1);
-            background: linear-gradient(135deg, rgba(34, 197, 94, 0.2) 0%, rgba(16, 185, 129, 0.2) 100%);
-            border-color: rgba(34, 197, 94, 0.6);
         }
 
         .action-btn.active {
@@ -1191,16 +1141,22 @@
             updateOBSButtons() {
                 if (!this.obsActions) return;
                 
-                for (const [action, data] of Object.entries(this.obsActions)) {
-                    const button = this.contentEl.querySelector(`button[data-action="${action}"]`);
-                    if (!button) continue;
+                // Handle grouped structure (scenes, transitions, controls)
+                for (const groupName of ['scenes', 'transitions', 'controls']) {
+                    const group = this.obsActions[groupName];
+                    if (!group) continue;
                     
-                    const isActive = typeof data === 'object' ? data.active : false;
-                    const isRecording = typeof data === 'object' ? data.recording : false;
-                    
-                    // Update classes
-                    button.classList.toggle('active', isActive);
-                    button.classList.toggle('recording', isRecording);
+                    for (const [action, data] of Object.entries(group)) {
+                        const button = this.contentEl.querySelector(`button[data-action="${action}"]`);
+                        if (!button) continue;
+                        
+                        const isActive = data.active || false;
+                        const isRecording = data.recording || false;
+                        
+                        // Update classes
+                        button.classList.toggle('active', isActive);
+                        button.classList.toggle('recording', isRecording);
+                    }
                 }
             }
 
@@ -1312,7 +1268,7 @@
 
                 // System actions FIRST (at top)
                 html += '<div class="system-actions">';
-                html += '<h3>🛠️ System Actions</h3>';
+                html += '<div class="section-header">🛠️ System Actions</div>';
                 html += '<div class="actions-grid">';
                 systemActions.forEach(action => {
                     const emoji = this.getSystemActionEmoji(action);
@@ -1325,25 +1281,51 @@
                 // OBS Remote Controls (if available)
                 if (this.obsActions && Object.keys(this.obsActions).length > 0) {
                     html += '<div class="obs-actions">';
-                    html += '<h3>🎬 OBS Remote Control</h3>';
-                    html += '<div class="actions-grid">';
-                    for (const [action, data] of Object.entries(this.obsActions)) {
-                        // Handle both old string format and new object format
-                        const display = typeof data === 'string' ? data : data.label;
-                        const isActive = typeof data === 'object' ? data.active : false;
-                        const isRecording = typeof data === 'object' ? data.recording : false;
-                        
-                        // Extract emoji from display name
-                        const emoji = display.match(/^([\u{1F300}-\u{1F9FF}])/u)?.[0] || '🎬';
-                        const label = display.replace(/^[\u{1F300}-\u{1F9FF}]\s*/u, '');
-                        html += this.createActionButton(action, emoji, '', false, label, isActive, isRecording);
+                    html += '<div class="section-header">🎬 OBS Remote Control</div>';
+                    
+                    // Render scenes
+                    if (this.obsActions.scenes && Object.keys(this.obsActions.scenes).length > 0) {
+                        html += '<div style="font-size: 0.875rem; font-weight: 600; color: #a0aec0; margin: 0.75rem 0 0.25rem 0.25rem;">Scenes</div>';
+                        html += '<div class="actions-grid">';
+                        for (const [action, data] of Object.entries(this.obsActions.scenes)) {
+                            const emoji = data.label.match(/^([\u{1F300}-\u{1F9FF}])/u)?.[0] || '🎬';
+                            const label = data.label.replace(/^[\u{1F300}-\u{1F9FF}]\s*/u, '');
+                            html += this.createActionButton(action, emoji, '', false, label, data.active, false);
+                        }
+                        html += '</div>';
                     }
-                    html += '</div>';
+                    
+                    // Render transitions
+                    if (this.obsActions.transitions && Object.keys(this.obsActions.transitions).length > 0) {
+                        html += '<div style="font-size: 0.875rem; font-weight: 600; color: #a0aec0; margin: 0.75rem 0 0.25rem 0.25rem;">Transitions</div>';
+                        html += '<div class="actions-grid">';
+                        for (const [action, data] of Object.entries(this.obsActions.transitions)) {
+                            const emoji = data.label.match(/^([\u{1F300}-\u{1F9FF}])/u)?.[0] || '✨';
+                            const label = data.label.replace(/^[\u{1F300}-\u{1F9FF}]\s*/u, '');
+                            html += this.createActionButton(action, emoji, '', false, label, data.active, false);
+                        }
+                        html += '</div>';
+                    }
+                    
+                    // Render controls
+                    if (this.obsActions.controls && Object.keys(this.obsActions.controls).length > 0) {
+                        html += '<div style="font-size: 0.875rem; font-weight: 600; color: #a0aec0; margin: 0.75rem 0 0.25rem 0.25rem;">Recording & Streaming</div>';
+                        html += '<div class="actions-grid">';
+                        for (const [action, data] of Object.entries(this.obsActions.controls)) {
+                            const emoji = data.label.match(/^([\u{1F300}-\u{1F9FF}])/u)?.[0] || '🎮';
+                            const label = data.label.replace(/^[\u{1F300}-\u{1F9FF}]\s*/u, '');
+                            const isRecording = data.recording || false;
+                            html += this.createActionButton(action, emoji, '', false, label, data.active, isRecording);
+                        }
+                        html += '</div>';
+                    }
+                    
                     html += '</div>';
                 }
 
                 // Game-specific actions BELOW
                 if (gameActions.length > 0) {
+                    html += '<div class="section-header">🎮 Game Actions</div>';
                     html += '<div class="actions-grid game-actions">';
                     gameActions.forEach(action => {
                         const emoji = actions[action];
@@ -1352,7 +1334,7 @@
                     });
                     html += '</div>';
                 } else if (!this.currentGame) {
-                    html += '<div class="info" style="text-align: center; padding: 20px; color: #a0aec0; background: rgba(45, 55, 72, 0.5); border-radius: 8px; margin: 10px 0;">ℹ️ Select a game to see game-specific actions</div>';
+                    html += '<div class="info" style="text-align: center; padding: 1rem; color: #a0aec0; background: rgba(45, 55, 72, 0.5); border-radius: 0.5rem; margin: 0.5rem 0;">ℹ️ Select a game to see game-specific actions</div>';
                 }
 
                 // Add run stats if available
@@ -1374,7 +1356,9 @@
 
             createActionButton(action, emoji, hotkey, isSystem = false, customLabel = null, isActive = false, isRecording = false) {
                 const label = customLabel || this.formatActionName(action);
-                const count = this.actionCounts[action] || 0;
+                // For game actions, look up count using game::action key, for system actions just use action
+                const countKey = isSystem ? action : `${this.currentGame}::${action}`;
+                const count = this.actionCounts[countKey] || 0;
                 const countDisplay = count > 0 ? ` (${count})` : '';
                 // Only show hotkey info if we have a real mapping
                 const hotkeyText = hotkey ? hotkey : '';
@@ -1455,8 +1439,16 @@
                     const result = await response.json();
                     console.log('Action triggered successfully:', result);
 
+                    // Update action count if provided
+                    if (result.new_count !== undefined) {
+                        const countKey = result.game ? `${result.game}::${action}` : action;
+                        this.actionCounts[countKey] = result.new_count;
+                        // Re-render to show updated count
+                        this.render();
+                    }
+
                     // Refresh OBS state immediately after action for better responsiveness
-                    if (action.startsWith('scene_') || action.startsWith('transition_') || action === 'toggle_recording' || action === 'toggle_streaming') {
+                    if (action.startsWith('scene_') || action.startsWith('transition_') || action.startsWith('obs_')) {
                         await this.loadOBSActions();
                         this.render();
                     }

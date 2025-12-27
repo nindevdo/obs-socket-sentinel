@@ -235,31 +235,31 @@ class OBSController:
             return 0
     
     def get_dynamic_actions(self) -> Dict[str, Any]:
-        """Generate dynamic actions from current OBS state with active states"""
-        actions = {}
+        """Generate dynamic actions from current OBS state grouped by type"""
+        actions = {
+            'scenes': {},
+            'transitions': {},
+            'controls': {}
+        }
         
-        # Get current recording/streaming status
+        # Get current recording/streaming status without using asyncio in sync context
+        is_recording = False
+        is_streaming = False
         try:
-            loop = asyncio.get_event_loop()
-            record_status = loop.run_until_complete(
-                loop.run_in_executor(None, lambda: self.client.get_record_status() if self.client else None)
-            )
-            stream_status = loop.run_until_complete(
-                loop.run_in_executor(None, lambda: self.client.get_stream_status() if self.client else None)
-            )
-            is_recording = record_status.output_active if record_status else False
-            is_streaming = stream_status.output_active if stream_status else False
+            if self.client:
+                record_status = self.client.get_record_status()
+                stream_status = self.client.get_stream_status()
+                is_recording = record_status.output_active if record_status else False
+                is_streaming = stream_status.output_active if stream_status else False
         except Exception as e:
             logger.warning(f"Could not get OBS status: {e}")
-            is_recording = False
-            is_streaming = False
         
         # Scene switching actions
         for scene in self.scenes:
             scene_name = scene.get('sceneName', '')
             safe_name = f"scene_{scene_name.lower().replace(' ', '_')}"
             is_active = scene_name == self.current_scene
-            actions[safe_name] = {
+            actions['scenes'][safe_name] = {
                 'label': f"🎬 {scene_name}",
                 'active': is_active
             }
@@ -267,28 +267,21 @@ class OBSController:
         # Transition actions
         for transition in self.transitions:
             safe_name = f"transition_{transition.lower().replace(' ', '_')}"
-            actions[safe_name] = {
+            actions['transitions'][safe_name] = {
                 'label': f"✨ {transition}",
                 'active': False
             }
         
-        # Streaming/Recording controls
-        actions['obs_start_stream'] = {
-            'label': "🔴 Start Stream",
-            'active': is_streaming
+        # Streaming/Recording controls - toggle buttons
+        actions['controls']['obs_toggle_stream'] = {
+            'label': f"{'⏹️ Stop' if is_streaming else '🔴 Start'} Stream",
+            'active': is_streaming,
+            'streaming': is_streaming
         }
-        actions['obs_stop_stream'] = {
-            'label': "⏹️ Stop Stream",
-            'active': False
-        }
-        actions['obs_start_record'] = {
-            'label': "🔴 Start Record",
+        actions['controls']['obs_toggle_record'] = {
+            'label': f"{'⏹️ Stop' if is_recording else '🔴 Start'} Record",
             'active': is_recording,
             'recording': is_recording
-        }
-        actions['obs_stop_record'] = {
-            'label': "⏹️ Stop Record",
-            'active': False
         }
         
         return actions
@@ -334,13 +327,41 @@ async def handle_obs_action(action: str, obs_ctrl: OBSController) -> bool:
                 return await obs_ctrl.set_transition(transition)
         return False
     
-    # Streaming controls
+    # Streaming controls - support both toggle and explicit actions
+    elif action == "obs_toggle_stream":
+        # Check current status and toggle
+        try:
+            if obs_ctrl.client:
+                stream_status = obs_ctrl.client.get_stream_status()
+                is_streaming = stream_status.output_active if stream_status else False
+                if is_streaming:
+                    return await obs_ctrl.stop_streaming()
+                else:
+                    return await obs_ctrl.start_streaming()
+            return False
+        except Exception as e:
+            logger.error(f"Failed to toggle stream: {e}")
+            return False
     elif action == "obs_start_stream":
         return await obs_ctrl.start_streaming()
     elif action == "obs_stop_stream":
         return await obs_ctrl.stop_streaming()
     
-    # Recording controls
+    # Recording controls - support both toggle and explicit actions
+    elif action == "obs_toggle_record":
+        # Check current status and toggle
+        try:
+            if obs_ctrl.client:
+                record_status = obs_ctrl.client.get_record_status()
+                is_recording = record_status.output_active if record_status else False
+                if is_recording:
+                    return await obs_ctrl.stop_recording()
+                else:
+                    return await obs_ctrl.start_recording()
+            return False
+        except Exception as e:
+            logger.error(f"Failed to toggle recording: {e}")
+            return False
     elif action == "obs_start_record":
         return await obs_ctrl.start_recording()
     elif action == "obs_stop_record":
