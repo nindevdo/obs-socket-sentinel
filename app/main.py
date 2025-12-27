@@ -6514,18 +6514,23 @@ async def handle_http(
                 current_game_json = json.dumps(current_game or "")
                 action_counts_json = json.dumps(action_counts_for_ui)
                 
-                # Inject data into the template
-                embed_script = f"""<script>
-window.EMBEDDED_OBS_ACTIONS = {obs_actions_json};
-window.EMBEDDED_GAMES_CONFIG = {games_config_json};
-window.EMBEDDED_CURRENT_GAME = {current_game_json};
-window.EMBEDDED_ACTION_COUNTS = {action_counts_json};
-</script>"""
-                
-                if "</head>" in body_str:
-                    body_str = body_str.replace("</head>", f"{embed_script}\n</head>")
-                else:
-                    body_str = embed_script + body_str
+                # Replace placeholder data in the template
+                body_str = body_str.replace(
+                    'window.EMBEDDED_OBS_ACTIONS = {};',
+                    f'window.EMBEDDED_OBS_ACTIONS = {obs_actions_json};'
+                )
+                body_str = body_str.replace(
+                    'window.EMBEDDED_GAMES_CONFIG = {};',
+                    f'window.EMBEDDED_GAMES_CONFIG = {games_config_json};'
+                )
+                body_str = body_str.replace(
+                    'window.EMBEDDED_CURRENT_GAME = "";',
+                    f'window.EMBEDDED_CURRENT_GAME = {current_game_json};'
+                )
+                body_str = body_str.replace(
+                    'window.EMBEDDED_ACTION_COUNTS = {};',
+                    f'window.EMBEDDED_ACTION_COUNTS = {action_counts_json};'
+                )
                 
                 logging.info(f"[ui] Loaded UI template from {template_path} - game={current_game}, {len(obs_actions)} OBS actions")
             except Exception as e:
