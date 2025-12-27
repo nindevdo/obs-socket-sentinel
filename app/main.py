@@ -6529,7 +6529,6 @@ async def handle_http(
                     from obs_controller import get_obs_controller
                     obs_ctrl = await get_obs_controller()
                     if obs_ctrl and obs_ctrl.connected:
-                        await obs_ctrl.refresh_state()
                         obs_actions = obs_ctrl.get_dynamic_actions()
                         logging.info(f"[ui_state] Loaded {len(obs_actions)} OBS actions")
                 except ImportError:
@@ -7145,6 +7144,25 @@ async def handle_http(
 # -----------------------------
 # MAIN ENTRY
 # -----------------------------
+async def obs_state_poller():
+    """
+    Background task that polls OBS state every 2 seconds to keep it in sync.
+    """
+    await asyncio.sleep(5)  # Wait for OBS to connect
+    logging.info("[obs] OBS state poller started")
+    
+    while True:
+        try:
+            from obs_controller import get_obs_controller
+            obs_ctrl = await get_obs_controller()
+            if obs_ctrl and obs_ctrl.connected:
+                await obs_ctrl.refresh_state()
+            await asyncio.sleep(2)  # Poll every 2 seconds
+        except Exception as e:
+            logging.debug(f"[obs] State poll error: {e}")
+            await asyncio.sleep(5)
+
+
 async def cta_scheduler_task() -> None:
     """
     Background task that triggers Subscribe and Merch CTAs on schedule.
@@ -7237,6 +7255,10 @@ async def main() -> None:
     # ---- Start CTA scheduler ----
     logging.info("[cta] Starting CTA scheduler task...")
     asyncio.create_task(cta_scheduler_task())
+    
+    # ---- Start OBS state poller ----
+    logging.info("[obs] Starting OBS state poller task...")
+    asyncio.create_task(obs_state_poller())
 
     logging.info(f"📡 TCP listening on {HOST}:{PORT}")
     tcp_server = await asyncio.start_server(handle_client, HOST, PORT)

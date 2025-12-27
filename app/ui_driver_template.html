@@ -210,6 +210,38 @@
             border-color: rgba(34, 197, 94, 0.6);
         }
 
+        .action-btn.active {
+            background: linear-gradient(135deg, rgba(34, 197, 94, 0.3) 0%, rgba(16, 185, 129, 0.3) 100%);
+            border-color: rgba(34, 197, 94, 0.8);
+            box-shadow: 0 0 20px rgba(34, 197, 94, 0.4), inset 0 0 20px rgba(34, 197, 94, 0.2);
+        }
+
+        .action-btn.active::after {
+            content: '✓';
+            position: absolute;
+            top: 0.5rem;
+            right: 0.5rem;
+            font-size: 1rem;
+            color: #4ade80;
+            font-weight: bold;
+            text-shadow: 0 0 10px rgba(34, 197, 94, 0.8);
+        }
+
+        .action-btn.recording {
+            background: linear-gradient(135deg, rgba(239, 68, 68, 0.3) 0%, rgba(220, 38, 38, 0.3) 100%);
+            border-color: rgba(239, 68, 68, 0.8);
+            animation: recordingPulse 2s ease-in-out infinite;
+        }
+
+        @keyframes recordingPulse {
+            0%, 100% { 
+                box-shadow: 0 0 20px rgba(239, 68, 68, 0.4);
+            }
+            50% { 
+                box-shadow: 0 0 40px rgba(239, 68, 68, 0.8);
+            }
+        }
+
         @keyframes actionTrigger {
             0% { 
                 transform: scale(1);
@@ -1109,17 +1141,38 @@
                 }
             }
 
-            // Periodically try to refresh hotkey mappings
+            // Periodically try to refresh hotkey mappings and OBS state
             startHotkeyRefresh() {
                 // Try to refresh hotkeys every 30 seconds
                 setInterval(async () => {
                     await this.loadHotkeyMappings();
+                    // Also refresh OBS actions to get updated active states
+                    await this.loadOBSActions();
                     // Re-render UI if hotkeys were updated
                     if (this.isAuthenticated && this.config && this.currentGame) {
                         this.render();
         
                     }
-                }, 30000);
+                }, 3000); // Poll every 3 seconds for better responsiveness
+            }
+            
+            async loadOBSActions() {
+                // Load fresh OBS state from server
+                try {
+                    const response = await fetch(`${this.serverUrl}/ui_state`, {
+                        headers: {
+                            'Authorization': `Bearer ${this.authToken}`
+                        }
+                    });
+                    if (response.ok) {
+                        const data = await response.json();
+                        if (data.obs_actions) {
+                            this.obsActions = data.obs_actions;
+                        }
+                    }
+                } catch (e) {
+                    console.error('Failed to refresh OBS actions:', e);
+                }
             }
 
             parseYAML(yamlText) {
@@ -1245,11 +1298,16 @@
                     html += '<div class="obs-actions">';
                     html += '<h3>🎬 OBS Remote Control</h3>';
                     html += '<div class="actions-grid">';
-                    for (const [action, display] of Object.entries(this.obsActions)) {
+                    for (const [action, data] of Object.entries(this.obsActions)) {
+                        // Handle both old string format and new object format
+                        const display = typeof data === 'string' ? data : data.label;
+                        const isActive = typeof data === 'object' ? data.active : false;
+                        const isRecording = typeof data === 'object' ? data.recording : false;
+                        
                         // Extract emoji from display name
                         const emoji = display.match(/^([\u{1F300}-\u{1F9FF}])/u)?.[0] || '🎬';
                         const label = display.replace(/^[\u{1F300}-\u{1F9FF}]\s*/u, '');
-                        html += this.createActionButton(action, emoji, '', false, label);
+                        html += this.createActionButton(action, emoji, '', false, label, isActive, isRecording);
                     }
                     html += '</div>';
                     html += '</div>';
@@ -1285,15 +1343,19 @@
                 this.contentEl.innerHTML = html;
             }
 
-            createActionButton(action, emoji, hotkey, isSystem = false, customLabel = null) {
+            createActionButton(action, emoji, hotkey, isSystem = false, customLabel = null, isActive = false, isRecording = false) {
                 const label = customLabel || this.formatActionName(action);
                 const count = this.actionCounts[action] || 0;
                 const countDisplay = count > 0 ? ` (${count})` : '';
                 // Only show hotkey info if we have a real mapping
                 const hotkeyText = hotkey ? hotkey : '';
                 
+                let classes = 'action-btn';
+                if (isActive) classes += ' active';
+                if (isRecording) classes += ' recording';
+                
                 return `
-                    <button class="action-btn" data-action="${action}" data-game="${this.currentGame}">
+                    <button class="${classes}" data-action="${action}" data-game="${this.currentGame}">
                         <div class="action-emoji">${emoji}</div>
                         <div class="action-label">${label}${countDisplay}</div>
                         ${hotkeyText ? `<div class="action-key">${hotkeyText}</div>` : ''}
@@ -1363,6 +1425,12 @@
 
                     const result = await response.json();
                     console.log('Action triggered successfully:', result);
+
+                    // Refresh OBS state immediately after action for better responsiveness
+                    if (action.startsWith('scene_') || action.startsWith('transition_') || action === 'toggle_recording' || action === 'toggle_streaming') {
+                        await this.loadOBSActions();
+                        this.render();
+                    }
 
                     // Brief success feedback
                     this.setStatus('connected', `✅ ${this.formatActionName(action)} triggered`);

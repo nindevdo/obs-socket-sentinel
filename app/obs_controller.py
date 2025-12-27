@@ -234,26 +234,62 @@ class OBSController:
             logger.error(f"Failed to get scene item ID: {e}")
             return 0
     
-    def get_dynamic_actions(self) -> Dict[str, str]:
-        """Generate dynamic actions from current OBS state"""
+    def get_dynamic_actions(self) -> Dict[str, Any]:
+        """Generate dynamic actions from current OBS state with active states"""
         actions = {}
+        
+        # Get current recording/streaming status
+        try:
+            loop = asyncio.get_event_loop()
+            record_status = loop.run_until_complete(
+                loop.run_in_executor(None, lambda: self.client.get_record_status() if self.client else None)
+            )
+            stream_status = loop.run_until_complete(
+                loop.run_in_executor(None, lambda: self.client.get_stream_status() if self.client else None)
+            )
+            is_recording = record_status.output_active if record_status else False
+            is_streaming = stream_status.output_active if stream_status else False
+        except Exception as e:
+            logger.warning(f"Could not get OBS status: {e}")
+            is_recording = False
+            is_streaming = False
         
         # Scene switching actions
         for scene in self.scenes:
             scene_name = scene.get('sceneName', '')
             safe_name = f"scene_{scene_name.lower().replace(' ', '_')}"
-            actions[safe_name] = f"🎬 {scene_name}"
+            is_active = scene_name == self.current_scene
+            actions[safe_name] = {
+                'label': f"🎬 {scene_name}",
+                'active': is_active
+            }
         
         # Transition actions
         for transition in self.transitions:
             safe_name = f"transition_{transition.lower().replace(' ', '_')}"
-            actions[safe_name] = f"✨ {transition}"
+            actions[safe_name] = {
+                'label': f"✨ {transition}",
+                'active': False
+            }
         
         # Streaming/Recording controls
-        actions['obs_start_stream'] = "🔴 Start Stream"
-        actions['obs_stop_stream'] = "⏹️ Stop Stream"
-        actions['obs_start_record'] = "🔴 Start Record"
-        actions['obs_stop_record'] = "⏹️ Stop Record"
+        actions['obs_start_stream'] = {
+            'label': "🔴 Start Stream",
+            'active': is_streaming
+        }
+        actions['obs_stop_stream'] = {
+            'label': "⏹️ Stop Stream",
+            'active': False
+        }
+        actions['obs_start_record'] = {
+            'label': "🔴 Start Record",
+            'active': is_recording,
+            'recording': is_recording
+        }
+        actions['obs_stop_record'] = {
+            'label': "⏹️ Stop Record",
+            'active': False
+        }
         
         return actions
 
