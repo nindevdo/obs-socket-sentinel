@@ -6501,18 +6501,32 @@ async def handle_http(
                 with open(template_path, "r", encoding="utf-8") as f:
                     body_str = f.read()
                 
-                # Get action counts for display
+                # Get action counts and run stats for display
                 action_counts_for_ui = {}
+                run_stats_for_ui = None
                 async with state_lock:
                     for (game, action), count in action_counts.items():
                         key = f"{game}::{action}"
                         action_counts_for_ui[key] = count
+                    
+                    # Get current run stats if available
+                    if current_game and current_run_by_project.get(current_game):
+                        run_num = current_run_by_project[current_game]
+                        stats = run_stats_by_project.get((current_game, run_num))
+                        if stats:
+                            run_stats_for_ui = {
+                                "run_number": run_num,
+                                "kills": stats.get("kills", 0),
+                                "deaths": stats.get("deaths", 0),
+                                "headshots": stats.get("headshots", 0)
+                            }
                 
                 # Embed all data as JSON in the HTML
                 obs_actions_json = json.dumps(obs_actions)
                 games_config_json = json.dumps(games_config_for_ui)
                 current_game_json = json.dumps(current_game or "")
                 action_counts_json = json.dumps(action_counts_for_ui)
+                run_stats_json = json.dumps(run_stats_for_ui)
                 
                 # Replace placeholder data in the template
                 body_str = body_str.replace(
@@ -6531,8 +6545,12 @@ async def handle_http(
                     'window.EMBEDDED_ACTION_COUNTS = {};',
                     f'window.EMBEDDED_ACTION_COUNTS = {action_counts_json};'
                 )
+                body_str = body_str.replace(
+                    'window.EMBEDDED_RUN_STATS = null;',
+                    f'window.EMBEDDED_RUN_STATS = {run_stats_json};'
+                )
                 
-                logging.info(f"[ui] Loaded UI template from {template_path} - game={current_game}, {len(obs_actions)} OBS actions")
+                logging.info(f"[ui] Loaded UI - game={current_game}, {len(games_config_for_ui)} games, {len(action_counts_for_ui)} action counts, run_stats={run_stats_for_ui is not None}")
             except Exception as e:
                 logging.error(f"❗ [http] Failed to load UI: {e}", exc_info=True)
                 body_str = f"<!DOCTYPE html><html><body><h1>Error loading UI</h1><p>{e}</p></body></html>"

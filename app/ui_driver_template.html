@@ -10,8 +10,12 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;500;700;900&display=swap" rel="stylesheet">
     
-    <!-- Embedded OBS Actions - replaced by server -->
+    <!-- Embedded data - replaced by server -->
     <script>window.EMBEDDED_OBS_ACTIONS = {};</script>
+    <script>window.EMBEDDED_GAMES_CONFIG = {};</script>
+    <script>window.EMBEDDED_CURRENT_GAME = "";</script>
+    <script>window.EMBEDDED_ACTION_COUNTS = {};</script>
+    <script>window.EMBEDDED_RUN_STATS = null;</script>
     
     <style>
         * {
@@ -1150,10 +1154,24 @@
                         
                         const isActive = data.active || false;
                         const isRecording = data.recording || false;
+                        const isStreaming = data.streaming || false;
+                        
+                        // Update button label if it's a toggle button
+                        if (action === 'obs_toggle_stream') {
+                            const label = button.querySelector('.action-label');
+                            if (label) {
+                                label.textContent = isStreaming ? '⏹️ Stop Stream' : '🔴 Start Stream';
+                            }
+                        } else if (action === 'obs_toggle_record') {
+                            const label = button.querySelector('.action-label');
+                            if (label) {
+                                label.textContent = isRecording ? '⏹️ Stop Record' : '🔴 Start Record';
+                            }
+                        }
                         
                         // Update classes
                         button.classList.toggle('active', isActive);
-                        button.classList.toggle('recording', isRecording);
+                        button.classList.toggle('recording', isRecording || isStreaming);
                     }
                 }
             }
