@@ -178,6 +178,7 @@ class OBSController:
             loop = asyncio.get_event_loop()
             await loop.run_in_executor(None, self.client.start_stream)
             logger.info("🔴 Started streaming")
+            await self.refresh_state()
             return True
         except Exception as e:
             logger.error(f"Failed to start streaming: {e}")
@@ -192,6 +193,7 @@ class OBSController:
             loop = asyncio.get_event_loop()
             await loop.run_in_executor(None, self.client.stop_stream)
             logger.info("⏹️ Stopped streaming")
+            await self.refresh_state()
             return True
         except Exception as e:
             logger.error(f"Failed to stop streaming: {e}")
