@@ -893,7 +893,7 @@
       opacity: 0.8;
     }
 
-    /* Subscribe CTA notification styles (center of screen) */
+    /* Subscribe CTA notification styles (center of screen with Three.js canvas) */
     #subscribe-cta {
       position: fixed;
       top: 50%;
@@ -903,19 +903,10 @@
       pointer-events: none;
       z-index: 16000;
       
-      min-width: 600px;
-      max-width: 800px;
-      background: linear-gradient(135deg, rgba(255, 0, 100, 0.95), rgba(255, 100, 0, 0.95));
-      border: 4px solid #FFD700;
-      border-radius: 24px;
-      padding: 40px 50px;
-      box-shadow: 
-        0 16px 64px rgba(0, 0, 0, 0.9),
-        0 0 40px rgba(255, 215, 0, 0.8),
-        inset 0 4px 16px rgba(255, 255, 255, 0.2);
-      backdrop-filter: blur(12px);
-      
-      font-family: "ProggyClean Nerd Font", "Noto Color Emoji", sans-serif;
+      width: 90vw;
+      max-width: 1200px;
+      height: 70vh;
+      max-height: 600px;
       
       transition: 
         transform 0.6s cubic-bezier(0.34, 1.56, 0.64, 1),
@@ -927,59 +918,91 @@
       transform: translate(-50%, -50%) scale(1);
     }
 
+    #subscribe-canvas {
+      width: 100%;
+      height: 100%;
+      border-radius: 30px;
+      box-shadow: 
+        0 20px 60px rgba(0, 0, 0, 0.8),
+        0 0 40px rgba(255, 215, 0, 0.6);
+    }
+
     .subscribe-cta-content {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
       text-align: center;
+      pointer-events: none;
+      z-index: 1;
+      width: 90%;
     }
 
     .subscribe-cta-icon {
-      font-size: 4rem;
+      font-size: 5rem;
       margin-bottom: 20px;
       animation: subscribe-pulse 2s ease-in-out infinite;
+      filter: drop-shadow(0 0 20px rgba(255, 215, 0, 1));
     }
 
     @keyframes subscribe-pulse {
       0%, 100% {
         transform: scale(1);
-        filter: drop-shadow(0 0 10px rgba(255, 215, 0, 0.8));
       }
       50% {
-        transform: scale(1.1);
-        filter: drop-shadow(0 0 20px rgba(255, 215, 0, 1));
+        transform: scale(1.15);
       }
     }
 
     .subscribe-cta-title {
       color: #FFFFFF;
-      font-size: 4rem;
+      font-size: 6rem;
       font-weight: 900;
-      margin-bottom: 20px;
+      margin-bottom: 30px;
       text-shadow: 
         0 4px 8px rgba(0, 0, 0, 1),
-        0 0 30px rgba(255, 0, 0, 0.8),
-        0 0 60px rgba(255, 0, 0, 0.4);
-      letter-spacing: 0.1em;
+        0 0 40px rgba(255, 215, 0, 1),
+        0 0 80px rgba(255, 100, 0, 0.8);
+      letter-spacing: 0.15em;
       text-transform: uppercase;
+      animation: subscribe-glow 2s ease-in-out infinite;
+    }
+
+    @keyframes subscribe-glow {
+      0%, 100% {
+        text-shadow: 
+          0 4px 8px rgba(0, 0, 0, 1),
+          0 0 40px rgba(255, 215, 0, 1),
+          0 0 80px rgba(255, 100, 0, 0.8);
+      }
+      50% {
+        text-shadow: 
+          0 4px 8px rgba(0, 0, 0, 1),
+          0 0 60px rgba(255, 50, 0, 1),
+          0 0 120px rgba(255, 0, 0, 1);
+      }
     }
 
     .subscribe-cta-message {
       color: #FFFF00;
-      font-size: 2.5rem;
+      font-size: 3.5rem;
       font-weight: 700;
       line-height: 1.6;
       text-shadow: 
         0 3px 6px rgba(0, 0, 0, 1),
-        0 0 20px rgba(255, 255, 0, 0.8);
-      margin-bottom: 10px;
+        0 0 30px rgba(255, 255, 0, 1),
+        0 0 60px rgba(255, 200, 0, 0.8);
+      margin-bottom: 20px;
     }
 
     .subscribe-cta-subtext {
       color: #FFFFFF;
-      font-size: 2rem;
+      font-size: 3rem;
       font-weight: 600;
       text-shadow: 
         0 3px 6px rgba(0, 0, 0, 1),
-        0 0 15px rgba(255, 255, 255, 0.5);
-      margin-top: 15px;
+        0 0 25px rgba(255, 255, 255, 0.8);
+      margin-top: 20px;
     }
 
     /* Merch Showcase CTA (bottom of screen, horizontal layout) */
@@ -1220,8 +1243,9 @@
     </div>
   </div>
 
-  <!-- Subscribe CTA notification (center of screen) -->
+  <!-- Subscribe CTA notification (center of screen with Three.js) -->
   <div id="subscribe-cta">
+    <canvas id="subscribe-canvas"></canvas>
     <div class="subscribe-cta-content">
       <div class="subscribe-cta-icon">🔔</div>
       <div class="subscribe-cta-title">Subscribe Now!</div>
@@ -2466,6 +2490,9 @@
       
       subscribeCTA.classList.add('visible');
       
+      // Initialize Three.js scene for subscribe CTA
+      initSubscribeThreeJS();
+      
       // Play subscribe CTA sound
       const subscribeSound = new Audio('/sounds/subscribe-cta.mp3');
       subscribeSound.volume = 0.5;
@@ -2487,10 +2514,171 @@
       console.log('[subscribe-cta] Hiding subscribe CTA');
       subscribeCTA.classList.remove('visible');
       
+      // Clean up Three.js scene
+      if (window.subscribeThreeCleanup) {
+        window.subscribeThreeCleanup();
+      }
+      
       if (subscribeCTAHideTimeoutId) {
         clearTimeout(subscribeCTAHideTimeoutId);
         subscribeCTAHideTimeoutId = null;
       }
+    }
+
+    // Three.js Subscribe CTA Animation - Energy Wave Effect
+    function initSubscribeThreeJS() {
+      const canvas = document.getElementById('subscribe-canvas');
+      if (!canvas) return;
+
+      const scene = new THREE.Scene();
+      const camera = new THREE.PerspectiveCamera(75, canvas.clientWidth / canvas.clientHeight, 0.1, 1000);
+      const renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true });
+      renderer.setSize(canvas.clientWidth, canvas.clientHeight);
+      renderer.setClearColor(0x000000, 0);
+
+      // Create pulsing energy rings
+      const rings = [];
+      const ringCount = 5;
+      
+      for (let i = 0; i < ringCount; i++) {
+        const geometry = new THREE.TorusGeometry(10 + i * 3, 0.3, 16, 100);
+        const material = new THREE.MeshBasicMaterial({
+          color: new THREE.Color().setHSL(0.08 - i * 0.02, 1, 0.5),
+          transparent: true,
+          opacity: 0.7 - i * 0.1,
+          side: THREE.DoubleSide
+        });
+        const ring = new THREE.Mesh(geometry, material);
+        ring.rotation.x = Math.PI / 2;
+        ring.userData = {
+          baseScale: 1 + i * 0.2,
+          phase: i * Math.PI / ringCount
+        };
+        rings.push(ring);
+        scene.add(ring);
+      }
+
+      // Create energy particles emanating from center
+      const particleCount = 500;
+      const particles = new THREE.BufferGeometry();
+      const positions = new Float32Array(particleCount * 3);
+      const velocities = [];
+      const colors = new Float32Array(particleCount * 3);
+      
+      for (let i = 0; i < particleCount; i++) {
+        const theta = Math.random() * Math.PI * 2;
+        const phi = Math.random() * Math.PI;
+        const radius = Math.random() * 15;
+        
+        positions[i * 3] = radius * Math.sin(phi) * Math.cos(theta);
+        positions[i * 3 + 1] = radius * Math.sin(phi) * Math.sin(theta);
+        positions[i * 3 + 2] = radius * Math.cos(phi);
+        
+        velocities.push({
+          x: (Math.random() - 0.5) * 0.1,
+          y: (Math.random() - 0.5) * 0.1,
+          z: (Math.random() - 0.5) * 0.1
+        });
+        
+        const color = new THREE.Color();
+        color.setHSL(Math.random() * 0.15, 1, 0.5 + Math.random() * 0.3);
+        colors[i * 3] = color.r;
+        colors[i * 3 + 1] = color.g;
+        colors[i * 3 + 2] = color.b;
+      }
+      
+      particles.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+      particles.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+      
+      const particleMaterial = new THREE.PointsMaterial({
+        size: 0.5,
+        vertexColors: true,
+        transparent: true,
+        opacity: 0.9,
+        blending: THREE.AdditiveBlending
+      });
+      
+      const particleSystem = new THREE.Points(particles, particleMaterial);
+      scene.add(particleSystem);
+
+      // Create glowing core sphere
+      const coreGeometry = new THREE.SphereGeometry(2, 32, 32);
+      const coreMaterial = new THREE.MeshBasicMaterial({
+        color: 0xffaa00,
+        transparent: true,
+        opacity: 0.5
+      });
+      const core = new THREE.Mesh(coreGeometry, coreMaterial);
+      scene.add(core);
+
+      camera.position.z = 30;
+
+      let time = 0;
+      let animationId;
+      
+      function animate() {
+        animationId = requestAnimationFrame(animate);
+        time += 0.016;
+
+        // Pulse energy rings
+        rings.forEach((ring, i) => {
+          const pulse = Math.sin(time * 2 + ring.userData.phase) * 0.3 + 1;
+          ring.scale.set(ring.userData.baseScale * pulse, ring.userData.baseScale * pulse, 1);
+          ring.rotation.z += 0.002 * (i + 1);
+          ring.material.opacity = (0.7 - i * 0.1) * (0.5 + Math.sin(time * 3 + ring.userData.phase) * 0.3);
+        });
+
+        // Animate particles outward and reset
+        const posAttr = particleSystem.geometry.attributes.position;
+        for (let i = 0; i < particleCount; i++) {
+          posAttr.array[i * 3] += velocities[i].x;
+          posAttr.array[i * 3 + 1] += velocities[i].y;
+          posAttr.array[i * 3 + 2] += velocities[i].z;
+          
+          const dist = Math.sqrt(
+            posAttr.array[i * 3] ** 2 +
+            posAttr.array[i * 3 + 1] ** 2 +
+            posAttr.array[i * 3 + 2] ** 2
+          );
+          
+          if (dist > 25) {
+            const theta = Math.random() * Math.PI * 2;
+            const phi = Math.random() * Math.PI;
+            const radius = Math.random() * 3;
+            
+            posAttr.array[i * 3] = radius * Math.sin(phi) * Math.cos(theta);
+            posAttr.array[i * 3 + 1] = radius * Math.sin(phi) * Math.sin(theta);
+            posAttr.array[i * 3 + 2] = radius * Math.cos(phi);
+          }
+        }
+        posAttr.needsUpdate = true;
+
+        // Pulse core
+        const coreScale = 1 + Math.sin(time * 4) * 0.2;
+        core.scale.set(coreScale, coreScale, coreScale);
+        core.rotation.y += 0.01;
+
+        renderer.render(scene, camera);
+      }
+
+      animate();
+
+      // Cleanup function
+      window.subscribeThreeCleanup = () => {
+        cancelAnimationFrame(animationId);
+        scene.traverse((object) => {
+          if (object.geometry) object.geometry.dispose();
+          if (object.material) {
+            if (Array.isArray(object.material)) {
+              object.material.forEach(mat => mat.dispose());
+            } else {
+              object.material.dispose();
+            }
+          }
+        });
+        renderer.dispose();
+        window.subscribeThreeCleanup = null;
+      };
     }
 
     function showMerchCTA() {
