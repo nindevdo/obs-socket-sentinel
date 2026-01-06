@@ -82,7 +82,18 @@ class OBSController:
             logger.info(f"📡 OBS State: {len(self.scenes)} scenes, {len(self.transitions)} transitions, {len(self.sources)} sources")
             
         except Exception as e:
-            logger.error(f"Error refreshing OBS state: {e}")
+            # Check if it's a broken pipe error - attempt reconnection
+            if "Broken pipe" in str(e) or "errno 32" in str(e).lower():
+                logger.warning(f"Connection lost to OBS (broken pipe), attempting reconnect...")
+                self.connected = False
+                try:
+                    await self.disconnect()
+                    await asyncio.sleep(1)
+                    await self.connect()
+                except Exception as reconnect_error:
+                    logger.error(f"Failed to reconnect to OBS: {reconnect_error}")
+            else:
+                logger.error(f"Error refreshing OBS state: {e}")
     
     def _get_state_sync(self) -> Dict[str, Any]:
         """Synchronously get OBS state"""

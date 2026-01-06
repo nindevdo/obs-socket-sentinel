@@ -286,10 +286,37 @@
             border-color: rgba(16, 185, 129, 0.3);
         }
         
+        .overlay-notifications {
+            padding-bottom: 0.5rem;
+            margin-bottom: 0.5rem;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .overlay-notifications h3 {
+            color: #ec4899;
+            font-size: 0.875rem;
+            margin: 0 0 0.5rem 0;
+            text-align: center;
+            text-transform: uppercase;
+        }
+
+        .overlay-notifications .actions-grid {
+            grid-template-columns: repeat(auto-fit, minmax(7rem, 1fr));
+        }
+
+        .overlay-notifications .action-btn {
+            background: linear-gradient(135deg, rgba(236, 72, 153, 0.1) 0%, rgba(219, 39, 119, 0.1) 100%);
+            border-color: rgba(236, 72, 153, 0.3);
+        }
+
+        .overlay-notifications .action-btn:hover {
+            background: linear-gradient(135deg, rgba(236, 72, 153, 0.2) 0%, rgba(219, 39, 119, 0.2) 100%);
+            border-color: rgba(236, 72, 153, 0.6);
+            box-shadow: 0 20px 40px rgba(236, 72, 153, 0.15);
+        }
+        
         .game-actions {
             /* Same as main actions-grid */
-        }
-            border-color: rgba(251, 191, 36, 0.3);
         }
 
         .system-actions .action-btn:hover {
@@ -1291,6 +1318,24 @@
                     const hotkey = this.getHotkeyForAction(action);
                     html += this.createActionButton(action, emoji, hotkey, true);
                 });
+                html += '</div>';
+                html += '</div>';
+
+                // Overlay Notifications (always available)
+                html += '<div class="overlay-notifications">';
+                html += '<div class="section-header">📺 Overlay Notifications</div>';
+                html += '<div class="actions-grid">';
+                
+                const overlayActions = [
+                    { action: 'show_subscribe_cta', emoji: '🔔', label: 'Subscribe CTA' },
+                    { action: 'show_merch_cta', emoji: '🛍️', label: 'Merch Shop CTA' },
+                    { action: 'show_intro', emoji: '🎬', label: 'Channel Intro' }
+                ];
+                
+                overlayActions.forEach(item => {
+                    html += this.createActionButton(item.action, item.emoji, '', false, item.label, false, false);
+                });
+                
                 html += '</div>';
                 html += '</div>';
 

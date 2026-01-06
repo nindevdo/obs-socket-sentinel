@@ -1008,31 +1008,32 @@
     /* Merch Showcase CTA (bottom of screen, horizontal layout) */
     #merch-cta {
       position: fixed;
-      bottom: 20px;
-      left: 50%;
-      transform: translateX(-50%) translateY(200px);
+      bottom: 0;
+      left: 0;
+      transform: translateY(100%);
       opacity: 0;
       pointer-events: none;
       z-index: 15000;
       
-      width: 85vw;
-      max-width: 1400px;
-      height: 180px;
+      width: 100vw;
+      height: 558px;
+      min-height: 558px;
+      max-height: 558px;
+      margin: 0;
+      padding: 40px 50px;
+      box-sizing: border-box;
       background: linear-gradient(90deg, rgba(30, 30, 40, 0.98), rgba(50, 40, 60, 0.98));
-      border: 3px solid #9370DB;
-      border-radius: 16px;
-      padding: 20px 30px;
+      border: none;
+      border-radius: 0;
       box-shadow: 
-        0 12px 48px rgba(0, 0, 0, 0.9),
-        0 0 30px rgba(147, 112, 219, 0.6),
-        inset 0 3px 12px rgba(255, 255, 255, 0.1);
+        0 -8px 32px rgba(0, 0, 0, 0.6);
       backdrop-filter: blur(10px);
       
       font-family: "ProggyClean Nerd Font", "Noto Color Emoji", sans-serif;
       
       display: flex;
-      align-items: center;
-      gap: 25px;
+      align-items: stretch;
+      gap: 40px;
       
       transition: 
         transform 0.5s cubic-bezier(0.34, 1.56, 0.64, 1),
@@ -1041,119 +1042,89 @@
 
     #merch-cta.visible {
       opacity: 1;
-      transform: translateX(-50%) translateY(0);
-    }
-
-    .merch-header {
-      flex-shrink: 0;
-      text-align: center;
-      padding-right: 20px;
-      border-right: 2px solid rgba(147, 112, 219, 0.5);
-    }
-
-    .merch-icon {
-      font-size: 2.5rem;
-      margin-bottom: 8px;
-      animation: merch-bounce 3s ease-in-out infinite;
-    }
-
-    @keyframes merch-bounce {
-      0%, 100% {
-        transform: translateY(0);
-      }
-      50% {
-        transform: translateY(-8px);
-      }
-    }
-
-    .merch-title {
-      color: #FFD700;
-      font-size: 1.4rem;
-      font-weight: 700;
-      text-shadow: 
-        0 2px 4px rgba(0, 0, 0, 0.9),
-        0 0 10px rgba(255, 215, 0, 0.5);
-      text-transform: uppercase;
-      letter-spacing: 0.05em;
+      transform: translateY(0);
     }
 
     .merch-items-container {
       flex: 1;
       display: flex;
-      gap: 15px;
+      gap: 0;
       overflow: hidden;
+      align-items: stretch;
     }
 
     .merch-item {
       flex: 1;
-      background: rgba(147, 112, 219, 0.15);
-      border: 2px solid rgba(147, 112, 219, 0.4);
-      border-radius: 10px;
-      padding: 12px;
       text-align: center;
-      transition: all 0.3s ease;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+      border-right: 3px solid rgba(147, 112, 219, 0.4);
+      padding: 0 20px;
     }
 
-    .merch-item:hover {
-      background: rgba(147, 112, 219, 0.25);
-      border-color: rgba(147, 112, 219, 0.7);
-      transform: translateY(-3px);
+    .merch-item:last-child {
+      border-right: none;
     }
 
     .merch-item-icon {
-      font-size: 2rem;
-      margin-bottom: 6px;
+      font-size: 8rem;
+      margin-bottom: 25px;
     }
 
     .merch-item-name {
       color: #FFFFFF;
-      font-size: 1.1rem;
+      font-size: 3.2rem;
       font-weight: 600;
-      margin-bottom: 4px;
-      text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
+      margin-bottom: 18px;
+      text-shadow: 0 2px 4px rgba(0, 0, 0, 0.8);
     }
 
     .merch-item-price {
       color: #FFD700;
-      font-size: 1rem;
+      font-size: 2.8rem;
       font-weight: 700;
-      text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
+      text-shadow: 0 2px 4px rgba(0, 0, 0, 0.8);
     }
 
     .merch-qr-section {
       flex-shrink: 0;
       text-align: center;
-      padding-left: 20px;
-      border-left: 2px solid rgba(147, 112, 219, 0.5);
+      padding-left: 40px;
+      border-left: 4px solid rgba(147, 112, 219, 0.5);
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+      min-width: 350px;
     }
 
-    .merch-qr-placeholder {
-      width: 120px;
-      height: 120px;
+    .merch-qr-image {
+      width: 300px;
+      height: 300px;
       background: #FFFFFF;
-      border: 3px solid #9370DB;
-      border-radius: 8px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      font-size: 3rem;
-      margin-bottom: 8px;
-      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.6);
+      border: 5px solid #9370DB;
+      border-radius: 16px;
+      object-fit: contain;
+      margin-bottom: 20px;
+      box-shadow: 0 6px 20px rgba(0, 0, 0, 0.6);
+      padding: 10px;
     }
 
     .merch-qr-text {
       color: #FFD700;
-      font-size: 0.95rem;
+      font-size: 2.2rem;
       font-weight: 600;
-      text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
+      text-shadow: 0 2px 4px rgba(0, 0, 0, 0.8);
     }
 
     .merch-shop-text {
       color: #FFFFFF;
-      font-size: 1.2rem;
+      font-size: 2.8rem;
       font-weight: 700;
-      margin-top: 8px;
-      text-shadow: 0 2px 4px rgba(0, 0, 0, 0.8);
+      margin-top: 12px;
+      text-shadow: 0 4px 8px rgba(0, 0, 0, 0.8);
     }
 
     /* ============================= */
@@ -1256,11 +1227,6 @@
 
   <!-- Merch Showcase CTA (bottom of screen) -->
   <div id="merch-cta">
-    <div class="merch-header">
-      <div class="merch-icon">🛍️</div>
-      <div class="merch-title">Merch Shop</div>
-    </div>
-    
     <div class="merch-items-container">
       <div class="merch-item">
         <div class="merch-item-icon">👕</div>
@@ -1294,7 +1260,7 @@
     </div>
     
     <div class="merch-qr-section">
-      <div class="merch-qr-placeholder">📱</div>
+      <img src="/qr-code" class="merch-qr-image" alt="Shop QR Code">
       <div class="merch-qr-text">SCAN TO SHOP</div>
       <div class="merch-shop-text">shop.nindevdo.com</div>
     </div>
@@ -2685,6 +2651,21 @@
       console.log('[merch-cta] Showing merch CTA');
       
       merchCTA.classList.add('visible');
+      
+      // Debug: log actual rendered height IMMEDIATELY
+      const rect = merchCTA.getBoundingClientRect();
+      const computed = window.getComputedStyle(merchCTA);
+      console.log('[merch-cta] Dimensions:', {
+        width: rect.width + 'px',
+        height: rect.height + 'px',
+        computedHeight: computed.height,
+        offsetHeight: merchCTA.offsetHeight + 'px',
+        clientHeight: merchCTA.clientHeight + 'px',
+        windowHeight: window.innerHeight + 'px',
+        windowWidth: window.innerWidth + 'px',
+        bottom: rect.bottom + 'px',
+        top: rect.top + 'px'
+      });
       
       // Play merch CTA sound
       const merchSound = new Audio('/sounds/merch-cta.mp3');

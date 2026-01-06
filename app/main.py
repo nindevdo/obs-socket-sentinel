@@ -931,6 +931,7 @@ def requires_auth(path: str, method: str = "GET") -> bool:
         or path.startswith("/dmemes/")
         or path.startswith("/sounds/")
         or path.startswith("/fonts/")
+        or path == "/qr-code"
     ):
         return False
 
@@ -1014,6 +1015,11 @@ def load_overlay_config() -> None:
     # Add special system actions that are always available
     ALL_ACTION_KEYS.add("undo")
     ALL_ACTION_KEYS.add("clear")
+    
+    # Add overlay notification actions
+    ALL_ACTION_KEYS.add("show_subscribe_cta")
+    ALL_ACTION_KEYS.add("show_merch_cta")
+    ALL_ACTION_KEYS.add("show_intro")
 
     if not ALL_ACTION_KEYS:
         logging.error("❌ No actions defined under any games.*.actions.")
@@ -5015,11 +5021,7 @@ async def handle_action(action: str, project: Optional[str]) -> None:
                 success = await handle_obs_action(lower, obs_ctrl)
                 if success:
                     logging.info(f"✅ [obs] Action '{action}' executed")
-                    # Update overlay without changing project
-                    async with state_lock:
-                        last_overlay_output = f"🎬 {action.replace('_', ' ').title()}"
-                        last_action = action
-                        # Don't change last_project - keep current game context
+                    # OBS actions don't update the overlay (game actions only)
                 else:
                     logging.warning(f"⚠️ [obs] Action '{action}' failed")
             else:
@@ -5030,6 +5032,31 @@ async def handle_action(action: str, project: Optional[str]) -> None:
 
     # ---- Global system action: Intro ----
     if lower == "intro":
+        await trigger_intro()
+        return
+
+    # ---- Overlay Notification Actions ----
+    if lower == "show_subscribe_cta":
+        global current_subscribe_cta, subscribe_cta_display_until, last_subscribe_cta_time
+        async with state_lock:
+            now = time.time()
+            current_subscribe_cta = {"trigger": True}
+            subscribe_cta_display_until = now + SUBSCRIBE_CTA_DURATION
+            last_subscribe_cta_time = now
+        logging.info(f"[cta] 🔔 Subscribe CTA triggered via UI button")
+        return
+
+    if lower == "show_merch_cta":
+        global current_merch_cta, merch_cta_display_until, last_merch_cta_time
+        async with state_lock:
+            now = time.time()
+            current_merch_cta = {"trigger": True}
+            merch_cta_display_until = now + MERCH_CTA_DURATION
+            last_merch_cta_time = now
+        logging.info(f"[cta] 🛍️ Merch CTA triggered via UI button")
+        return
+        
+    if lower == "show_intro":
         await trigger_intro()
         return
 
@@ -7108,6 +7135,40 @@ async def handle_http(
                 "HTTP/1.1 200 OK\r\n"
                 f"Content-Type: {mime}\r\n"
                 f"Content-Length: {len(body_bytes)}\r\n"
+                "Connection: close\r\n"
+                "\r\n"
+            )
+            writer.write(headers.encode("ascii") + body_bytes)
+            await writer.drain()
+
+        elif path == "/qr-code":
+            # Serve QR code image for merch shop
+            from pathlib import Path as PathLib
+            qr_file = PathLib("/app/shop.nindevdo.com.jpeg")
+            
+            if not qr_file.exists() or not qr_file.is_file():
+                logging.warning(f"❓ [http] QR code image not found: {qr_file}")
+                resp = b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                writer.write(resp)
+                await writer.drain()
+                return
+            
+            try:
+                body_bytes = qr_file.read_bytes()
+                mime = "image/jpeg"
+            except Exception as e:
+                logging.error(f"❗ [http] Failed to read QR code: {e}", exc_info=True)
+                resp = b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                writer.write(resp)
+                await writer.drain()
+                return
+            
+            headers = (
+                "HTTP/1.1 200 OK\r\n"
+                f"Content-Type: {mime}\r\n"
+                f"Content-Length: {len(body_bytes)}\r\n"
+                "Cache-Control: public, max-age=3600\r\n"
+                "Access-Control-Allow-Origin: *\r\n"
                 "Connection: close\r\n"
                 "\r\n"
             )
