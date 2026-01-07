@@ -21,7 +21,7 @@ class VoiceCommandParser:
         self.action_synonyms = {
             # Combat actions
             "kill": ["kill", "killed", "eliminated", "frag", "takedown", "got him", "got her", "enemy down"],
-            "death": ["death", "died", "dead", "killed me", "i died", "rip", "im dead"],
+            "death": ["death", "died", "dead", "killed me", "i died", "rip", "i'm dead", "im dead"],
             "downed": ["down", "downed", "knocked", "knocked down", "dbno"],
             "headshot": ["headshot", "head shot", "dome", "domed", "hs"],
             "melee": ["melee", "melee kill", "sword", "axe", "stabbed"],
@@ -34,10 +34,11 @@ class VoiceCommandParser:
             "stealth": ["stealth", "sneaking", "quiet", "stay quiet"],
             
             # Mission/run actions
-            "run_start": ["start run", "begin run", "new run", "start game", "lets go", "starting"],
+            "run_start": ["start run", "begin run", "new run", "start game", "let's go", "lets go", "starting"],
             "run_end": ["end run", "finish run", "game over", "run complete", "finished"],
             "extract": ["extract", "extracted", "extraction", "evac", "evacuate", "exfil"],
             "banish": ["banish", "banished", "banishing", "ritual"],
+            "wipe": ["wipe", "wiped", "team wipe", "squad wipe", "we wiped", "full wipe"],
             
             # Support actions
             "revive": ["revive", "revived", "rez", "rezzed", "bring back", "res"],
@@ -151,6 +152,7 @@ class VoiceCommandParser:
     def match_thanks(self, text: str) -> Optional[str]:
         """
         Match thank you commands and extract name if present
+        Supports both "thank you Alex" and "Alex, thank you"
         
         Args:
             text: Transcribed speech text (already lowercased)
@@ -166,19 +168,40 @@ class VoiceCommandParser:
         
         # Check if any trigger is in the text
         triggered = False
+        trigger_found = None
         for trigger in thanks_triggers:
             if trigger in text:
                 triggered = True
-                # Remove the trigger to extract the name
-                text = text.replace(trigger, "").strip()
+                trigger_found = trigger
                 break
         
         if not triggered:
             return None
         
-        # Clean up common filler words
-        fillers = ["to", "for", "the", "a", "an"]
-        words = text.split()
+        # Split text by commas to handle "Alex, thank you" format
+        # Also split by trigger to handle "thank you Alex" format
+        parts = text.split(',')
+        
+        # If there's a comma, check if thank you is after the comma
+        if len(parts) == 2:
+            # "Alex, thank you" format
+            before_comma = parts[0].strip()
+            after_comma = parts[1].strip()
+            
+            # Check if the thank you is after the comma
+            if any(trigger in after_comma for trigger in thanks_triggers):
+                # Name is before the comma
+                name_text = before_comma
+            else:
+                # Thank you before comma, name after
+                name_text = after_comma
+        else:
+            # No comma - standard "thank you Alex" format
+            name_text = text.replace(trigger_found, "").strip()
+        
+        # Clean up common filler words (keep it minimal)
+        fillers = ["to", "for", "the", "a", "an", "very", "much", "so"]
+        words = name_text.split()
         name_words = [w for w in words if w not in fillers and len(w) > 1]
         
         if name_words:
@@ -210,7 +233,7 @@ class VoiceCommandParser:
         
         # Check for thank you commands
         thanks_match = self.match_thanks(text)
-        if thanks_match:
+        if thanks_match is not None:
             return ('thanks', thanks_match)
         
         # Check if this is a scene switching command

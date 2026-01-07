@@ -1227,6 +1227,12 @@
                     let lastSendTime = Date.now();
                     
                     processor.onaudioprocess = (e) => {
+                        // Resume AudioContext if suspended (happens when tab goes to background)
+                        if (audioContext.state === 'suspended') {
+                            console.warn('[voice] AudioContext suspended, resuming...');
+                            audioContext.resume();
+                        }
+                        
                         const inputData = e.inputBuffer.getChannelData(0);
                         // Convert Float32Array to Int16Array (PCM)
                         const pcm = new Int16Array(inputData.length);
@@ -1242,6 +1248,8 @@
                             audioChunks = [];
                             lastSendTime = Date.now();
                             
+                            console.log(`[voice] Sending ${chunksToSend.length} chunks (${chunksToSend.reduce((sum, c) => sum + c.length, 0) * 2} bytes)`);
+                            
                             // Send async without blocking audio processing - fire and forget
                             this.sendPCMAudioChunks(chunksToSend, streamSampleRate).catch(err => {
                                 console.error('[voice] Send error (continuing):', err);
@@ -1252,17 +1260,34 @@
                     source.connect(processor);
                     // Don't connect to destination - we're not playing back, just capturing!
                     
+                    // Add visibility change listener to keep audio context running
+                    const handleVisibilityChange = () => {
+                        if (document.hidden && audioContext.state === 'running') {
+                            console.log('[voice] Tab hidden but keeping AudioContext active');
+                        } else if (!document.hidden && audioContext.state === 'suspended') {
+                            console.log('[voice] Tab visible, resuming AudioContext');
+                            audioContext.resume();
+                        }
+                    };
+                    document.addEventListener('visibilitychange', handleVisibilityChange);
+                    
                     this.audioContext = audioContext;
                     this.audioProcessor = processor;
                     this.audioSource = source;
                     this.audioStream = stream;
                     this.isRecording = true;
+                    this.visibilityHandler = handleVisibilityChange;
                     
                     const voiceToggle = document.getElementById('voiceToggle');
                     const voiceToggleText = document.getElementById('voiceToggleText');
                     voiceToggle.classList.add('listening');
                     voiceToggleText.textContent = '🔴 Stop Listening';
-                    console.log('[voice] Web Audio API recording started');
+                    
+                    console.log('[voice] ✅ Web Audio API recording started');
+                    console.log('[voice] AudioContext state:', audioContext.state);
+                    console.log('[voice] Sample rate:', streamSampleRate);
+                    console.log('[voice] Stream active:', stream.active);
+                    console.log('[voice] Audio should start sending in ~1 second...');
                     
                 } catch (error) {
                     console.error('[voice] Failed to start microphone:', error);
@@ -1274,6 +1299,13 @@
             
             stopBrowserMicrophone() {
                 console.log('[voice] Stopping browser microphone...');
+                
+                // Remove visibility change listener
+                if (this.visibilityHandler) {
+                    document.removeEventListener('visibilitychange', this.visibilityHandler);
+                    this.visibilityHandler = null;
+                }
+                
                 if (this.audioProcessor) {
                     this.audioProcessor.disconnect();
                 }

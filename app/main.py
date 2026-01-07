@@ -4829,7 +4829,7 @@ async def update_live_overlay(action: str, project_key: str) -> None:
             last_video_duration = None
             last_audio_duration = None
             last_synonyms = None
-            last_project = ""
+            # Don't reset last_project - it's the game context and should persist!
 
             # Cancel any pending auto-clear timer
             if overlay_clear_task and not overlay_clear_task.done():
@@ -7702,6 +7702,12 @@ async def process_browser_audio_chunk(pcm_data: bytes):
         # Convert to float32 and normalize to -1.0 to 1.0 range (Whisper expects this)
         audio_float = audio_np.astype(np.float32) / 32768.0
         
+        # Check if audio has sufficient amplitude (ignore very quiet audio/noise)
+        rms_amplitude = np.sqrt(np.mean(audio_float ** 2))
+        if rms_amplitude < 0.01:  # Threshold for silence (adjust as needed)
+            logging.debug(f"[voice] Ignoring quiet audio (RMS: {rms_amplitude:.4f})")
+            return
+        
         # Resample from browser sample rate (usually 48kHz) to 16kHz for Whisper
         # Use simple decimation for speed (take every Nth sample)
         decimation_factor = browser_audio_sample_rate // 16000
@@ -7718,7 +7724,12 @@ async def process_browser_audio_chunk(pcm_data: bytes):
                 segments, info = whisper_model.transcribe(
                     audio_resampled,
                     language="en",
-                    vad_filter=False  # Disable VAD to catch all speech
+                    vad_filter=True,  # Enable VAD to filter out non-speech audio
+                    vad_parameters={
+                        "threshold": 0.5,  # Higher = more strict (0.0-1.0)
+                        "min_speech_duration_ms": 250,  # Minimum speech duration
+                        "min_silence_duration_ms": 500   # Minimum silence to split
+                    }
                 )
                 
                 # Collect all segments
@@ -7728,6 +7739,31 @@ async def process_browser_audio_chunk(pcm_data: bytes):
                 logging.info(f"[voice] 🔍 Detected {len(all_segments)} segments, text: '{transcribed_text}'")
                 
                 if transcribed_text:
+                    # Filter out common game audio false positives
+                    ignore_patterns = [
+                        "thank you", "bye", "goodbye", "see you", "later",  # NPC dialogue
+                        "music", "sound", "noise",  # Background sounds
+                        "...",  # Trailing dots indicate unclear audio
+                    ]
+                    
+                    text_lower = transcribed_text.lower().strip()
+                    
+                    # Ignore very short transcriptions (likely noise)
+                    if len(text_lower) < 3:
+                        logging.debug(f"[voice] Ignoring too short: '{transcribed_text}'")
+                        return
+                    
+                    # Check if it's just game audio (only if it's ONLY these words)
+                    words = text_lower.split()
+                    if len(words) <= 3:  # Only check short phrases
+                        is_game_audio = all(
+                            any(pattern in word for pattern in ignore_patterns)
+                            for word in words
+                        )
+                        if is_game_audio:
+                            logging.debug(f"[voice] Ignoring game audio: '{transcribed_text}'")
+                            return
+                    
                     logging.info(f"[voice] 📝 Transcribed: '{transcribed_text}'")
                     
                     # Update live captions for overlay
@@ -7775,19 +7811,29 @@ async def voice_command_handler(transcribed_text: str):
         
         result = parser.parse_command(transcribed_text, last_project)
         
+        if not result and not last_project:
+            # No game context set, provide helpful debug
+            logging.warning(f"[voice] ⚠️ No game context (last_project={repr(last_project)}). Commands won't match without game context.")
+        
         if result:
             target, identifier = result
             
             if target == 'thanks':
                 # Thank you animation command
                 name = identifier
-                logging.info(f"[voice] 🙏 Thanks command: '{name if name else 'generic'}'")
-                async with state_lock:
-                    last_thanks_name = name if name else "Everyone"
-                    last_thanks_time = time.time()
-                    # Rotate through animation styles (0-3)
-                    last_thanks_style = (last_thanks_style + 1) % 4
-                logging.info(f"[voice] ✅ Thank you animation triggered for: {last_thanks_name}")
+                
+                # Check cooldown to prevent spam (minimum 10 seconds between thanks)
+                current_time = time.time()
+                if current_time - last_thanks_time < 10:
+                    logging.info(f"[voice] 🙏 Thanks command ignored (cooldown: {10 - (current_time - last_thanks_time):.1f}s remaining)")
+                else:
+                    logging.info(f"[voice] 🙏 Thanks command: '{name if name else 'generic'}'")
+                    async with state_lock:
+                        last_thanks_name = name if name else "Everyone"
+                        last_thanks_time = current_time
+                        # Rotate through animation styles (0-3)
+                        last_thanks_style = (last_thanks_style + 1) % 4
+                    logging.info(f"[voice] ✅ Thank you animation triggered for: {last_thanks_name}")
                 
             elif target == 'scene':
                 # Scene switching command

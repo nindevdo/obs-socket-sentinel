@@ -15,6 +15,7 @@ games:
       extract: "⛵"
       kill: "💀"
       loot: "💎"
+      wipe: "🧻"
       run_end: "⏹️"
       run_start: "▶️"
       stealth: "🕵️"

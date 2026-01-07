@@ -57,10 +57,13 @@ class ContinuousVoiceListener:
         global whisper_model
         from faster_whisper import WhisperModel
         
-        # Use GPU with float16 for faster processing on RTX GPUs
+        # Use small model for better accuracy (still fast on GPU)
+        # base = fastest but least accurate
+        # small = good balance of speed/accuracy
+        # medium/large = most accurate but slower
         logger.info("[voice] Initializing Whisper model on GPU...")
         whisper_model = WhisperModel(
-            "base",
+            "small",
             device="cuda",
             compute_type="float16"
         )
