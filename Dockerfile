@@ -25,6 +25,8 @@ RUN mkdir -p /app/_data/fonts && \
   rm /tmp/ProggyClean.zip
 
 # Set working directory
+ENV PYTHONDONTWRITEBYTECODE=1
+
 WORKDIR /app
 
 # Copy the application code (everything is now in app/)

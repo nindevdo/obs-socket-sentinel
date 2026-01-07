@@ -33,6 +33,11 @@ last_synonyms: Optional[List[str]] = None  # Synonyms for burst words
 last_caption: Optional[str] = None  # Live closed captions from voice recognition
 last_caption_time: float = 0  # Timestamp when caption was set
 
+# Thank you animation state
+last_thanks_name: Optional[str] = None  # Name to thank
+last_thanks_time: float = 0  # Timestamp when thanks was triggered
+last_thanks_style: int = 0  # Animation style index (rotates)
+
 # Recently played media tracking to avoid repetition
 recent_media_history: Dict[str, List[str]] = {}  # action_key -> list of recent URLs
 RECENT_MEDIA_HISTORY_SIZE = 10  # Remember last 10 items per action
@@ -6241,6 +6246,14 @@ async def handle_http(
                 # Clear caption after 5 seconds
                 if caption_age > 5.0:
                     caption = ""
+                
+                # Thank you animation data
+                thanks_name = last_thanks_name or ""
+                thanks_age = time.time() - last_thanks_time if last_thanks_time else 999
+                thanks_style = last_thanks_style
+                # Clear thanks after 5 seconds
+                if thanks_age > 5.0:
+                    thanks_name = ""
 
                 # DEBUG: Log audio duration value when API is called
                 # logging.info(f"🔍 [overlay] API call - last_audio_duration={last_audio_duration}, final_audio_duration={audio_duration}")
@@ -6412,6 +6425,8 @@ async def handle_http(
                 "project": project,
                 "synonyms": synonyms,
                 "caption": caption,  # Live closed captions
+                "thanks_name": thanks_name,  # Thank you animation
+                "thanks_style": thanks_style,  # Animation style (0-3)
                 "runs": runs_for_overlay,
                 "achievement": achievement_notification,
                 "playtime": playtime_notification,
@@ -7670,101 +7685,66 @@ async def cta_scheduler_task() -> None:
             await asyncio.sleep(60)  # Wait a bit before retrying on error
 
 
-async def process_browser_audio_chunk(webm_data: bytes):
+async def process_browser_audio_chunk(pcm_data: bytes):
     """
     Process audio chunk from browser
-    Accumulate chunks and transcribe when enough audio collected
+    Process immediately without accumulation for lower latency
     """
-    global browser_audio_buffer, browser_audio_last_process
+    global browser_audio_sample_rate
     
     try:
-        async with browser_audio_lock:
-            browser_audio_buffer.append(webm_data)
-            
-            # Check if enough time has passed or buffer is large enough
-            current_time = time.time()
-            buffer_size = sum(len(chunk) for chunk in browser_audio_buffer)
-            
-            # Process if 3 seconds passed OR buffer > 50KB
-            should_process = (
-                (current_time - browser_audio_last_process >= BROWSER_AUDIO_BUFFER_SECONDS) or
-                (buffer_size > 50000)
-            )
-            
-            if should_process and browser_audio_buffer:
-                logging.info(f"[voice] Processing {len(browser_audio_buffer)} audio chunks ({buffer_size} bytes)")
+        # Process immediately without buffering for lowest latency
+        import numpy as np
+        
+        # Convert PCM bytes to numpy array (int16)
+        audio_np = np.frombuffer(pcm_data, dtype=np.int16)
+        
+        # Convert to float32 and normalize to -1.0 to 1.0 range (Whisper expects this)
+        audio_float = audio_np.astype(np.float32) / 32768.0
+        
+        # Resample from browser sample rate (usually 48kHz) to 16kHz for Whisper
+        # Use simple decimation for speed (take every Nth sample)
+        decimation_factor = browser_audio_sample_rate // 16000
+        if decimation_factor > 1:
+            audio_resampled = audio_float[::decimation_factor]
+        else:
+            audio_resampled = audio_float
+        
+        # Get Whisper model from voice_listener module
+        try:
+            from voice_listener import whisper_model
+            if whisper_model and len(audio_resampled) > 1600:  # At least 0.1 seconds of audio
+                logging.info(f"[voice] 🎤 Transcribing audio...")
+                segments, info = whisper_model.transcribe(
+                    audio_resampled,
+                    language="en",
+                    vad_filter=False  # Disable VAD to catch all speech
+                )
                 
-                # Combine all audio chunks (now PCM data)
-                combined_pcm = b''.join(browser_audio_buffer)
-                browser_audio_buffer = []
-                browser_audio_last_process = current_time
+                # Collect all segments
+                all_segments = list(segments)
+                transcribed_text = " ".join([seg.text for seg in all_segments]).strip()
                 
-                # Convert PCM to WAV for Whisper
-                import subprocess
-                import tempfile
+                logging.info(f"[voice] 🔍 Detected {len(all_segments)} segments, text: '{transcribed_text}'")
                 
-                with tempfile.NamedTemporaryFile(suffix='.pcm', delete=False) as temp_pcm:
-                    temp_pcm.write(combined_pcm)
-                    temp_pcm_path = temp_pcm.name
-                
-                temp_wav_path = temp_pcm_path.replace('.pcm', '.wav')
-                
-                # Convert raw PCM to WAV using actual browser sample rate
-                result = subprocess.run([
-                    'ffmpeg', '-loglevel', 'error',
-                    '-f', 's16le',  # 16-bit signed little-endian PCM
-                    '-ar', str(browser_audio_sample_rate),  # Use browser's sample rate
-                    '-ac', '1',      # Mono
-                    '-i', temp_pcm_path,
-                    '-ar', '16000',  # Resample to 16kHz for Whisper
-                    '-y',
-                    temp_wav_path
-                ], capture_output=True, timeout=10)
-                
-                if result.returncode == 0 and os.path.exists(temp_wav_path):
-                    # Get Whisper model from voice_listener module
-                    try:
-                        from voice_listener import whisper_model
-                        if whisper_model:
-                            logging.info(f"[voice] 🎤 Transcribing audio...")
-                            segments, info = whisper_model.transcribe(
-                                temp_wav_path,
-                                language="en",
-                                vad_filter=False  # Disable VAD to catch all speech
-                            )
-                            
-                            # Collect all segments
-                            all_segments = list(segments)
-                            transcribed_text = " ".join([seg.text for seg in all_segments]).strip()
-                            
-                            logging.info(f"[voice] 🔍 Detected {len(all_segments)} segments, text: '{transcribed_text}'")
-                            
-                            if transcribed_text:
-                                logging.info(f"[voice] 📝 Transcribed: '{transcribed_text}'")
-                                
-                                # Update live captions for overlay
-                                global last_caption, last_caption_time
-                                async with state_lock:
-                                    last_caption = transcribed_text
-                                    last_caption_time = time.time()
-                                
-                                # Process as voice command
-                                await voice_command_handler(transcribed_text)
-                            else:
-                                logging.debug("[voice] No speech detected in audio")
-                        else:
-                            logging.warning("[voice] Whisper model not available")
-                    except Exception as transcribe_error:
-                        logging.error(f"[voice] Transcription error: {transcribe_error}")
+                if transcribed_text:
+                    logging.info(f"[voice] 📝 Transcribed: '{transcribed_text}'")
                     
-                    # Cleanup
-                    os.unlink(temp_pcm_path)
-                    os.unlink(temp_wav_path)
+                    # Update live captions for overlay
+                    global last_caption, last_caption_time
+                    async with state_lock:
+                        last_caption = transcribed_text
+                        last_caption_time = time.time()
+                    
+                    # Process as voice command
+                    await voice_command_handler(transcribed_text)
                 else:
-                    error_msg = result.stderr.decode() if result.stderr else "Unknown error"
-                    logging.error(f"[voice] FFmpeg conversion failed: {error_msg}")
-                    if os.path.exists(temp_pcm_path):
-                        os.unlink(temp_pcm_path)
+                    logging.debug("[voice] No speech detected in audio")
+            else:
+                if not whisper_model:
+                    logging.warning("[voice] Whisper model not available")
+        except Exception as transcribe_error:
+            logging.error(f"[voice] Transcription error: {transcribe_error}")
                 
     except Exception as e:
         logging.error(f"[voice] Error processing browser audio: {e}", exc_info=True)
@@ -7775,21 +7755,61 @@ async def voice_command_handler(transcribed_text: str):
     Handle voice commands from continuous listener
     Called when audio is transcribed
     """
+    # Declare all globals FIRST, before any other code
+    global obs_client, last_project, last_thanks_name, last_thanks_time, last_thanks_style, state_lock, last_caption, last_caption_time
+    
     try:
         from voice_commands import VoiceCommandParser
+        from obs_controller import get_obs_controller
         
         parser = VoiceCommandParser(GAMES_CONFIG)
+        
+        # Update parser with current scenes from OBS controller
+        try:
+            obs_ctrl = await get_obs_controller()
+            if obs_ctrl and obs_ctrl.connected and hasattr(obs_ctrl, 'state') and obs_ctrl.state:
+                if 'scenes' in obs_ctrl.state:
+                    parser.update_scenes(obs_ctrl.state['scenes'])
+        except Exception as obs_error:
+            logging.debug(f"[voice] Could not get OBS scenes: {obs_error}")
+        
         result = parser.parse_command(transcribed_text, last_project)
         
         if result:
-            game, action = result
-            logging.info(f"[voice] ✅ Auto-triggering action: {game}/{action}")
-            await handle_action(action, game)
+            target, identifier = result
+            
+            if target == 'thanks':
+                # Thank you animation command
+                name = identifier
+                logging.info(f"[voice] 🙏 Thanks command: '{name if name else 'generic'}'")
+                async with state_lock:
+                    last_thanks_name = name if name else "Everyone"
+                    last_thanks_time = time.time()
+                    # Rotate through animation styles (0-3)
+                    last_thanks_style = (last_thanks_style + 1) % 4
+                logging.info(f"[voice] ✅ Thank you animation triggered for: {last_thanks_name}")
+                
+            elif target == 'scene':
+                # Scene switching command
+                logging.info(f"[voice] 🎬 Switching to scene: '{identifier}'")
+                try:
+                    await obs_client.set_current_program_scene(identifier)
+                    logging.info(f"[voice] ✅ Scene switched to: '{identifier}'")
+                except Exception as scene_error:
+                    logging.error(f"[voice] ❌ Failed to switch scene: {scene_error}")
+            else:
+                # Game action command
+                game = target
+                action = identifier
+                logging.info(f"[voice] ✅ Auto-triggering action: {game}/{action}")
+                await handle_action(action, game)
         else:
             logging.debug(f"[voice] No command matched in: '{transcribed_text}'")
             
     except Exception as e:
+        import traceback
         logging.error(f"[voice] Error handling voice command: {e}")
+        logging.error(f"[voice] Traceback: {traceback.format_exc()}")
 
 
 async def start_voice_listener_task():

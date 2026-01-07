@@ -1176,6 +1176,84 @@
       opacity: 1;
     }
 
+    /* Thank You Animation Overlay */
+    .thanks-overlay {
+      position: fixed;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%) scale(0);
+      z-index: 16000;
+      pointer-events: none;
+      transition: transform 0.5s cubic-bezier(0.68, -0.55, 0.265, 1.55), opacity 0.5s;
+      opacity: 0;
+    }
+
+    .thanks-overlay.active {
+      transform: translate(-50%, -50%) scale(1);
+      opacity: 1;
+    }
+
+    .thanks-content {
+      position: relative;
+      text-align: center;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      padding: 60px 100px;
+      border-radius: 30px;
+      box-shadow: 0 20px 60px rgba(0, 0, 0, 0.8);
+      border: 5px solid rgba(255, 255, 255, 0.3);
+    }
+
+    .thanks-title {
+      font-size: 100px;
+      font-weight: 900;
+      color: white;
+      text-shadow: 0 5px 20px rgba(0, 0, 0, 0.5);
+      margin-bottom: 20px;
+      letter-spacing: 5px;
+      animation: pulse 1s ease-in-out infinite;
+    }
+
+    .thanks-name {
+      font-size: 70px;
+      font-weight: 700;
+      color: #FFD700;
+      text-shadow: 0 3px 15px rgba(0, 0, 0, 0.4);
+      margin-top: 10px;
+    }
+
+    .thanks-particles {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      pointer-events: none;
+      overflow: hidden;
+    }
+
+    @keyframes pulse {
+      0%, 100% { transform: scale(1); }
+      50% { transform: scale(1.05); }
+    }
+
+    @keyframes confetti-fall {
+      0% { transform: translateY(-100vh) rotate(0deg); opacity: 1; }
+      100% { transform: translateY(100vh) rotate(720deg); opacity: 0; }
+    }
+
+    /* Style variations */
+    .thanks-overlay.style-1 .thanks-content {
+      background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+    }
+
+    .thanks-overlay.style-2 .thanks-content {
+      background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
+    }
+
+    .thanks-overlay.style-3 .thanks-content {
+      background: linear-gradient(135deg, #43e97b 0%, #38f9d7 100%);
+    }
+
   </style>
 </head>
 
@@ -1198,6 +1276,15 @@
 
   <!-- Live closed captions -->
   <div id="live-caption" class="live-caption"></div>
+
+  <!-- Thank you animation -->
+  <div id="thanks-overlay" class="thanks-overlay">
+    <div class="thanks-content">
+      <div class="thanks-title">THANK YOU!</div>
+      <div class="thanks-name"></div>
+    </div>
+    <div class="thanks-particles"></div>
+  </div>
 
   <!-- emoji marquees -->
   <div id="marquee-top" class="marquee"></div>
@@ -3144,6 +3231,33 @@
       preloader.src = bustUrl;
     }
 
+    // Create confetti particles for thank you animation
+    function createConfetti(container) {
+      // Clear existing particles
+      container.innerHTML = '';
+      
+      const colors = ['#FFD700', '#FF69B4', '#00CED1', '#FF6347', '#7FFF00', '#FF1493'];
+      const symbols = ['❤️', '⭐', '🎉', '✨', '💖', '🌟'];
+      
+      // Create 30 particles
+      for (let i = 0; i < 30; i++) {
+        const particle = document.createElement('div');
+        particle.style.position = 'absolute';
+        particle.style.fontSize = '30px';
+        particle.style.left = Math.random() * 100 + '%';
+        particle.style.top = '-50px';
+        particle.style.animation = `confetti-fall ${2 + Math.random() * 2}s linear ${Math.random() * 0.5}s`;
+        particle.style.zIndex = '10';
+        particle.textContent = symbols[Math.floor(Math.random() * symbols.length)];
+        container.appendChild(particle);
+      }
+      
+      // Clean up particles after animation
+      setTimeout(() => {
+        container.innerHTML = '';
+      }, 5000);
+    }
+
     async function pollOverlay() {
       try {
         const res = await fetch("/overlay", { cache: "no-store" });
@@ -3164,6 +3278,8 @@
         const achievement_percentages = data.achievement_percentages || null;
         const news = data.news || null;
         const caption = data.caption || "";
+        const thanksName = data.thanks_name || "";
+        const thanksStyle = data.thanks_style || 0;
 
         // Update live captions
         const captionEl = document.getElementById('live-caption');
@@ -3172,6 +3288,23 @@
           captionEl.classList.add('visible');
         } else {
           captionEl.classList.remove('visible');
+        }
+
+        // Handle thank you animations
+        const thanksOverlay = document.getElementById('thanks-overlay');
+        const thanksNameEl = thanksOverlay.querySelector('.thanks-name');
+        
+        if (thanksName && thanksName.trim()) {
+          // Update name
+          thanksNameEl.textContent = thanksName;
+          
+          // Apply style
+          thanksOverlay.className = 'thanks-overlay active style-' + thanksStyle;
+          
+          // Create confetti particles
+          createConfetti(thanksOverlay.querySelector('.thanks-particles'));
+        } else {
+          thanksOverlay.classList.remove('active');
         }
 
         // Handle achievement notifications

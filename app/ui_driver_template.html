@@ -1238,14 +1238,19 @@
                         
                         // Send accumulated audio every ~1 second
                         if (Date.now() - lastSendTime > 1000) {
-                            this.sendPCMAudioChunks(audioChunks, streamSampleRate);
+                            const chunksToSend = audioChunks;
                             audioChunks = [];
                             lastSendTime = Date.now();
+                            
+                            // Send async without blocking audio processing - fire and forget
+                            this.sendPCMAudioChunks(chunksToSend, streamSampleRate).catch(err => {
+                                console.error('[voice] Send error (continuing):', err);
+                            });
                         }
                     };
                     
                     source.connect(processor);
-                    processor.connect(audioContext.destination);
+                    // Don't connect to destination - we're not playing back, just capturing!
                     
                     this.audioContext = audioContext;
                     this.audioProcessor = processor;
