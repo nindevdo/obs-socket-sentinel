@@ -1,16 +1,22 @@
-FROM python:3.11.9-slim-bullseye
+FROM nvidia/cuda:12.3.2-cudnn9-runtime-ubuntu22.04
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONPATH=/app
 
-# Install system dependencies including ffmpeg for video duration detection
+# Install Python 3.11 and system dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
+  python3.11 \
+  python3-pip \
   ffmpeg \
   nodejs \
   npm \
   wget \
   unzip \
   && rm -rf /var/lib/apt/lists/*
+
+# Make python3.11 the default
+RUN update-alternatives --install /usr/bin/python python /usr/bin/python3.11 1 && \
+    update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.11 1
 
 # Download and install ProggyClean Nerd Font for serving
 RUN mkdir -p /app/_data/fonts && \
@@ -28,7 +34,7 @@ COPY app/ /app/
 RUN mkdir -p /run/secrets
 
 # Install Python dependencies
-RUN pip install --no-cache-dir aiohttp watchdog obsws-python pyyaml yt_dlp nltk
+RUN pip install --no-cache-dir aiohttp watchdog obsws-python pyyaml yt_dlp nltk faster-whisper numpy
 
 # Download NLTK WordNet corpus for synonym generation
 RUN python -c "import nltk; nltk.download('wordnet', quiet=True); nltk.download('omw-1.4', quiet=True)"

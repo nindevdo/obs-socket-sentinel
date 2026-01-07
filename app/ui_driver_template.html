@@ -492,6 +492,102 @@
             overflow: hidden;
         }
 
+        /* Voice Command Section */
+        .voice-section {
+            background: rgba(139, 92, 246, 0.1);
+            border: 2px solid rgba(139, 92, 246, 0.3);
+            border-radius: 0.5rem;
+            padding: 0.75rem;
+            margin-bottom: 0.5rem;
+        }
+
+        .voice-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 0.5rem;
+        }
+
+        .voice-title {
+            font-size: 1rem;
+            font-weight: 700;
+            color: #a78bfa;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .voice-btn {
+            background: linear-gradient(135deg, rgba(139, 92, 246, 0.2) 0%, rgba(124, 58, 237, 0.2) 100%);
+            border: 2px solid rgba(139, 92, 246, 0.4);
+            border-radius: 0.5rem;
+            padding: 0.75rem 1.5rem;
+            color: #ffffff;
+            font-size: 1rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .voice-btn:hover {
+            background: linear-gradient(135deg, rgba(139, 92, 246, 0.3) 0%, rgba(124, 58, 237, 0.3) 100%);
+            border-color: rgba(139, 92, 246, 0.6);
+            transform: scale(1.05);
+        }
+
+        .voice-btn:active {
+            transform: scale(0.95);
+        }
+
+        .voice-btn.listening {
+            background: linear-gradient(135deg, rgba(239, 68, 68, 0.3) 0%, rgba(220, 38, 38, 0.3) 100%);
+            border-color: rgba(239, 68, 68, 0.6);
+            animation: voicePulse 1.5s ease-in-out infinite;
+        }
+
+        .voice-btn.processing {
+            background: linear-gradient(135deg, rgba(251, 191, 36, 0.3) 0%, rgba(245, 158, 11, 0.3) 100%);
+            border-color: rgba(251, 191, 36, 0.6);
+            cursor: not-allowed;
+        }
+
+        @keyframes voicePulse {
+            0%, 100% {
+                box-shadow: 0 0 20px rgba(239, 68, 68, 0.4);
+            }
+            50% {
+                box-shadow: 0 0 40px rgba(239, 68, 68, 0.8);
+            }
+        }
+
+        .voice-status {
+            font-size: 0.875rem;
+            color: #a0a0a0;
+            margin-top: 0.5rem;
+        }
+
+        .voice-status.active {
+            color: #a78bfa;
+        }
+
+        .voice-status.error {
+            color: #ef4444;
+        }
+
+        .voice-transcript {
+            background: rgba(0, 0, 0, 0.3);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 0.25rem;
+            padding: 0.5rem;
+            margin-top: 0.5rem;
+            font-size: 0.875rem;
+            color: #d1d5db;
+            min-height: 2rem;
+        }
+
         /* Minimum scale constraints for very small screens */
         @media (max-height: 600px) {
             .container {
@@ -753,6 +849,18 @@
             <button id="logoutBtn" class="logout-btn" style="display: none;">🚪 Logout</button>
         </div>
 
+        <!-- Voice Command Section - Continuous Listener Status -->
+        <div class="voice-section">
+            <div class="voice-header">
+                <div class="voice-title">🎤 Continuous Voice Listener</div>
+                <button id="voiceToggle" class="voice-btn" title="Toggle listener on/off">
+                    <span id="voiceToggleText">Loading...</span>
+                </button>
+            </div>
+            <div id="voiceStatus" class="voice-status">Checking listener status...</div>
+            <div id="voiceTranscript" class="voice-transcript" style="display: none;"></div>
+        </div>
+
         <div class="main-content">
             <div id="content" class="actions-container">
                 <div class="loading">
@@ -798,8 +906,16 @@
                 this.authExpiry = null;
                 this.AUTH_TIMEOUT = 30 * 60 * 1000; // 30 minutes
                 
+                // Voice command properties
+                this.mediaRecorder = null;
+                this.audioChunks = [];
+                this.isRecording = false;
+                this.voiceListenerEnabled = false;
+                this.voiceListenerCheckInterval = null;
+                
                 this.initAuth();
                 this.setupDelegatedEventListeners(); // New: setup delegated listeners
+                // Voice listener initialized after auth in init() method
             }
 
             setupDelegatedEventListeners() {
@@ -1036,6 +1152,280 @@
                 this.logoutBtn.style.display = 'none';
             }
 
+            initVoiceListener() {
+                console.log('[voice] Initializing voice listener UI...');
+                const voiceToggle = document.getElementById('voiceToggle');
+                const voiceToggleText = document.getElementById('voiceToggleText');
+                const voiceStatus = document.getElementById('voiceStatus');
+                const voiceTranscript = document.getElementById('voiceTranscript');
+                
+                if (!voiceToggle) {
+                    console.warn('[voice] Voice toggle button not found in DOM');
+                    return;
+                }
+
+                // Check initial status
+                console.log('[voice] Starting initial status check...');
+                this.checkVoiceListenerStatus();
+
+                // Toggle browser microphone streaming
+                voiceToggle.addEventListener('click', async () => {
+                    await this.toggleBrowserMicrophone();
+                });
+
+                // Poll for listener status and recent transcriptions
+                this.voiceListenerCheckInterval = setInterval(() => {
+                    this.checkVoiceListenerStatus();
+                }, 5000); // Check every 5 seconds
+            }
+            
+            async toggleBrowserMicrophone() {
+                console.log('[voice] Toggle browser microphone clicked');
+                
+                if (this.isRecording) {
+                    // Stop recording
+                    this.stopBrowserMicrophone();
+                } else {
+                    // Start recording
+                    await this.startBrowserMicrophone();
+                }
+            }
+            
+            async startBrowserMicrophone() {
+                console.log('[voice] Starting browser microphone...');
+                const voiceToggle = document.getElementById('voiceToggle');
+                const voiceToggleText = document.getElementById('voiceToggleText');
+                
+                try {
+                    // Request microphone access
+                    const stream = await navigator.mediaDevices.getUserMedia({ 
+                        audio: {
+                            channelCount: 1,
+                            sampleRate: 16000,
+                            echoCancellation: true,
+                            noiseSuppression: true
+                        } 
+                    });
+                    
+                    console.log('[voice] Microphone access granted');
+                    
+                    // Get the actual sample rate from the stream
+                    const track = stream.getAudioTracks()[0];
+                    const settings = track.getSettings();
+                    const streamSampleRate = settings.sampleRate || 48000;
+                    
+                    console.log('[voice] Stream sample rate:', streamSampleRate);
+                    
+                    // Create AudioContext with matching sample rate
+                    const audioContext = new (window.AudioContext || window.webkitAudioContext)({ 
+                        sampleRate: streamSampleRate 
+                    });
+                    const source = audioContext.createMediaStreamSource(stream);
+                    const processor = audioContext.createScriptProcessor(4096, 1, 1);
+                    
+                    let audioChunks = [];
+                    let lastSendTime = Date.now();
+                    
+                    processor.onaudioprocess = (e) => {
+                        const inputData = e.inputBuffer.getChannelData(0);
+                        // Convert Float32Array to Int16Array (PCM)
+                        const pcm = new Int16Array(inputData.length);
+                        for (let i = 0; i < inputData.length; i++) {
+                            const s = Math.max(-1, Math.min(1, inputData[i]));
+                            pcm[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+                        }
+                        audioChunks.push(pcm);
+                        
+                        // Send accumulated audio every ~1 second
+                        if (Date.now() - lastSendTime > 1000) {
+                            this.sendPCMAudioChunks(audioChunks, streamSampleRate);
+                            audioChunks = [];
+                            lastSendTime = Date.now();
+                        }
+                    };
+                    
+                    source.connect(processor);
+                    processor.connect(audioContext.destination);
+                    
+                    this.audioContext = audioContext;
+                    this.audioProcessor = processor;
+                    this.audioSource = source;
+                    this.audioStream = stream;
+                    this.isRecording = true;
+                    
+                    const voiceToggle = document.getElementById('voiceToggle');
+                    const voiceToggleText = document.getElementById('voiceToggleText');
+                    voiceToggle.classList.add('listening');
+                    voiceToggleText.textContent = '🔴 Stop Listening';
+                    console.log('[voice] Web Audio API recording started');
+                    
+                } catch (error) {
+                    console.error('[voice] Failed to start microphone:', error);
+                    alert('Failed to access microphone: ' + error.message);
+                    const voiceToggleText = document.getElementById('voiceToggleText');
+                    voiceToggleText.textContent = '🎤 Start Listening';
+                }
+            }
+            
+            stopBrowserMicrophone() {
+                console.log('[voice] Stopping browser microphone...');
+                if (this.audioProcessor) {
+                    this.audioProcessor.disconnect();
+                }
+                if (this.audioSource) {
+                    this.audioSource.disconnect();
+                }
+                if (this.audioContext) {
+                    this.audioContext.close();
+                }
+                if (this.audioStream) {
+                    this.audioStream.getTracks().forEach(track => track.stop());
+                }
+                this.isRecording = false;
+                
+                const voiceToggle = document.getElementById('voiceToggle');
+                const voiceToggleText = document.getElementById('voiceToggleText');
+                if (voiceToggle) {
+                    voiceToggle.classList.remove('listening');
+                }
+                if (voiceToggleText) {
+                    voiceToggleText.textContent = '🎤 Start Listening';
+                }
+            }
+            
+            async sendPCMAudioChunks(chunks, sampleRate) {
+                try {
+                    // Combine all PCM chunks into one buffer
+                    const totalLength = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
+                    const combined = new Int16Array(totalLength);
+                    let offset = 0;
+                    for (const chunk of chunks) {
+                        combined.set(chunk, offset);
+                        offset += chunk.length;
+                    }
+                    
+                    console.log('[voice] Sending PCM audio:', combined.byteLength, 'bytes @', sampleRate, 'Hz');
+                    const response = await fetch(`${this.serverUrl}/voice/audio`, {
+                        method: 'POST',
+                        headers: {
+                            'Authorization': `Bearer ${this.authToken}`,
+                            'Content-Type': 'audio/pcm',
+                            'X-Sample-Rate': sampleRate.toString()
+                        },
+                        body: combined.buffer
+                    });
+                    
+                    if (!response.ok) {
+                        console.warn('[voice] Failed to send PCM:', response.status);
+                    }
+                } catch (error) {
+                    console.error('[voice] Error sending PCM:', error);
+                }
+            }
+            
+            async sendAudioChunk(audioBlob) {
+                // Legacy function - no longer used
+            }
+
+            async checkVoiceListenerStatus() {
+                console.log('[voice] Checking listener status...');
+                const voiceToggle = document.getElementById('voiceToggle');
+                const voiceToggleText = document.getElementById('voiceToggleText');
+                const voiceStatus = document.getElementById('voiceStatus');
+
+                if (!voiceToggle) {
+                    console.warn('[voice] Voice toggle not found during status check');
+                    return;
+                }
+                
+                console.log('[voice] DOM elements found:', {
+                    toggle: !!voiceToggle,
+                    toggleText: !!voiceToggleText,
+                    status: !!voiceStatus
+                });
+
+                try {
+                    console.log('[voice] Fetching status from server...');
+                    const response = await fetch(`${this.serverUrl}/voice/status`, {
+                        headers: {
+                            'Authorization': `Bearer ${this.authToken}`
+                        }
+                    });
+
+                    console.log('[voice] Status response:', response.status);
+                    const status = await response.json();
+                    console.log('[voice] Status data:', status);
+                    this.voiceListenerEnabled = status.enabled;
+
+                    if (status.enabled) {
+                        console.log('[voice] Updating UI for enabled state');
+                        voiceToggle.classList.add('listening');
+                        voiceToggle.classList.remove('processing');
+                        voiceToggleText.textContent = '🎤 Listening';
+                        
+                        if (status.audio_streaming) {
+                            voiceStatus.textContent = '✅ Active - Receiving audio stream';
+                            voiceStatus.className = 'voice-status active';
+                            console.log('[voice] Set status: audio streaming');
+                        } else {
+                            voiceStatus.textContent = '⏳ Waiting for audio stream on port 5555...';
+                            voiceStatus.className = 'voice-status';
+                            console.log('[voice] Set status: waiting for audio');
+                        }
+
+                        // Show recent transcription if available
+                        if (status.last_transcription) {
+                            const transcript = document.getElementById('voiceTranscript');
+                            transcript.textContent = `Last: "${status.last_transcription}"`;
+                            transcript.style.display = 'block';
+                        }
+                    } else {
+                        voiceToggle.classList.remove('listening', 'processing');
+                        voiceToggleText.textContent = 'Enable Listener';
+                        voiceStatus.textContent = 'Click to enable continuous voice monitoring';
+                        voiceStatus.className = 'voice-status';
+                    }
+
+                } catch (error) {
+                    console.error('Failed to check voice status:', error);
+                    voiceToggleText.textContent = 'Status Unknown';
+                    voiceStatus.textContent = 'Failed to check listener status';
+                }
+            }
+
+            async toggleVoiceListener() {
+                const voiceToggle = document.getElementById('voiceToggle');
+                const voiceToggleText = document.getElementById('voiceToggleText');
+
+                try {
+                    voiceToggle.disabled = true;
+                    voiceToggleText.textContent = 'Toggling...';
+
+                    const response = await fetch(`${this.serverUrl}/voice/toggle`, {
+                        method: 'POST',
+                        headers: {
+                            'Authorization': `Bearer ${this.authToken}`,
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify({ enabled: !this.voiceListenerEnabled })
+                    });
+
+                    const result = await response.json();
+                    
+                    if (result.success) {
+                        await this.checkVoiceListenerStatus();
+                    } else {
+                        alert(`Failed to toggle listener: ${result.error}`);
+                    }
+
+                } catch (error) {
+                    console.error('Failed to toggle listener:', error);
+                    alert('Failed to toggle voice listener');
+                } finally {
+                    voiceToggle.disabled = false;
+                }
+            }
+
             async init() {
                 // Strict authentication check
                 if (!this.isAuthenticated || !this.authToken) {
@@ -1050,6 +1440,9 @@
                     // currentGame is now loaded from server in loadConfig()
                     this.render();
                     this.setStatus('connected', '✅ Connected to server');
+                    
+                    // Initialize voice listener after authentication
+                    this.initVoiceListener();
                     
                     // Poll for state changes every 2 seconds - UPDATE incrementally
                     setInterval(async () => {

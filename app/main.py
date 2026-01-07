@@ -30,6 +30,8 @@ last_video_url: Optional[str] = None  # URL string for video (YouTube/direct)
 last_video_duration: Optional[float] = None  # Seconds, if known
 last_audio_duration: Optional[float] = None  # Audio duration for proper timing
 last_synonyms: Optional[List[str]] = None  # Synonyms for burst words
+last_caption: Optional[str] = None  # Live closed captions from voice recognition
+last_caption_time: float = 0  # Timestamp when caption was set
 
 # Recently played media tracking to avoid repetition
 recent_media_history: Dict[str, List[str]] = {}  # action_key -> list of recent URLs
@@ -863,6 +865,13 @@ def get_action_emoji(action_key: str, project: Optional[str]) -> str:
 # Global variables for hotkey mappings
 current_hotkey_mappings = {}
 last_hotkey_update = 0
+
+# Global variables for browser audio streaming
+browser_audio_buffer = []
+browser_audio_lock = asyncio.Lock()
+browser_audio_last_process = 0
+browser_audio_sample_rate = 16000  # Default, updated from browser
+BROWSER_AUDIO_BUFFER_SECONDS = 3  # Process every 3 seconds
 
 
 # -----------------------------
@@ -6225,6 +6234,13 @@ async def handle_http(
                 )
                 project = last_project or ""
                 synonyms = last_synonyms or []
+                
+                # Live captions from voice recognition
+                caption = last_caption or ""
+                caption_age = time.time() - last_caption_time if last_caption_time else 999
+                # Clear caption after 5 seconds
+                if caption_age > 5.0:
+                    caption = ""
 
                 # DEBUG: Log audio duration value when API is called
                 # logging.info(f"🔍 [overlay] API call - last_audio_duration={last_audio_duration}, final_audio_duration={audio_duration}")
@@ -6395,6 +6411,7 @@ async def handle_http(
                 "audio_duration": audio_duration,
                 "project": project,
                 "synonyms": synonyms,
+                "caption": caption,  # Live closed captions
                 "runs": runs_for_overlay,
                 "achievement": achievement_notification,
                 "playtime": playtime_notification,
@@ -6736,6 +6753,137 @@ async def handle_http(
                 writer.write(headers.encode("ascii") + body_bytes)
                 await writer.drain()
 
+        elif path == "/transcribe" and method == "POST":
+            # Voice command transcription endpoint
+            try:
+                # Check authentication
+                is_authenticated = check_auth_header(req_text)
+                if not is_authenticated:
+                    response_data = {"success": False, "error": "Authentication required"}
+                    body_bytes = json.dumps(response_data).encode("utf-8")
+                    headers_str = (
+                        "HTTP/1.1 401 Unauthorized\r\n"
+                        "Content-Type: application/json\r\n"
+                        f"Content-Length: {len(body_bytes)}\r\n"
+                        "Connection: close\r\n"
+                        "\r\n"
+                    )
+                    writer.write(headers_str.encode("ascii") + body_bytes)
+                    await writer.drain()
+                    return
+
+                # Read multipart audio data
+                content_length = 0
+                for line in req_text.split("\r\n"):
+                    if line.lower().startswith("content-length:"):
+                        content_length = int(line.split(":")[1].strip())
+                        break
+
+                if content_length == 0:
+                    response_data = {"success": False, "error": "No audio data provided"}
+                    body_bytes = json.dumps(response_data).encode("utf-8")
+                    headers_str = (
+                        "HTTP/1.1 400 Bad Request\r\n"
+                        "Content-Type: application/json\r\n"
+                        f"Content-Length: {len(body_bytes)}\r\n"
+                        "Connection: close\r\n"
+                        "\r\n"
+                    )
+                    writer.write(headers_str.encode("ascii") + body_bytes)
+                    await writer.drain()
+                    return
+
+                # Read audio data
+                audio_data = await reader.read(content_length)
+                
+                # Save audio temporarily
+                temp_audio_path = f"/tmp/voice_{int(time.time())}.webm"
+                with open(temp_audio_path, "wb") as f:
+                    f.write(audio_data)
+                
+                try:
+                    # Use local Whisper for transcription with GPU
+                    logging.info("[voice] 🎤 Starting local Whisper transcription on GPU...")
+                    
+                    # Import faster-whisper for local transcription
+                    from faster_whisper import WhisperModel
+                    
+                    # Try GPU first, fall back to CPU if needed
+                    try:
+                        model = WhisperModel("base", device="cuda", compute_type="float16")
+                        logging.info("[voice] Using GPU (CUDA) for transcription")
+                    except Exception as gpu_error:
+                        logging.warning(f"[voice] GPU not available, using CPU: {gpu_error}")
+                        model = WhisperModel("base", device="cpu", compute_type="int8")
+                    
+                    # Transcribe
+                    segments, info = model.transcribe(temp_audio_path, language="en")
+                    
+                    # Extract text from segments
+                    transcribed_text = " ".join([segment.text for segment in segments]).strip()
+                    
+                    logging.info(f"[voice] 🎤 Transcribed: '{transcribed_text}'")
+                    
+                    # Parse command
+                    from voice_commands import VoiceCommandParser
+                    parser = VoiceCommandParser(GAMES_CONFIG)
+                    
+                    result = parser.parse_command(transcribed_text, last_project)
+                    
+                    if result:
+                        game, action = result
+                        logging.info(f"[voice] ✅ Triggering action: {game}/{action}")
+                        
+                        # Trigger the action using existing action handler
+                        await handle_action(action, game)
+                        
+                        response_data = {
+                            "success": True,
+                            "transcription": transcribed_text,
+                            "game": game,
+                            "action": action,
+                            "message": f"Triggered {action} for {game}"
+                        }
+                    else:
+                        logging.warning(f"[voice] ❌ Could not parse command: '{transcribed_text}'")
+                        response_data = {
+                            "success": False,
+                            "transcription": transcribed_text,
+                            "error": "Could not match command to any action"
+                        }
+                    
+                finally:
+                    # Clean up temp file
+                    try:
+                        os.unlink(temp_audio_path)
+                    except:
+                        pass
+                
+                body_bytes = json.dumps(response_data).encode("utf-8")
+                headers_str = (
+                    "HTTP/1.1 200 OK\r\n"
+                    "Content-Type: application/json\r\n"
+                    f"Content-Length: {len(body_bytes)}\r\n"
+                    "Connection: close\r\n"
+                    "\r\n"
+                )
+                writer.write(headers_str.encode("ascii") + body_bytes)
+                await writer.drain()
+
+            except Exception as e:
+                logging.error(f"❗ [voice] Error in transcribe: {e}", exc_info=True)
+                error_response = {"success": False, "error": str(e)}
+                body_bytes = json.dumps(error_response).encode("utf-8")
+                headers_str = (
+                    "HTTP/1.1 500 Internal Server Error\r\n"
+                    "Content-Type: application/json\r\n"
+                    f"Content-Length: {len(body_bytes)}\r\n"
+                    "Connection: close\r\n"
+                    "\r\n"
+                )
+                writer.write(headers_str.encode("ascii") + body_bytes)
+                await writer.drain()
+
         elif path.startswith("/refresh_discord"):
             # Manual Discord cache refresh endpoint
             try:
@@ -6780,6 +6928,190 @@ async def handle_http(
                     "\r\n"
                 )
                 writer.write(headers.encode("ascii") + error_body)
+                await writer.drain()
+                return
+
+        elif path == "/voice/status" and method == "GET":
+            # Voice listener status endpoint
+            try:
+                is_authenticated = check_auth_header(req_text)
+                if not is_authenticated:
+                    response_data = {"error": "Authentication required"}
+                    body_bytes = json.dumps(response_data).encode("utf-8")
+                    headers_str = (
+                        "HTTP/1.1 401 Unauthorized\r\n"
+                        "Content-Type: application/json\r\n"
+                        f"Content-Length: {len(body_bytes)}\r\n"
+                        "Connection: close\r\n"
+                        "\r\n"
+                    )
+                    writer.write(headers_str.encode("ascii") + body_bytes)
+                    await writer.drain()
+                    return
+
+                # Simple status check without async complexity
+                voice_enabled = os.getenv("VOICE_LISTENER_ENABLED", "false").lower() == "true"
+                
+                status = {
+                    "enabled": voice_enabled,
+                    "audio_streaming": False,  # Simplified for now
+                    "last_transcription": None
+                }
+                
+                body_bytes = json.dumps(status).encode("utf-8")
+                headers_str = (
+                    "HTTP/1.1 200 OK\r\n"
+                    "Content-Type: application/json\r\n"
+                    f"Content-Length: {len(body_bytes)}\r\n"
+                    "Connection: close\r\n"
+                    "\r\n"
+                )
+                writer.write(headers_str.encode("ascii") + body_bytes)
+                await writer.drain()
+                return
+
+            except Exception as e:
+                logging.error(f"[voice] Error getting status: {e}")
+                error_body = json.dumps({"error": str(e)}).encode("utf-8")
+                headers_str = (
+                    "HTTP/1.1 500 Internal Server Error\r\n"
+                    "Content-Type: application/json\r\n"
+                    f"Content-Length: {len(error_body)}\r\n"
+                    "Connection: close\r\n"
+                    "\r\n"
+                )
+                writer.write(headers_str.encode("ascii") + error_body)
+                await writer.drain()
+                return
+
+        elif path == "/voice/toggle" and method == "POST":
+            # Toggle voice listener on/off
+            try:
+                is_authenticated = check_auth_header(req_text)
+                if not is_authenticated:
+                    response_data = {"error": "Authentication required"}
+                    body_bytes = json.dumps(response_data).encode("utf-8")
+                    headers_str = (
+                        "HTTP/1.1 401 Unauthorized\r\n"
+                        "Content-Type: application/json\r\n"
+                        f"Content-Length: {len(body_bytes)}\r\n"
+                        "Connection: close\r\n"
+                        "\r\n"
+                    )
+                    writer.write(headers_str.encode("ascii") + body_bytes)
+                    await writer.drain()
+                    return
+
+                # Use body_data that was already read
+                data = json.loads(body_data.decode("utf-8")) if body_data else {}
+                enabled = data.get("enabled", True)
+
+                # We can't actually toggle the listener without restarting
+                # Just return status - user needs to edit .env and restart
+                response_data = {
+                    "success": False,
+                    "message": "To toggle voice listener, edit .env file and restart container",
+                    "enabled": os.getenv("VOICE_LISTENER_ENABLED", "false").lower() == "true"
+                }
+
+                body_bytes = json.dumps(response_data).encode("utf-8")
+                headers_str = (
+                    "HTTP/1.1 200 OK\r\n"
+                    "Content-Type: application/json\r\n"
+                    f"Content-Length: {len(body_bytes)}\r\n"
+                    "Connection: close\r\n"
+                    "\r\n"
+                )
+                writer.write(headers_str.encode("ascii") + body_bytes)
+                await writer.drain()
+                return
+
+            except Exception as e:
+                logging.error(f"[voice] Error toggling listener: {e}")
+                error_body = json.dumps({"error": str(e), "success": False}).encode("utf-8")
+                headers_str = (
+                    "HTTP/1.1 500 Internal Server Error\r\n"
+                    "Content-Type: application/json\r\n"
+                    f"Content-Length: {len(error_body)}\r\n"
+                    "Connection: close\r\n"
+                    "\r\n"
+                )
+                writer.write(headers_str.encode("ascii") + error_body)
+                await writer.drain()
+                return
+
+        elif path == "/voice/audio" and method == "POST":
+            # Receive audio from browser and forward to voice listener
+            try:
+                is_authenticated = check_auth_header(req_text)
+                if not is_authenticated:
+                    response_data = {"error": "Authentication required"}
+                    body_bytes = json.dumps(response_data).encode("utf-8")
+                    headers_str = (
+                        "HTTP/1.1 401 Unauthorized\r\n"
+                        "Content-Type: application/json\r\n"
+                        f"Content-Length: {len(body_bytes)}\r\n"
+                        "Connection: close\r\n"
+                        "\r\n"
+                    )
+                    writer.write(headers_str.encode("ascii") + body_bytes)
+                    await writer.drain()
+                    return
+
+                # body_data contains the audio blob
+                if body_data:
+                    # Extract sample rate from header
+                    sample_rate_header = None
+                    for line in req_text.split('\r\n'):
+                        if line.lower().startswith('x-sample-rate:'):
+                            try:
+                                sample_rate_header = int(line.split(':', 1)[1].strip())
+                            except:
+                                pass
+                            break
+                    
+                    if sample_rate_header:
+                        global browser_audio_sample_rate
+                        browser_audio_sample_rate = sample_rate_header
+                        logging.info(f"[voice] 🎵 Received {len(body_data)} bytes PCM @ {sample_rate_header}Hz")
+                    else:
+                        logging.info(f"[voice] 🎵 Received {len(body_data)} bytes PCM")
+                    
+                    # Queue audio for processing
+                    try:
+                        import asyncio
+                        asyncio.create_task(process_browser_audio_chunk(body_data))
+                    except Exception as process_error:
+                        logging.error(f"[voice] Error queueing audio: {process_error}")
+                    
+                    response_data = {"success": True, "bytes_received": len(body_data)}
+                else:
+                    logging.warning(f"[voice] No audio data in request")
+                    response_data = {"success": False, "error": "No audio data"}
+
+                body_bytes = json.dumps(response_data).encode("utf-8")
+                headers_str = (
+                    "HTTP/1.1 200 OK\r\n"
+                    "Content-Type: application/json\r\n"
+                    f"Content-Length: {len(body_bytes)}\r\n"
+                    "Connection: close\r\n"
+                    "\r\n"
+                )
+                writer.write(headers_str.encode("ascii") + body_bytes)
+                await writer.drain()
+                return
+
+            except Exception as e:
+                logging.error(f"[voice] Error receiving audio: {e}")
+                error_body = json.dumps({"error": str(e)}).encode("utf-8")
+                headers_str = (
+                    "HTTP/1.1 500 Internal Server Error\r\n"
+                    "Content-Type: application/json\r\n"
+                    f"Content-Length: {len(error_body)}\r\n"
+                    "Connection: close\r\n"
+                    "\r\n"
+                )
+                writer.write(headers_str.encode("ascii") + error_body)
                 await writer.drain()
                 return
 
@@ -6861,7 +7193,6 @@ async def handle_http(
         elif path.startswith("/debug_video"):
             # DEBUG ENDPOINT: Force select a cached video for testing
             try:
-                import os
                 from pathlib import Path
 
                 video_dir = Path("/discord/discord_videos")
@@ -7084,8 +7415,6 @@ async def handle_http(
 
         elif path.startswith("/sounds/"):
             # Static served local sound files
-            import os.path
-
             rel = path[len("/sounds/") :].lstrip("/")
             sounds_dir = "/sounds"
             fs_path = os.path.join(sounds_dir, rel)
@@ -7341,6 +7670,153 @@ async def cta_scheduler_task() -> None:
             await asyncio.sleep(60)  # Wait a bit before retrying on error
 
 
+async def process_browser_audio_chunk(webm_data: bytes):
+    """
+    Process audio chunk from browser
+    Accumulate chunks and transcribe when enough audio collected
+    """
+    global browser_audio_buffer, browser_audio_last_process
+    
+    try:
+        async with browser_audio_lock:
+            browser_audio_buffer.append(webm_data)
+            
+            # Check if enough time has passed or buffer is large enough
+            current_time = time.time()
+            buffer_size = sum(len(chunk) for chunk in browser_audio_buffer)
+            
+            # Process if 3 seconds passed OR buffer > 50KB
+            should_process = (
+                (current_time - browser_audio_last_process >= BROWSER_AUDIO_BUFFER_SECONDS) or
+                (buffer_size > 50000)
+            )
+            
+            if should_process and browser_audio_buffer:
+                logging.info(f"[voice] Processing {len(browser_audio_buffer)} audio chunks ({buffer_size} bytes)")
+                
+                # Combine all audio chunks (now PCM data)
+                combined_pcm = b''.join(browser_audio_buffer)
+                browser_audio_buffer = []
+                browser_audio_last_process = current_time
+                
+                # Convert PCM to WAV for Whisper
+                import subprocess
+                import tempfile
+                
+                with tempfile.NamedTemporaryFile(suffix='.pcm', delete=False) as temp_pcm:
+                    temp_pcm.write(combined_pcm)
+                    temp_pcm_path = temp_pcm.name
+                
+                temp_wav_path = temp_pcm_path.replace('.pcm', '.wav')
+                
+                # Convert raw PCM to WAV using actual browser sample rate
+                result = subprocess.run([
+                    'ffmpeg', '-loglevel', 'error',
+                    '-f', 's16le',  # 16-bit signed little-endian PCM
+                    '-ar', str(browser_audio_sample_rate),  # Use browser's sample rate
+                    '-ac', '1',      # Mono
+                    '-i', temp_pcm_path,
+                    '-ar', '16000',  # Resample to 16kHz for Whisper
+                    '-y',
+                    temp_wav_path
+                ], capture_output=True, timeout=10)
+                
+                if result.returncode == 0 and os.path.exists(temp_wav_path):
+                    # Get Whisper model from voice_listener module
+                    try:
+                        from voice_listener import whisper_model
+                        if whisper_model:
+                            logging.info(f"[voice] 🎤 Transcribing audio...")
+                            segments, info = whisper_model.transcribe(
+                                temp_wav_path,
+                                language="en",
+                                vad_filter=False  # Disable VAD to catch all speech
+                            )
+                            
+                            # Collect all segments
+                            all_segments = list(segments)
+                            transcribed_text = " ".join([seg.text for seg in all_segments]).strip()
+                            
+                            logging.info(f"[voice] 🔍 Detected {len(all_segments)} segments, text: '{transcribed_text}'")
+                            
+                            if transcribed_text:
+                                logging.info(f"[voice] 📝 Transcribed: '{transcribed_text}'")
+                                
+                                # Update live captions for overlay
+                                global last_caption, last_caption_time
+                                async with state_lock:
+                                    last_caption = transcribed_text
+                                    last_caption_time = time.time()
+                                
+                                # Process as voice command
+                                await voice_command_handler(transcribed_text)
+                            else:
+                                logging.debug("[voice] No speech detected in audio")
+                        else:
+                            logging.warning("[voice] Whisper model not available")
+                    except Exception as transcribe_error:
+                        logging.error(f"[voice] Transcription error: {transcribe_error}")
+                    
+                    # Cleanup
+                    os.unlink(temp_pcm_path)
+                    os.unlink(temp_wav_path)
+                else:
+                    error_msg = result.stderr.decode() if result.stderr else "Unknown error"
+                    logging.error(f"[voice] FFmpeg conversion failed: {error_msg}")
+                    if os.path.exists(temp_pcm_path):
+                        os.unlink(temp_pcm_path)
+                
+    except Exception as e:
+        logging.error(f"[voice] Error processing browser audio: {e}", exc_info=True)
+
+
+async def voice_command_handler(transcribed_text: str):
+    """
+    Handle voice commands from continuous listener
+    Called when audio is transcribed
+    """
+    try:
+        from voice_commands import VoiceCommandParser
+        
+        parser = VoiceCommandParser(GAMES_CONFIG)
+        result = parser.parse_command(transcribed_text, last_project)
+        
+        if result:
+            game, action = result
+            logging.info(f"[voice] ✅ Auto-triggering action: {game}/{action}")
+            await handle_action(action, game)
+        else:
+            logging.debug(f"[voice] No command matched in: '{transcribed_text}'")
+            
+    except Exception as e:
+        logging.error(f"[voice] Error handling voice command: {e}")
+
+
+async def start_voice_listener_task():
+    """Background task to run continuous voice listener"""
+    try:
+        # Check if voice listening is enabled
+        voice_enabled = os.getenv("VOICE_LISTENER_ENABLED", "false").lower() == "true"
+        
+        if not voice_enabled:
+            logging.info("[voice] Continuous voice listener disabled (set VOICE_LISTENER_ENABLED=true to enable)")
+            return
+        
+        from voice_listener import ContinuousVoiceListener, set_voice_listener
+        
+        # Create and register listener
+        audio_port = int(os.getenv("VOICE_AUDIO_PORT", "5555"))
+        listener = ContinuousVoiceListener(audio_port=audio_port)
+        listener.set_command_callback(voice_command_handler)
+        set_voice_listener(listener)
+        
+        logging.info("[voice] 🎤 Starting continuous voice listener...")
+        await listener.start_listening()
+        
+    except Exception as e:
+        logging.error(f"[voice] Failed to start voice listener: {e}", exc_info=True)
+
+
 async def main() -> None:
     global last_project
     
@@ -7394,6 +7870,9 @@ async def main() -> None:
     # ---- Start OBS state poller ----
     logging.info("[obs] Starting OBS state poller task...")
     asyncio.create_task(obs_state_poller())
+    
+    # ---- Start continuous voice listener ----
+    asyncio.create_task(start_voice_listener_task())
 
     logging.info(f"📡 TCP listening on {HOST}:{PORT}")
     tcp_server = await asyncio.start_server(handle_client, HOST, PORT)

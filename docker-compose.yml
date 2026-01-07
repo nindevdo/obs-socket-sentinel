@@ -7,6 +7,13 @@ services:
     restart: unless-stopped
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
     environment:
       - CHAPTER_FILE=/markers/chapters.txt
       - DISCORD_BOT_TOKEN=${DISCORD_BOT_TOKEN}
@@ -20,12 +27,15 @@ services:
       - OBS_IP=${OBS_IP:-192.168.0.181}
       - OBS_PORT=${OBS_PORT:-4455}
       - OBS_PASSWORD=${OBS_PASSWORD}
+      - VOICE_LISTENER_ENABLED=${VOICE_LISTENER_ENABLED:-false}
+      - VOICE_AUDIO_PORT=${VOICE_AUDIO_PORT:-5555}
     volumes:
       - ./_data/markers:/markers:rw
       - ./_data/discord:/discord:rw
       - ./_data/sounds:/sounds:ro
     ports:
       - ${SOCKET_SENTINEL_PORT:-8088}:8088
+      - ${VOICE_AUDIO_PORT:-5555}:5555/udp
 
   cloudflared:
     image: cloudflare/cloudflared:latest

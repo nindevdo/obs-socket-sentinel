@@ -1148,6 +1148,33 @@
       opacity: 1;
     }
 
+    /* Live Closed Captions */
+    .live-caption {
+      position: fixed;
+      bottom: 80px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: rgba(0, 0, 0, 0.85);
+      color: white;
+      padding: 12px 24px;
+      border-radius: 8px;
+      font-size: 24px;
+      font-weight: 600;
+      font-family: 'Inter', 'Segoe UI', Arial, sans-serif;
+      text-align: center;
+      max-width: 80%;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+      z-index: 15000;
+      opacity: 0;
+      transition: opacity 0.3s ease;
+      pointer-events: none;
+      line-height: 1.4;
+    }
+
+    .live-caption.visible {
+      opacity: 1;
+    }
+
   </style>
 </head>
 
@@ -1167,6 +1194,9 @@
     <video id="meme-video" playsinline></video>
     <iframe id="meme-yt" allow="autoplay; encrypted-media; picture-in-picture" allowfullscreen></iframe>
   </div>
+
+  <!-- Live closed captions -->
+  <div id="live-caption" class="live-caption"></div>
 
   <!-- emoji marquees -->
   <div id="marquee-top" class="marquee"></div>
@@ -3132,6 +3162,16 @@
         const playtime = data.playtime || null;
         const achievement_percentages = data.achievement_percentages || null;
         const news = data.news || null;
+        const caption = data.caption || "";
+
+        // Update live captions
+        const captionEl = document.getElementById('live-caption');
+        if (caption && caption.trim()) {
+          captionEl.textContent = caption;
+          captionEl.classList.add('visible');
+        } else {
+          captionEl.classList.remove('visible');
+        }
 
         // Handle achievement notifications
         const achievementChanged = !lastAchievement && achievement || 
