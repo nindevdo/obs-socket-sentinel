@@ -16,19 +16,55 @@ class VoiceCommandParser:
     def __init__(self, games_config: Dict):
         self.games_config = games_config
         
-        # Build action mappings with synonyms
+        # Build action mappings with synonyms for all game actions
         self.action_synonyms = {
-            "kill": ["kill", "killed", "eliminated", "frag", "takedown", "got him", "got her"],
-            "death": ["death", "died", "dead", "killed me", "i died", "rip"],
-            "downed": ["down", "downed", "knocked", "knocked down"],
-            "clear": ["clear", "cleared", "safe", "all clear"],
-            "headshot": ["headshot", "head shot", "dome", "domed"],
-            "run_start": ["start run", "begin run", "new run", "start game", "lets go"],
-            "run_end": ["end run", "finish run", "game over", "run complete"],
-            "extract": ["extract", "extracted", "extraction", "evac", "evacuate"],
-            "revive": ["revive", "revived", "rez", "rezzed", "bring back"],
+            # Combat actions
+            "kill": ["kill", "killed", "eliminated", "frag", "takedown", "got him", "got her", "enemy down"],
+            "death": ["death", "died", "dead", "killed me", "i died", "rip", "im dead"],
+            "downed": ["down", "downed", "knocked", "knocked down", "dbno"],
+            "headshot": ["headshot", "head shot", "dome", "domed", "hs"],
+            "melee": ["melee", "melee kill", "sword", "axe", "stabbed"],
+            "traded": ["trade", "traded", "mutual kill"],
             "assist": ["assist", "assisted", "help", "helped"],
-            "banish": ["banish", "banished", "banishing"],
+            
+            # Area/status actions
+            "clear": ["clear", "cleared", "safe", "all clear", "area clear"],
+            "alert": ["alert", "alerted", "spotted", "they see us"],
+            "stealth": ["stealth", "sneaking", "quiet", "stay quiet"],
+            
+            # Mission/run actions
+            "run_start": ["start run", "begin run", "new run", "start game", "lets go", "starting"],
+            "run_end": ["end run", "finish run", "game over", "run complete", "finished"],
+            "extract": ["extract", "extracted", "extraction", "evac", "evacuate", "exfil"],
+            "banish": ["banish", "banished", "banishing", "ritual"],
+            
+            # Support actions
+            "revive": ["revive", "revived", "rez", "rezzed", "bring back", "res"],
+            
+            # Resource/environment actions
+            "loot": ["loot", "looting", "looted", "found loot"],
+            "mining": ["mining", "mine", "mined", "digging"],
+            "fish": ["fish", "fishing", "caught fish"],
+            "drowned": ["drowned", "drowning", "water death"],
+            "teleport": ["teleport", "teleported", "tp", "portal"],
+            
+            # Combat effects
+            "explosion": ["explosion", "exploded", "boom", "grenade", "explosive"],
+            "fire": ["fire", "burning", "burned", "flame"],
+            "magic": ["magic", "spell", "cast"],
+            "trap": ["trap", "trapped", "tripwire"],
+            
+            # Enemy types (Hell Divers 2)
+            "bots": ["bots", "bot", "robots", "automaton"],
+            "squids": ["squids", "squid", "illuminate"],
+            "terminids": ["terminids", "terminid", "bugs", "bug"],
+            
+            # Difficulty/player types
+            "veterans": ["veterans", "veteran", "vet", "experienced"],
+            "rookies": ["rookies", "rookie", "newbie", "new player"],
+            
+            # Misc
+            "funny": ["funny", "lol", "hilarious", "laugh"],
             "intro": ["intro", "introduction", "show intro"],
         }
         

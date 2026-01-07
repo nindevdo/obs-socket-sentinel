@@ -1151,24 +1151,25 @@
     /* Live Closed Captions */
     .live-caption {
       position: fixed;
-      bottom: 80px;
+      bottom: 100px;
       left: 50%;
       transform: translateX(-50%);
-      background: rgba(0, 0, 0, 0.85);
+      background: rgba(0, 0, 0, 0.9);
       color: white;
-      padding: 12px 24px;
-      border-radius: 8px;
-      font-size: 24px;
-      font-weight: 600;
+      padding: 20px 40px;
+      border-radius: 12px;
+      font-size: 48px;
+      font-weight: 700;
       font-family: 'Inter', 'Segoe UI', Arial, sans-serif;
       text-align: center;
-      max-width: 80%;
-      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+      max-width: 85%;
+      box-shadow: 0 6px 20px rgba(0, 0, 0, 0.7);
       z-index: 15000;
       opacity: 0;
       transition: opacity 0.3s ease;
       pointer-events: none;
-      line-height: 1.4;
+      line-height: 1.3;
+      letter-spacing: 0.5px;
     }
 
     .live-caption.visible {
