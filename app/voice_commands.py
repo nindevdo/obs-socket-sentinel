@@ -22,6 +22,8 @@ class VoiceCommandParser:
             "be right back": ["be right back", "brb", "away"],
             "afk": ["be right back", "brb", "away", "afk"],
             "brb": ["be right back", "brb", "away"],
+            "r b": ["be right back", "brb", "away"],  # Whisper transcribes "brb" as "R, B."
+            "rb": ["be right back", "brb", "away"],
             "just a sec": ["be right back", "brb", "away"],
             "one sec": ["be right back", "brb", "away"],
             "one second": ["be right back", "brb", "away"],

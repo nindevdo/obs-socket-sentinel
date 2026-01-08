@@ -16,6 +16,7 @@
     <script>window.EMBEDDED_CURRENT_GAME = "";</script>
     <script>window.EMBEDDED_ACTION_COUNTS = {};</script>
     <script>window.EMBEDDED_RUN_STATS = null;</script>
+    <script>window.VOICE_WS_HOST = "";</script>
     
     <style>
         * {
@@ -852,7 +853,7 @@
         <!-- Voice Command Section - Continuous Listener Status -->
         <div class="voice-section">
             <div class="voice-header">
-                <div class="voice-title">🎤 Continuous Voice Listener</div>
+                <div class="voice-title">🎤 Voice Commands</div>
                 <button id="voiceToggle" class="voice-btn" title="Toggle listener on/off">
                     <span id="voiceToggleText">Loading...</span>
                 </button>
@@ -911,6 +912,7 @@
                 this.audioChunks = [];
                 this.isRecording = false;
                 this.voiceListenerEnabled = false;
+                this.currentAudioSource = null; // 'browser' or 'obs'
                 this.voiceListenerCheckInterval = null;
                 
                 this.initAuth();
@@ -1168,7 +1170,7 @@
                 console.log('[voice] Starting initial status check...');
                 this.checkVoiceListenerStatus();
 
-                // Toggle browser microphone streaming
+                // Toggle microphone streaming
                 voiceToggle.addEventListener('click', async () => {
                     await this.toggleBrowserMicrophone();
                 });
@@ -1216,7 +1218,8 @@
                     
                     console.log('[voice] Stream sample rate:', streamSampleRate);
                     
-                    // Create AudioContext with matching sample rate
+                    // Use HTTP POST for audio streaming - works reliably through Cloudflare
+                    // WebSocket is too complex with HTTPS/security restrictions
                     const audioContext = new (window.AudioContext || window.webkitAudioContext)({ 
                         sampleRate: streamSampleRate 
                     });
@@ -1240,6 +1243,7 @@
                             const s = Math.max(-1, Math.min(1, inputData[i]));
                             pcm[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
                         }
+                        
                         audioChunks.push(pcm);
                         
                         // Send accumulated audio every ~1 second
@@ -1248,11 +1252,11 @@
                             audioChunks = [];
                             lastSendTime = Date.now();
                             
-                            console.log(`[voice] Sending ${chunksToSend.length} chunks (${chunksToSend.reduce((sum, c) => sum + c.length, 0) * 2} bytes)`);
+                            console.log(`[voice] Sending ${chunksToSend.length} chunks`);
                             
-                            // Send async without blocking audio processing - fire and forget
+                            // Send async without blocking audio processing
                             this.sendPCMAudioChunks(chunksToSend, streamSampleRate).catch(err => {
-                                console.error('[voice] Send error (continuing):', err);
+                                console.error('[voice] Send error (will retry):', err);
                             });
                         }
                     };
@@ -1276,18 +1280,22 @@
                     this.audioSource = source;
                     this.audioStream = stream;
                     this.isRecording = true;
-                    this.visibilityHandler = handleVisibilityChange;
+                    this.currentAudioSource = 'browser';
                     
                     const voiceToggle = document.getElementById('voiceToggle');
                     const voiceToggleText = document.getElementById('voiceToggleText');
+                    const voiceStatus = document.getElementById('voiceStatus');
                     voiceToggle.classList.add('listening');
                     voiceToggleText.textContent = '🔴 Stop Listening';
+                    if (voiceStatus) {
+                        voiceStatus.textContent = '🎤 Listening via HTTP...';
+                        voiceStatus.classList.add('active');
+                    }
                     
-                    console.log('[voice] ✅ Web Audio API recording started');
+                    console.log('[voice] ✅ Audio streaming started (HTTP POST mode)');
                     console.log('[voice] AudioContext state:', audioContext.state);
                     console.log('[voice] Sample rate:', streamSampleRate);
                     console.log('[voice] Stream active:', stream.active);
-                    console.log('[voice] Audio should start sending in ~1 second...');
                     
                 } catch (error) {
                     console.error('[voice] Failed to start microphone:', error);
@@ -1319,15 +1327,23 @@
                     this.audioStream.getTracks().forEach(track => track.stop());
                 }
                 this.isRecording = false;
+                this.currentAudioSource = null;
                 
                 const voiceToggle = document.getElementById('voiceToggle');
                 const voiceToggleText = document.getElementById('voiceToggleText');
+                const voiceStatus = document.getElementById('voiceStatus');
                 if (voiceToggle) {
                     voiceToggle.classList.remove('listening');
                 }
                 if (voiceToggleText) {
                     voiceToggleText.textContent = '🎤 Start Listening';
                 }
+                if (voiceStatus) {
+                    voiceStatus.textContent = '⏸️ Stopped';
+                    voiceStatus.classList.remove('active', 'error');
+                }
+                
+                console.log('[voice] ✅ Browser microphone stopped');
             }
             
             async sendPCMAudioChunks(chunks, sampleRate) {

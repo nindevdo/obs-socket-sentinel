@@ -10,7 +10,7 @@ import random
 import subprocess
 import time
 import datetime
-from typing import Dict, List, Any, Optional, Set
+from typing import Dict, List, Any, Optional, Set, Tuple
 
 import aiohttp  # make sure this is installed in the container
 import yaml  # pip install pyyaml
@@ -32,6 +32,10 @@ last_audio_duration: Optional[float] = None  # Audio duration for proper timing
 last_synonyms: Optional[List[str]] = None  # Synonyms for burst words
 last_caption: Optional[str] = None  # Live closed captions from voice recognition
 last_caption_time: float = 0  # Timestamp when caption was set
+
+# Transcription buffer for multi-word command support (handles commands split across chunks)
+transcription_buffer: List[Tuple[str, float]] = []  # [(text, timestamp), ...]
+TRANSCRIPTION_BUFFER_SECONDS = 3.0  # Keep last 3 seconds of transcriptions
 
 # Thank you animation state
 last_thanks_name: Optional[str] = None  # Name to thank
@@ -67,6 +71,9 @@ PORT = int(os.getenv("LISTEN_PORT", "5678"))
 # HTTP server for Browser Source
 HTTP_HOST = os.getenv("HTTP_HOST", "0.0.0.0")
 HTTP_PORT = int(os.getenv("HTTP_PORT", "8088"))
+
+# WebSocket host for voice audio (can be different from HTTP_HOST to bypass Cloudflare)
+VOICE_WS_HOST = os.getenv("VOICE_WS_HOST", f"{HTTP_HOST}:{HTTP_PORT}")
 
 # Security token for API access
 SS_TOKEN = os.getenv("SS_TOKEN", "").strip()
@@ -5295,6 +5302,105 @@ async def handle_client(
 
 # HTTP SERVER
 # -----------------------------
+
+async def handle_voice_websocket(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
+    """
+    Handle WebSocket frames for continuous voice audio streaming
+    WebSocket protocol: https://tools.ietf.org/html/rfc6455
+    """
+    import struct
+    
+    try:
+        while True:
+            # Read WebSocket frame header (2 bytes minimum)
+            try:
+                header_bytes = await asyncio.wait_for(reader.readexactly(2), timeout=60.0)
+            except asyncio.TimeoutError:
+                logging.warning("[voice-ws] Connection timeout, closing")
+                break
+            except asyncio.IncompleteReadError:
+                logging.info("[voice-ws] Client disconnected")
+                break
+            
+            # Parse frame header
+            byte1, byte2 = header_bytes[0], header_bytes[1]
+            fin = (byte1 & 0x80) != 0
+            opcode = byte1 & 0x0F
+            masked = (byte2 & 0x80) != 0
+            payload_length = byte2 & 0x7F
+            
+            # Extended payload length
+            if payload_length == 126:
+                length_bytes = await reader.readexactly(2)
+                payload_length = struct.unpack(">H", length_bytes)[0]
+            elif payload_length == 127:
+                length_bytes = await reader.readexactly(8)
+                payload_length = struct.unpack(">Q", length_bytes)[0]
+            
+            # Read masking key if present
+            masking_key = None
+            if masked:
+                masking_key = await reader.readexactly(4)
+            
+            # Read payload data
+            if payload_length > 0:
+                payload = await reader.readexactly(payload_length)
+                
+                # Unmask data if needed
+                if masked and masking_key:
+                    unmasked = bytearray(payload)
+                    for i in range(len(unmasked)):
+                        unmasked[i] ^= masking_key[i % 4]
+                    payload = bytes(unmasked)
+            else:
+                payload = b""
+            
+            # Handle different opcodes
+            if opcode == 0x1:  # Text frame
+                text = payload.decode('utf-8')
+                logging.debug(f"[voice-ws] Received text: {text[:100]}")
+                
+            elif opcode == 0x2:  # Binary frame (audio data)
+                # Process audio chunk
+                if len(payload) > 0:
+                    try:
+                        # Audio is sent as binary PCM data
+                        # We'll use the default browser sample rate
+                        await process_browser_audio_chunk(payload)
+                    except Exception as e:
+                        logging.error(f"[voice-ws] Error processing audio: {e}")
+                
+            elif opcode == 0x8:  # Close frame
+                logging.info("[voice-ws] Received close frame")
+                # Send close frame back
+                close_frame = bytes([0x88, 0x00])  # FIN + Close opcode, 0 length
+                writer.write(close_frame)
+                await writer.drain()
+                break
+                
+            elif opcode == 0x9:  # Ping frame
+                # Respond with pong
+                pong_frame = bytes([0x8A, len(payload)]) + payload  # FIN + Pong opcode
+                writer.write(pong_frame)
+                await writer.drain()
+                logging.debug("[voice-ws] Sent pong")
+                
+            elif opcode == 0xA:  # Pong frame
+                logging.debug("[voice-ws] Received pong")
+                
+    except Exception as e:
+        logging.error(f"[voice-ws] WebSocket handler error: {e}")
+        import traceback
+        traceback.print_exc()
+    finally:
+        try:
+            writer.close()
+            await writer.wait_closed()
+        except:
+            pass
+        logging.info("[voice-ws] WebSocket connection closed")
+
+
 async def handle_http(
     reader: asyncio.StreamReader, writer: asyncio.StreamWriter
 ) -> None:
@@ -5313,6 +5419,7 @@ async def handle_http(
       - GET /dsounds/<...> => serves cached Discord audio files
       - GET /dvideos/<...> => serves cached Discord video files
       - GET /dmemes/<...>  => serves cached Discord meme/image files
+      - GET /voice/ws     => WebSocket endpoint for continuous voice audio streaming
     """
     addr = writer.get_extra_info("peername")
     # Declare global variables at function start to avoid scope issues
@@ -5370,7 +5477,29 @@ async def handle_http(
         # The _read_http_body function itself will be removed later.
         # Selective authentication - only protect certain endpoints
         if requires_auth(path, method):
-            if not check_auth_header(req_text):
+            # Special handling for /voice/ws - check query param for token
+            if path == "/voice/ws":
+                from urllib.parse import urlparse, parse_qs
+                parsed_url = urlparse(raw_path)
+                query_params = parse_qs(parsed_url.query)
+                token_from_query = query_params.get('token', [None])[0]
+                
+                is_authenticated = False
+                if token_from_query and SS_TOKEN and token_from_query == SS_TOKEN:
+                    is_authenticated = True
+                    logging.debug(f"[voice-ws] Auth via query param: ✅")
+                elif check_auth_header(req_text):
+                    is_authenticated = True
+                    logging.debug(f"[voice-ws] Auth via header: ✅")
+                
+                if not is_authenticated:
+                    logging.warning(
+                        f"🚫 [http] Unauthorized WebSocket attempt from {addr} to {method} {path}"
+                    )
+                    send_unauthorized(writer)
+                    await writer.drain()
+                    return
+            elif not check_auth_header(req_text):
                 logging.warning(
                     f"🚫 [http] Unauthorized access attempt from {addr} to {method} {path}"
                 )
@@ -6593,6 +6722,7 @@ async def handle_http(
                 current_game_json = json.dumps(current_game or "")
                 action_counts_json = json.dumps(action_counts_for_ui)
                 run_stats_json = json.dumps(run_stats_for_ui)
+                voice_ws_host_json = json.dumps(VOICE_WS_HOST)
                 
                 # Replace placeholder data in the template
                 body_str = body_str.replace(
@@ -6614,6 +6744,10 @@ async def handle_http(
                 body_str = body_str.replace(
                     'window.EMBEDDED_RUN_STATS = null;',
                     f'window.EMBEDDED_RUN_STATS = {run_stats_json};'
+                )
+                body_str = body_str.replace(
+                    'window.VOICE_WS_HOST = "";',
+                    f'window.VOICE_WS_HOST = {voice_ws_host_json};'
                 )
                 
                 logging.info(f"[ui] Loaded UI - game={current_game}, {len(games_config_for_ui)} games, {len(action_counts_for_ui)} action counts, run_stats={run_stats_for_ui is not None}")
@@ -7060,6 +7194,73 @@ async def handle_http(
                 )
                 writer.write(headers_str.encode("ascii") + error_body)
                 await writer.drain()
+                return
+
+        elif path == "/voice/ws" and method == "GET":
+            # WebSocket upgrade for continuous voice audio streaming
+            # Auth is already validated above in the early auth check
+            try:
+                logging.info(f"[voice-ws] ✅ WebSocket upgrade request authenticated")
+                
+                # Check for WebSocket upgrade headers
+                is_websocket = False
+                websocket_key = None
+                
+                for line in req_text.split('\r\n'):
+                    line_lower = line.lower()
+                    if 'upgrade: websocket' in line_lower:
+                        is_websocket = True
+                    if line_lower.startswith('sec-websocket-key:'):
+                        websocket_key = line.split(':', 1)[1].strip()
+                
+                if not is_websocket or not websocket_key:
+                    error_body = json.dumps({"error": "WebSocket upgrade required"}).encode("utf-8")
+                    headers_str = (
+                        "HTTP/1.1 400 Bad Request\r\n"
+                        "Content-Type: application/json\r\n"
+                        f"Content-Length: {len(error_body)}\r\n"
+                        "Connection: close\r\n"
+                        "\r\n"
+                    )
+                    writer.write(headers_str.encode("ascii") + error_body)
+                    await writer.drain()
+                    return
+                
+                # Perform WebSocket handshake
+                import base64
+                import hashlib
+                
+                magic_string = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+                accept_key = base64.b64encode(
+                    hashlib.sha1((websocket_key + magic_string).encode()).digest()
+                ).decode()
+                
+                handshake_response = (
+                    "HTTP/1.1 101 Switching Protocols\r\n"
+                    "Upgrade: websocket\r\n"
+                    "Connection: Upgrade\r\n"
+                    f"Sec-WebSocket-Accept: {accept_key}\r\n"
+                    "\r\n"
+                )
+                
+                writer.write(handshake_response.encode())
+                await writer.drain()
+                
+                logging.info("[voice-ws] WebSocket connection established")
+                
+                # Handle WebSocket frames
+                await handle_voice_websocket(reader, writer)
+                return
+                
+            except Exception as e:
+                logging.error(f"[voice-ws] WebSocket error: {e}")
+                import traceback
+                traceback.print_exc()
+                try:
+                    writer.close()
+                    await writer.wait_closed()
+                except:
+                    pass
                 return
 
         elif path == "/voice/audio" and method == "POST":
@@ -7694,10 +7895,10 @@ async def cta_scheduler_task() -> None:
 
 async def process_browser_audio_chunk(pcm_data: bytes):
     """
-    Process audio chunk from browser
-    Process immediately without accumulation for lower latency
+    Process audio chunk from browser with buffering for multi-word commands
+    Buffers recent transcriptions to handle phrases split across chunks
     """
-    global browser_audio_sample_rate
+    global browser_audio_sample_rate, transcription_buffer, last_caption, last_caption_time, last_project, GAMES_CONFIG
     
     try:
         # Process immediately without buffering for lowest latency
@@ -7773,14 +7974,34 @@ async def process_browser_audio_chunk(pcm_data: bytes):
                     
                     logging.info(f"[voice] 📝 Transcribed: '{transcribed_text}'")
                     
-                    # Update live captions for overlay
-                    global last_caption, last_caption_time
+                    # Add to transcription buffer with timestamp
+                    current_time = time.time()
+                    transcription_buffer.append((transcribed_text, current_time))
+                    
+                    # Clean old entries from buffer (keep only last TRANSCRIPTION_BUFFER_SECONDS)
+                    transcription_buffer[:] = [
+                        (text, ts) for text, ts in transcription_buffer
+                        if current_time - ts <= TRANSCRIPTION_BUFFER_SECONDS
+                    ]
+                    
+                    # Build combined text from buffer for multi-word command matching
+                    buffered_text = " ".join([text for text, _ in transcription_buffer])
+                    
+                    logging.debug(f"[voice] Buffer ({len(transcription_buffer)} chunks): '{buffered_text}'")
+                    
+                    # Update live captions with latest transcription only
                     async with state_lock:
                         last_caption = transcribed_text
-                        last_caption_time = time.time()
+                        last_caption_time = current_time
                     
-                    # Process as voice command
-                    await voice_command_handler(transcribed_text)
+                    # Process buffered text first (handles multi-word commands)
+                    await voice_command_handler(buffered_text)
+                    
+                    # If buffered text didn't match, also try just the current chunk
+                    if len(transcription_buffer) > 1:
+                        await voice_command_handler(transcribed_text)
+
+
                 else:
                     logging.debug("[voice] No speech detected in audio")
             else:
@@ -7799,7 +8020,7 @@ async def voice_command_handler(transcribed_text: str):
     Called when audio is transcribed
     """
     # Declare all globals FIRST, before any other code
-    global obs_client, last_project, last_thanks_name, last_thanks_time, last_thanks_style, state_lock, last_caption, last_caption_time
+    global obs_client, last_project, last_thanks_name, last_thanks_time, last_thanks_style, state_lock, last_caption, last_caption_time, transcription_buffer
     
     try:
         from voice_commands import VoiceCommandParser
@@ -7809,22 +8030,21 @@ async def voice_command_handler(transcribed_text: str):
         
         # Update parser with current scenes from OBS controller
         try:
-            obs_ctrl = await get_obs_controller()
-            if obs_ctrl and obs_ctrl.connected and hasattr(obs_ctrl, 'state') and obs_ctrl.state:
-                if 'scenes' in obs_ctrl.state:
-                    scenes_count = len(obs_ctrl.state['scenes'])
-                    parser.update_scenes(obs_ctrl.state['scenes'])
-                    logging.info(f"[voice] 🎬 Loaded {scenes_count} scenes into voice parser")
-                    # Log first few scene names for debugging
-                    if scenes_count > 0:
-                        scene_names = [s.get('sceneName', '') for s in obs_ctrl.state['scenes'][:5]]
-                        logging.info(f"[voice] 🎬 Example scenes: {scene_names}")
-                else:
-                    logging.warning(f"[voice] ⚠️ No scenes in OBS state")
+            from obs_controller import _obs_controller
+            obs_ctrl = _obs_controller
+            logging.info(f"[voice] 🔍 OBS controller check: exists={obs_ctrl is not None}, connected={obs_ctrl.connected if obs_ctrl else None}, scenes_count={len(obs_ctrl.scenes) if obs_ctrl and hasattr(obs_ctrl, 'scenes') else 0}")
+            if obs_ctrl and obs_ctrl.connected and hasattr(obs_ctrl, 'scenes') and obs_ctrl.scenes:
+                scenes_count = len(obs_ctrl.scenes)
+                parser.update_scenes(obs_ctrl.scenes)
+                logging.info(f"[voice] 🎬 Loaded {scenes_count} scenes into voice parser")
+                # Log first few scene names for debugging
+                if scenes_count > 0:
+                    scene_names = [s.get('sceneName', '') for s in obs_ctrl.scenes[:5]]
+                    logging.info(f"[voice] 🎬 Example scenes: {scene_names}")
             else:
-                logging.warning(f"[voice] ⚠️ OBS not connected or no state available")
+                logging.warning(f"[voice] ⚠️ OBS not ready (connected={obs_ctrl.connected if obs_ctrl else False}, scenes={len(obs_ctrl.scenes) if obs_ctrl and hasattr(obs_ctrl, 'scenes') else 0})")
         except Exception as obs_error:
-            logging.warning(f"[voice] Could not get OBS scenes: {obs_error}")
+            logging.warning(f"[voice] Could not get OBS scenes: {obs_error}", exc_info=True)
         
         result = parser.parse_command(transcribed_text, last_project)
         
@@ -7833,6 +8053,9 @@ async def voice_command_handler(transcribed_text: str):
             logging.warning(f"[voice] ⚠️ No game context (last_project={repr(last_project)}). Commands won't match without game context.")
         
         if result:
+            # Clear buffer on successful command match
+            transcription_buffer.clear()
+            
             target, identifier = result
             
             if target == 'thanks':
@@ -7857,8 +8080,12 @@ async def voice_command_handler(transcribed_text: str):
                 # Scene switching command
                 logging.info(f"[voice] 🎬 Switching to scene: '{identifier}'")
                 try:
-                    await obs_client.set_current_program_scene(identifier)
-                    logging.info(f"[voice] ✅ Scene switched to: '{identifier}'")
+                    from obs_controller import _obs_controller
+                    if _obs_controller and _obs_controller.connected:
+                        await _obs_controller.switch_scene(identifier)
+                        logging.info(f"[voice] ✅ Scene switched to: '{identifier}'")
+                    else:
+                        logging.error(f"[voice] ❌ OBS not connected, cannot switch scene")
                 except Exception as scene_error:
                     logging.error(f"[voice] ❌ Failed to switch scene: {scene_error}")
             else:

@@ -29,6 +29,7 @@ services:
       - OBS_PASSWORD=${OBS_PASSWORD}
       - VOICE_LISTENER_ENABLED=${VOICE_LISTENER_ENABLED:-false}
       - VOICE_AUDIO_PORT=${VOICE_AUDIO_PORT:-5555}
+      - VOICE_WS_HOST=${VOICE_WS_HOST:-}
     volumes:
       - ./_data/markers:/markers:rw
       - ./_data/discord:/discord:rw
