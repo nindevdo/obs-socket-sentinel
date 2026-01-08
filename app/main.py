@@ -8030,8 +8030,8 @@ async def voice_command_handler(transcribed_text: str):
         
         # Update parser with current scenes from OBS controller
         try:
-            from obs_controller import _obs_controller
-            obs_ctrl = _obs_controller
+            from obs_controller import get_obs_controller
+            obs_ctrl = await get_obs_controller()
             logging.info(f"[voice] 🔍 OBS controller check: exists={obs_ctrl is not None}, connected={obs_ctrl.connected if obs_ctrl else None}, scenes_count={len(obs_ctrl.scenes) if obs_ctrl and hasattr(obs_ctrl, 'scenes') else 0}")
             if obs_ctrl and obs_ctrl.connected and hasattr(obs_ctrl, 'scenes') and obs_ctrl.scenes:
                 scenes_count = len(obs_ctrl.scenes)
@@ -8080,9 +8080,10 @@ async def voice_command_handler(transcribed_text: str):
                 # Scene switching command
                 logging.info(f"[voice] 🎬 Switching to scene: '{identifier}'")
                 try:
-                    from obs_controller import _obs_controller
-                    if _obs_controller and _obs_controller.connected:
-                        await _obs_controller.switch_scene(identifier)
+                    from obs_controller import get_obs_controller
+                    obs_ctrl = await get_obs_controller()
+                    if obs_ctrl and obs_ctrl.connected:
+                        await obs_ctrl.switch_scene(identifier)
                         logging.info(f"[voice] ✅ Scene switched to: '{identifier}'")
                     else:
                         logging.error(f"[voice] ❌ OBS not connected, cannot switch scene")

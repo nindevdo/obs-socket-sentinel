@@ -19,6 +19,7 @@ class VoiceCommandParser:
         
         # Scene shortcuts - map common phrases to scene names to look for
         self.scene_shortcuts = {
+            # BRB / Away
             "be right back": ["be right back", "brb", "away"],
             "afk": ["be right back", "brb", "away", "afk"],
             "brb": ["be right back", "brb", "away"],
@@ -28,6 +29,20 @@ class VoiceCommandParser:
             "one sec": ["be right back", "brb", "away"],
             "one second": ["be right back", "brb", "away"],
             "hold on": ["be right back", "brb", "away"],
+            
+            # Gaming scenes
+            "let's play": ["gaming", "game", "gameplay", "playing"],
+            "time to game": ["gaming", "game", "gameplay", "playing"],
+            "game time": ["gaming", "game", "gameplay", "playing"],
+            "back to the game": ["gaming", "game", "gameplay", "playing"],
+            "let's go gaming": ["gaming", "game", "gameplay", "playing"],
+            
+            # Coding/work scenes
+            "let's code": ["coding", "code", "work", "dev", "development"],
+            "time to code": ["coding", "code", "work", "dev", "development"],
+            "back to work": ["coding", "code", "work", "dev", "development"],
+            "let's build": ["coding", "code", "work", "dev", "development"],
+            "coding time": ["coding", "code", "work", "dev", "development"],
         }
         
         # Build action mappings with synonyms for all game actions
