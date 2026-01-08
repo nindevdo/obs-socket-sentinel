@@ -346,7 +346,7 @@ current_run_by_project: Dict[
 run_stats_by_project: Dict[tuple[str, int], Dict[str, Any]] = {}
 
 # Finished run history per project (for recap panel)
-# project -> [ { "run": int, "kills": int, "deaths": int, "headshots": int, "kd": float } ]
+# project -> [ { "run": int, "kills": int, "deaths": int, "headshots": int, "downs": int, "kd": float } ]
 run_history_by_project: Dict[str, List[Dict[str, Any]]] = {}
 
 # How long we show the run recap panel after a run ends
@@ -4282,6 +4282,7 @@ def register_run_event(project_key: str, action_key: str) -> None:
             "kills": 0,
             "deaths": 0,
             "headshots": 0,
+            "downs": 0,
             "events": 0,
             "started_at": time.time(),
         }
@@ -4296,6 +4297,8 @@ def register_run_event(project_key: str, action_key: str) -> None:
         stats["deaths"] = stats.get("deaths", 0) + 1
     if ak == "headshot":
         stats["headshots"] = stats.get("headshots", 0) + 1
+    if ak == "downed":
+        stats["downs"] = stats.get("downs", 0) + 1
 
 
 async def end_run_for_project(project_key: str) -> None:
@@ -4317,6 +4320,7 @@ async def end_run_for_project(project_key: str) -> None:
         "kills": 0,
         "deaths": 0,
         "headshots": 0,
+        "downs": 0,
         "events": 0,
         "started_at": time.time(),
     }
@@ -4328,6 +4332,7 @@ async def end_run_for_project(project_key: str) -> None:
     kills = int(stats.get("kills", 0))
     deaths = int(stats.get("deaths", 0))
     headshots = int(stats.get("headshots", 0))
+    downs = int(stats.get("downs", 0))
 
     if deaths > 0:
         kd = kills / deaths
@@ -4340,6 +4345,7 @@ async def end_run_for_project(project_key: str) -> None:
         "kills": kills,
         "deaths": deaths,
         "headshots": headshots,
+        "downs": downs,
         "kd": kd,
         "duration": duration,
     }
@@ -4355,14 +4361,14 @@ async def end_run_for_project(project_key: str) -> None:
 
     logging.info(
         f"🏁 [run] Ended run #{run_num} for project={project_key} "
-        f"(kills={kills}, deaths={deaths}, headshots={headshots}, kd={kd:.2f}, "
+        f"(kills={kills}, deaths={deaths}, headshots={headshots}, downs={downs}, kd={kd:.2f}, "
         f"duration={duration:.1f}s)"
     )
 
     # Optional: also write a nice line to chapters
     try:
         await append_chapter_line(
-            f"Run {run_num} end (K={kills}, D={deaths}, HS={headshots})", project_key
+            f"Run {run_num} end (K={kills}, D={deaths}, HS={headshots}, Downs={downs})", project_key
         )
     except Exception:
         # don't explode here if chapter write fails
@@ -5130,6 +5136,7 @@ async def handle_action(action: str, project: Optional[str]) -> None:
             total_kills = sum(r.get("kills", 0) for r in hist)
             total_deaths = sum(r.get("deaths", 0) for r in hist)
             total_headshots = sum(r.get("headshots", 0) for r in hist)
+            total_downs = sum(r.get("downs", 0) for r in hist)
             runs_count = len(hist)
 
             if total_deaths > 0:
@@ -5139,7 +5146,7 @@ async def handle_action(action: str, project: Optional[str]) -> None:
 
             overlay_text = (
                 f"Runs {runs_count} | "
-                f"💀{total_kills}  ☠️{total_deaths}  🎯{total_headshots}  "
+                f"💀{total_kills}  ☠️{total_deaths}  🎯{total_headshots}  🔻{total_downs}  "
                 f"KD {overall_kd:.2f}"
             )
         else:
@@ -7805,9 +7812,19 @@ async def voice_command_handler(transcribed_text: str):
             obs_ctrl = await get_obs_controller()
             if obs_ctrl and obs_ctrl.connected and hasattr(obs_ctrl, 'state') and obs_ctrl.state:
                 if 'scenes' in obs_ctrl.state:
+                    scenes_count = len(obs_ctrl.state['scenes'])
                     parser.update_scenes(obs_ctrl.state['scenes'])
+                    logging.info(f"[voice] 🎬 Loaded {scenes_count} scenes into voice parser")
+                    # Log first few scene names for debugging
+                    if scenes_count > 0:
+                        scene_names = [s.get('sceneName', '') for s in obs_ctrl.state['scenes'][:5]]
+                        logging.info(f"[voice] 🎬 Example scenes: {scene_names}")
+                else:
+                    logging.warning(f"[voice] ⚠️ No scenes in OBS state")
+            else:
+                logging.warning(f"[voice] ⚠️ OBS not connected or no state available")
         except Exception as obs_error:
-            logging.debug(f"[voice] Could not get OBS scenes: {obs_error}")
+            logging.warning(f"[voice] Could not get OBS scenes: {obs_error}")
         
         result = parser.parse_command(transcribed_text, last_project)
         
@@ -7819,21 +7836,22 @@ async def voice_command_handler(transcribed_text: str):
             target, identifier = result
             
             if target == 'thanks':
-                # Thank you animation command
-                name = identifier
-                
-                # Check cooldown to prevent spam (minimum 10 seconds between thanks)
-                current_time = time.time()
-                if current_time - last_thanks_time < 10:
-                    logging.info(f"[voice] 🙏 Thanks command ignored (cooldown: {10 - (current_time - last_thanks_time):.1f}s remaining)")
-                else:
-                    logging.info(f"[voice] 🙏 Thanks command: '{name if name else 'generic'}'")
-                    async with state_lock:
-                        last_thanks_name = name if name else "Everyone"
-                        last_thanks_time = current_time
-                        # Rotate through animation styles (0-3)
-                        last_thanks_style = (last_thanks_style + 1) % 4
-                    logging.info(f"[voice] ✅ Thank you animation triggered for: {last_thanks_name}")
+                # Thank you animation command - DISABLED
+                logging.info(f"[voice] 🙏 Thanks command detected but feature is disabled: '{identifier if identifier else 'generic'}'")
+                # name = identifier
+                # 
+                # # Check cooldown to prevent spam (minimum 10 seconds between thanks)
+                # current_time = time.time()
+                # if current_time - last_thanks_time < 10:
+                #     logging.info(f"[voice] 🙏 Thanks command ignored (cooldown: {10 - (current_time - last_thanks_time):.1f}s remaining)")
+                # else:
+                #     logging.info(f"[voice] 🙏 Thanks command: '{name if name else 'generic'}'")
+                #     async with state_lock:
+                #         last_thanks_name = name if name else "Everyone"
+                #         last_thanks_time = current_time
+                #         # Rotate through animation styles (0-3)
+                #         last_thanks_style = (last_thanks_style + 1) % 4
+                #     logging.info(f"[voice] ✅ Thank you animation triggered for: {last_thanks_name}")
                 
             elif target == 'scene':
                 # Scene switching command

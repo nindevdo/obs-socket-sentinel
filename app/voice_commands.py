@@ -17,6 +17,17 @@ class VoiceCommandParser:
         self.games_config = games_config
         self.scenes_list = []  # Will be updated dynamically from OBS
         
+        # Scene shortcuts - map common phrases to scene names to look for
+        self.scene_shortcuts = {
+            "be right back": ["be right back", "brb", "away"],
+            "afk": ["be right back", "brb", "away", "afk"],
+            "brb": ["be right back", "brb", "away"],
+            "just a sec": ["be right back", "brb", "away"],
+            "one sec": ["be right back", "brb", "away"],
+            "one second": ["be right back", "brb", "away"],
+            "hold on": ["be right back", "brb", "away"],
+        }
+        
         # Build action mappings with synonyms for all game actions
         self.action_synonyms = {
             # Combat actions
@@ -235,6 +246,21 @@ class VoiceCommandParser:
         thanks_match = self.match_thanks(text)
         if thanks_match is not None:
             return ('thanks', thanks_match)
+        
+        # Check for scene shortcuts first (before full scene matching)
+        for shortcut_phrase, target_scenes in self.scene_shortcuts.items():
+            if shortcut_phrase in text:
+                # Find the first matching scene from target_scenes
+                for target_scene_name in target_scenes:
+                    target_normalized = self.normalize_scene_name(target_scene_name)
+                    for scene in self.scenes_list:
+                        scene_name = scene.get('sceneName', '')
+                        scene_normalized = self.normalize_scene_name(scene_name)
+                        if target_normalized in scene_normalized or scene_normalized in target_normalized:
+                            logger.info(f"[voice] 🎬 Scene shortcut '{shortcut_phrase}' -> '{scene_name}'")
+                            return ('scene', scene_name)
+                logger.warning(f"[voice] ⚠️ Scene shortcut '{shortcut_phrase}' matched but no scene found with names: {target_scenes}")
+                break
         
         # Check if this is a scene switching command
         scene_match = self.match_scene(text)
