@@ -8067,6 +8067,7 @@ async def process_browser_audio_chunk(pcm_data: bytes):
         GAMES_CONFIG
 
     try:
+        logging.debug(f"[voice] Processing {len(pcm_data)} bytes of audio")
         # Process immediately without buffering for lowest latency
         import numpy as np
 
@@ -8078,6 +8079,7 @@ async def process_browser_audio_chunk(pcm_data: bytes):
 
         # Check if audio has sufficient amplitude (ignore very quiet audio/noise)
         rms_amplitude = np.sqrt(np.mean(audio_float**2))
+        logging.debug(f"[voice] Audio RMS amplitude: {rms_amplitude:.4f}")
         if rms_amplitude < 0.01:  # Threshold for silence (adjust as needed)
             logging.debug(f"[voice] Ignoring quiet audio (RMS: {rms_amplitude:.4f})")
             return
@@ -8197,6 +8199,56 @@ async def process_browser_audio_chunk(pcm_data: bytes):
         logging.error(f"[voice] Error processing browser audio: {e}", exc_info=True)
 
 
+def extract_context_from_buffer(transcribed_text: str, trigger_phrases: list = None) -> str:
+    """
+    Extract contextual description from transcription buffer
+    Gets text before the trigger phrase (e.g., "clip that")
+    Returns up to 140 characters for Twitch compatibility
+    """
+    global transcription_buffer
+    
+    if trigger_phrases is None:
+        trigger_phrases = ["clip that", "clip this", "mark this", "bookmark", "highlight"]
+    
+    try:
+        # Get all buffered text
+        buffered_text = " ".join([text for text, _ in transcription_buffer])
+        
+        # Find the trigger phrase in the text
+        text_lower = buffered_text.lower()
+        trigger_pos = -1
+        for phrase in trigger_phrases:
+            pos = text_lower.find(phrase)
+            if pos != -1:
+                trigger_pos = pos
+                break
+        
+        # Extract text before the trigger phrase
+        if trigger_pos > 0:
+            context = buffered_text[:trigger_pos].strip()
+            # Take last few words if too long (Twitch limit is 140 chars)
+            if len(context) > 140:
+                # Take last ~120 chars to leave room
+                words = context.split()
+                context = ""
+                for word in reversed(words):
+                    if len(word) + len(context) + 1 <= 120:
+                        context = word + " " + context
+                    else:
+                        break
+                context = "..." + context.strip()
+            
+            if context:
+                return context
+        
+        # Fallback: no context found, use generic description
+        return "Highlight"
+        
+    except Exception as e:
+        logging.error(f"Failed to extract context: {e}")
+        return "Highlight"
+
+
 async def voice_command_handler(transcribed_text: str):
     """
     Handle voice commands from continuous listener
@@ -8307,7 +8359,13 @@ async def voice_command_handler(transcribed_text: str):
                     from obs_controller import get_obs_controller, handle_obs_action
                     obs_ctrl = await get_obs_controller()
                     if obs_ctrl and obs_ctrl.connected:
-                        success = await handle_obs_action(identifier, obs_ctrl)
+                        # For clip/marker commands, extract context from buffer
+                        description = "Highlight"
+                        if identifier in ["obs_clip_that", "obs_mark_stream"]:
+                            description = extract_context_from_buffer(transcribed_text)
+                            logging.info(f"[voice] 📝 Extracted context: '{description}'")
+                        
+                        success = await handle_obs_action(identifier, obs_ctrl, description)
                         if success:
                             logging.info(f"[voice] ✅ OBS action '{identifier}' executed")
                         else:
@@ -8316,6 +8374,28 @@ async def voice_command_handler(transcribed_text: str):
                         logging.error(f"[voice] ❌ OBS not connected, cannot execute action")
                 except Exception as obs_error:
                     logging.error(f"[voice] ❌ Failed to execute OBS action: {obs_error}")
+            
+            elif target == 'color':
+                # Color filter switching command
+                color_name = identifier
+                logging.info(f"[voice] 🎨 Switching to color: '{color_name}'")
+                try:
+                    from obs_controller import get_obs_controller
+                    obs_ctrl = await get_obs_controller()
+                    if obs_ctrl and obs_ctrl.connected:
+                        # Use environment variable or default camera source name
+                        camera_source = os.getenv("OBS_CAMERA_SOURCE", "Video Capture Device")
+                        filter_name = os.getenv("OBS_COLOR_FILTER", "gb-color")
+                        
+                        success = await obs_ctrl.set_color_correction_filter(camera_source, filter_name, color_name)
+                        if success:
+                            logging.info(f"[voice] ✅ Switched to color '{color_name}'")
+                        else:
+                            logging.warning(f"[voice] ⚠️ Color switch to '{color_name}' failed")
+                    else:
+                        logging.error(f"[voice] ❌ OBS not connected, cannot switch color")
+                except Exception as color_error:
+                    logging.error(f"[voice] ❌ Failed to switch color: {color_error}")
             
             else:
                 # Game action command

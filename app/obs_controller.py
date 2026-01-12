@@ -10,6 +10,7 @@ import os
 from typing import Dict, List, Optional, Any
 from obsws_python import ReqClient
 from obsws_python.error import OBSSDKError
+from twitch_api import create_twitch_stream_marker, create_twitch_clip
 
 logger = logging.getLogger(__name__)
 
@@ -285,6 +286,289 @@ class OBSController:
             logger.error(f"Failed to save replay buffer: {e}")
             return False
     
+    async def toggle_source_filter(self, source_name: str, filter_name: str) -> bool:
+        """Toggle a filter on a source on/off"""
+        if not self.connected or not self.client:
+            logger.error("OBS not connected")
+            return False
+        
+        try:
+            loop = asyncio.get_event_loop()
+            
+            # Get current filter state
+            filter_info = await loop.run_in_executor(
+                None, 
+                lambda: self.client.get_source_filter(source_name, filter_name)
+            )
+            
+            current_enabled = filter_info.filter_enabled if hasattr(filter_info, 'filter_enabled') else False
+            
+            # Toggle the filter
+            await loop.run_in_executor(
+                None,
+                lambda: self.client.set_source_filter_enabled(source_name, filter_name, not current_enabled)
+            )
+            
+            status = "ON" if not current_enabled else "OFF"
+            logger.info(f"🎨 Toggled filter '{filter_name}' on '{source_name}': {status}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to toggle filter '{filter_name}' on '{source_name}': {e}")
+            return False
+    
+    async def enable_source_filter(self, source_name: str, filter_name: str) -> bool:
+        """Enable a filter on a source"""
+        if not self.connected or not self.client:
+            logger.error("OBS not connected")
+            return False
+        
+        try:
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(
+                None,
+                lambda: self.client.set_source_filter_enabled(source_name, filter_name, True)
+            )
+            logger.info(f"✅ Enabled filter '{filter_name}' on '{source_name}'")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to enable filter '{filter_name}': {e}")
+            return False
+    
+    async def disable_source_filter(self, source_name: str, filter_name: str) -> bool:
+        """Disable a filter on a source"""
+        if not self.connected or not self.client:
+            logger.error("OBS not connected")
+            return False
+        
+        try:
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(
+                None,
+                lambda: self.client.set_source_filter_enabled(source_name, filter_name, False)
+            )
+            logger.info(f"❌ Disabled filter '{filter_name}' on '{source_name}'")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to disable filter '{filter_name}': {e}")
+            return False
+    
+    async def get_source_filters(self, source_name: str) -> List[Dict]:
+        """Get list of all filters on a source"""
+        if not self.connected or not self.client:
+            return []
+        
+        try:
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(
+                None,
+                lambda: self.client.get_source_filter_list(source_name)
+            )
+            
+            filters = result.filters if hasattr(result, 'filters') else []
+            logger.info(f"📋 Found {len(filters)} filters on '{source_name}'")
+            return filters
+            
+        except Exception as e:
+            logger.error(f"Failed to get filters for '{source_name}': {e}")
+            return []
+    
+    async def set_color_correction_filter(self, source_name: str, filter_name: str, color_name: str) -> bool:
+        """
+        Set color correction filter to a specific color by updating its hex values
+        
+        Args:
+            source_name: The source (e.g., camera) with the filter
+            filter_name: The color correction filter name (e.g., "gb-color")
+            color_name: The color to apply (e.g., "blue", "magenta", "cyan")
+        
+        Returns:
+            True if successful, False otherwise
+        """
+        if not self.connected or not self.client:
+            logger.error("OBS not connected")
+            return False
+        
+        # Color palette for GB Camera shader - uses color_1 through color_4
+        # These are the exact values from your working filters
+        color_palette = {
+            "blue": {
+                "color_1": 4281077514,
+                "color_2": 4285479707,
+                "color_3": 4294951982,
+                "color_4": 4294965176,
+            },
+            "mint": {
+                "color_1": 4280033037,
+                "color_2": 4286082847,
+                "color_3": 4291154255,
+                "color_4": 4294442457,
+            },
+            "cold": {
+                "color_1": 4278913803,
+                "color_2": 4280163870,
+                "color_3": 4294933594,
+                "color_4": 4294957519,
+            },
+            "moss": {
+                "color_1": 4279705359,
+                "color_2": 4283064109,
+                "color_3": 4288139119,
+                "color_4": 4293982694,
+            },
+            "purple": {
+                "color_1": 4279894034,
+                "color_2": 4282715946,
+                "color_3": 4294921051,
+                "color_4": 4294953151,
+            },
+            "purp": {  # Alias for purple
+                "color_1": 4279894034,
+                "color_2": 4282715946,
+                "color_3": 4294921051,
+                "color_4": 4294953151,
+            },
+            # Additional colors (custom palettes in ABGR format - not RGB!)
+            "red": {
+                "color_1": 4278849339,  # ABGR - Dark red
+                "color_2": 4279181195,  # Medium-dark red
+                "color_3": 4282141926,  # Bright red
+                "color_4": 4289771775,  # Light red/pink
+            },
+            "orange": {
+                "color_1": 4279246907,  # ABGR - Dark orange
+                "color_2": 4280307851,  # Medium-dark orange
+                "color_3": 4282881510,  # Bright orange
+                "color_4": 4288731391,  # Light orange
+            },
+            "yellow": {
+                "color_1": 4278860603,  # ABGR - Dark yellow
+                "color_2": 4279208843,  # Medium yellow
+                "color_3": 4282181350,  # Bright yellow
+                "color_4": 4288741375,  # Light yellow
+            },
+            "green": {
+                "color_1": 4278860559,  # ABGR - Dark green
+                "color_2": 4279208735,  # Medium-dark green
+                "color_3": 4282181196,  # Bright green
+                "color_4": 4289789880,  # Light green
+            },
+            "magenta": {
+                "color_1": 4282059323,  # ABGR - Dark magenta
+                "color_2": 4287303563,  # Medium magenta
+                "color_3": 4293278950,  # Bright magenta
+                "color_4": 4294942975,  # Light magenta
+            },
+            "cyan": {
+                "color_1": 4282071818,  # ABGR - Dark cyan
+                "color_2": 4287335183,  # Medium cyan
+                "color_3": 4293322300,  # Bright cyan
+                "color_4": 4294967200,  # Light cyan
+            },
+            "pink": {
+                "color_1": 4280289851,  # ABGR - Dark pink
+                "color_2": 4283436939,  # Medium pink
+                "color_3": 4287642854,  # Bright pink
+                "color_4": 4291862783,  # Light pink
+            },
+            "normal": {
+                "color_1": 0xFF000000,
+                "color_2": 0xFF555555,
+                "color_3": 0xFFAAAAAA,
+                "color_4": 0xFFFFFFFF,
+            },
+        }
+        
+        if color_name not in color_palette:
+            logger.error(f"Unknown color '{color_name}'. Available: {list(color_palette.keys())}")
+            return False
+        
+        try:
+            loop = asyncio.get_event_loop()
+            color_settings = color_palette[color_name]
+            
+            # Update the filter settings with new color values
+            await loop.run_in_executor(
+                None,
+                lambda: self.client.set_source_filter_settings(
+                    source_name,
+                    filter_name,
+                    color_settings,
+                    overlay=True  # Only update specified keys, keep other settings
+                )
+            )
+            
+            logger.info(f"🎨 Applied color '{color_name}' to filter '{filter_name}' on '{source_name}'")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to set color '{color_name}' on filter '{filter_name}': {e}")
+            return False
+    
+    async def switch_color_filter(self, source_name: str, color_name: str, filter_prefix: str = "gb-color") -> bool:
+        """
+        Switch to a specific color filter by enabling it and disabling all others with same prefix
+        
+        Args:
+            source_name: The source (e.g., camera) to apply filters to
+            color_name: The color to enable (e.g., "blue", "magenta")
+            filter_prefix: The filter name prefix (default: "gb-color")
+        
+        Returns:
+            True if successful, False otherwise
+        """
+        if not self.connected or not self.client:
+            logger.error("OBS not connected")
+            return False
+        
+        try:
+            loop = asyncio.get_event_loop()
+            
+            # Get all filters on the source
+            filters = await self.get_source_filters(source_name)
+            
+            target_filter_name = f"{filter_prefix} {color_name}"
+            color_filters = []
+            target_found = False
+            
+            # Find all color filters
+            for filter_info in filters:
+                filter_name = filter_info.get('filterName', '')
+                if filter_name.startswith(filter_prefix):
+                    color_filters.append(filter_name)
+                    if filter_name.lower() == target_filter_name.lower():
+                        target_found = True
+            
+            if not target_found:
+                logger.warning(f"⚠️ Filter '{target_filter_name}' not found on '{source_name}'. Available: {color_filters}")
+                return False
+            
+            logger.info(f"🎨 Switching to color '{color_name}' on '{source_name}' (disabling {len(color_filters)-1} other colors)")
+            
+            # Disable all color filters, then enable the target one
+            for filter_name in color_filters:
+                if filter_name.lower() == target_filter_name.lower():
+                    # Enable target filter
+                    await loop.run_in_executor(
+                        None,
+                        lambda fn=filter_name: self.client.set_source_filter_enabled(source_name, fn, True)
+                    )
+                    logger.info(f"✅ Enabled '{filter_name}'")
+                else:
+                    # Disable other color filters
+                    await loop.run_in_executor(
+                        None,
+                        lambda fn=filter_name: self.client.set_source_filter_enabled(source_name, fn, False)
+                    )
+                    logger.debug(f"❌ Disabled '{filter_name}'")
+            
+            logger.info(f"🎨 Color switched to '{color_name}' on '{source_name}'")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to switch color filter to '{color_name}': {e}")
+            return False
+    
     async def create_stream_marker(self, description: str = "Highlight") -> bool:
         """Create a stream marker (bookmark) and save replay buffer if available"""
         if not self.connected or not self.client:
@@ -293,6 +577,8 @@ class OBSController:
         try:
             import time
             timestamp = time.strftime("%H:%M:%S")
+            
+            success = False
             
             # Try to save replay buffer if it's running
             replay_saved = False
@@ -304,19 +590,40 @@ class OBSController:
                     await loop.run_in_executor(None, self.client.save_replay_buffer)
                     logger.info(f"💾 Replay buffer saved at [{timestamp}]")
                     replay_saved = True
+                    success = True
                 else:
                     logger.debug("Replay buffer not active, skipping save")
             except Exception as replay_error:
                 logger.debug(f"Replay buffer not available: {replay_error}")
             
-            # Check if streaming is active and log marker
+            # Check if streaming is active
             stream_status = self.client.get_stream_status()
             if stream_status and stream_status.output_active:
                 logger.info(f"🔖 Stream Marker: [{timestamp}] {description}")
                 
-                # In the future, this could integrate with Twitch/YouTube APIs for actual markers
-                # For now, we're logging the marker with timestamp
-                return True
+                # Create Twitch stream marker
+                try:
+                    marker_result = await create_twitch_stream_marker(description)
+                    if marker_result:
+                        logger.info(f"✅ Twitch stream marker created: {description}")
+                        success = True
+                    else:
+                        logger.warning("⚠️ Twitch marker creation failed (check credentials/stream)")
+                except Exception as twitch_error:
+                    logger.error(f"Failed to create Twitch marker: {twitch_error}")
+                
+                # Create Twitch clip
+                try:
+                    clip_result = await create_twitch_clip(description)
+                    if clip_result and "edit_url" in clip_result:
+                        logger.info(f"🎬 Twitch clip created: {clip_result['edit_url']}")
+                        success = True
+                    else:
+                        logger.warning("⚠️ Twitch clip creation failed")
+                except Exception as clip_error:
+                    logger.error(f"Failed to create Twitch clip: {clip_error}")
+                
+                return success
             elif replay_saved:
                 # Even if not streaming, if we saved replay, consider it a success
                 logger.info(f"🔖 Highlight saved: [{timestamp}] {description}")
@@ -433,7 +740,7 @@ async def get_obs_controller() -> Optional[OBSController]:
     return _obs_controller
 
 
-async def handle_obs_action(action: str, obs_ctrl: OBSController) -> bool:
+async def handle_obs_action(action: str, obs_ctrl: OBSController, description: str = "Highlight") -> bool:
     """Handle OBS-related actions"""
     
     # Scene switching
@@ -501,8 +808,8 @@ async def handle_obs_action(action: str, obs_ctrl: OBSController) -> bool:
     elif action == "obs_save_replay":
         return await obs_ctrl.save_replay_buffer()
     
-    # Stream markers
+    # Stream markers - now with custom description
     elif action == "obs_mark_stream" or action == "obs_clip_that":
-        return await obs_ctrl.create_stream_marker("Highlight")
+        return await obs_ctrl.create_stream_marker(description)
     
     return False

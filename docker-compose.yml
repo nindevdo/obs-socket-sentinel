@@ -27,9 +27,14 @@ services:
       - OBS_IP=${OBS_IP:-192.168.0.181}
       - OBS_PORT=${OBS_PORT:-4455}
       - OBS_PASSWORD=${OBS_PASSWORD}
+      - OBS_CAMERA_SOURCE=${OBS_CAMERA_SOURCE:-videocamera}
+      - OBS_COLOR_FILTER=${OBS_COLOR_FILTER:-gb-color}
       - VOICE_LISTENER_ENABLED=${VOICE_LISTENER_ENABLED:-false}
       - VOICE_AUDIO_PORT=${VOICE_AUDIO_PORT:-5555}
       - VOICE_WS_HOST=${VOICE_WS_HOST:-}
+      - TWITCH_API_CLIENT_ID=${TWITCH_API_CLIENT_ID}
+      - TWITCH_API_CLIENT_SECRET=${TWITCH_API_CLIENT_SECRET}
+      - TWITCH_BROADCASTER_ID=${TWITCH_BROADCASTER_ID}
     volumes:
       - ./_data/markers:/markers:rw
       - ./_data/discord:/discord:rw

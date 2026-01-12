@@ -27,6 +27,65 @@ class VoiceCommandParser:
             "highlight": "obs_mark_stream",
         }
         
+        # Color filter shortcuts - phrases that trigger color filter switching
+        # When detected, will update "gb-color" filter with corresponding color scheme
+        self.color_shortcuts = {
+            # Direct color names
+            "blue": "blue",
+            "mint": "mint",
+            "cold": "cold",
+            "moss": "moss",
+            "purple": "purple",
+            "purp": "purp",
+            "magenta": "magenta",
+            "cyan": "cyan",
+            "red": "red",
+            "green": "green",
+            "yellow": "yellow",
+            "orange": "orange",
+            "pink": "pink",
+            "normal": "normal",
+            
+            # Phrases with colors
+            "i'm feeling blue": "blue",
+            "feeling blue": "blue",
+            "im feeling blue": "blue",
+            
+            "i'm feeling mint": "mint",
+            "feeling mint": "mint",
+            "im feeling mint": "mint",
+            "minty": "mint",
+            
+            "i'm feeling cold": "cold",
+            "feeling cold": "cold",
+            "im feeling cold": "cold",
+            
+            "i'm feeling moss": "moss",
+            "feeling moss": "moss",
+            "im feeling moss": "moss",
+            "mossy": "moss",
+            
+            "i'm feeling purple": "purple",
+            "feeling purple": "purple",
+            "im feeling purple": "purple",
+            
+            "i'm feeling magenta": "magenta",
+            "feeling magenta": "magenta",
+            "im feeling magenta": "magenta",
+            
+            "i'm feeling cyan": "cyan",
+            "feeling cyan": "cyan",
+            "im feeling cyan": "cyan",
+            
+            "i'm feeling red": "red",
+            "feeling red": "red",
+            "im feeling red": "red",
+            
+            "i'm feeling green": "green",
+            "feeling green": "green",
+            "im feeling green": "green",
+        }
+        
         # Scene shortcuts - map common phrases to scene names to look for
         self.scene_shortcuts = {
             # BRB / Away
@@ -274,6 +333,19 @@ class VoiceCommandParser:
         thanks_match = self.match_thanks(text)
         if thanks_match is not None:
             return ('thanks', thanks_match)
+        
+        # Check for color filter commands (before OBS actions)
+        # Use word boundaries to avoid false matches (e.g., "red" in "tired")
+        # Sort by length (longest first) to prioritize specific phrases over single words
+        import re
+        sorted_color_shortcuts = sorted(self.color_shortcuts.items(), key=lambda x: len(x[0]), reverse=True)
+        for color_phrase, color_name in sorted_color_shortcuts:
+            # Create pattern with word boundaries
+            # \b ensures we match whole words only
+            pattern = r'\b' + re.escape(color_phrase) + r'\b'
+            if re.search(pattern, text):
+                logger.info(f"[voice] 🎨 Color command '{color_phrase}' -> color '{color_name}'")
+                return ('color', color_name)
         
         # Check for OBS action shortcuts (clip that, mark this, etc.)
         for shortcut_phrase, obs_action in self.obs_shortcuts.items():
