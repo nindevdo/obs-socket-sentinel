@@ -549,20 +549,26 @@ def get_synonyms_for_action(action_key: str, count: int = 10) -> List[str]:
 
         # Try verb synsets first
         synsets = wordnet.synsets(action_lower, pos=wordnet.VERB)
-        
+
         # If no verb synsets, try noun synsets
         if not synsets:
             synsets = wordnet.synsets(action_lower, pos=wordnet.NOUN)
-            logging.info(f"[synonyms] Trying noun synsets for '{action_key}' (no verb synsets found)")
+            logging.info(
+                f"[synonyms] Trying noun synsets for '{action_key}' (no verb synsets found)"
+            )
 
-        logging.info(f"[synonyms] Found {len(synsets)} WordNet synsets for '{action_key}'")
+        logging.info(
+            f"[synonyms] Found {len(synsets)} WordNet synsets for '{action_key}'"
+        )
 
         for synset in synsets[:3]:  # Get synonyms from first 3 synsets
             for lemma in synset.lemmas():
                 word = lemma.name().replace("_", " ").upper()
                 if word != action_key.upper() and word not in synonyms:
                     synonyms.append(word)
-                    if len(synonyms) >= count // 2:  # Get half from WordNet, half from curated
+                    if (
+                        len(synonyms) >= count // 2
+                    ):  # Get half from WordNet, half from curated
                         break
             if len(synonyms) >= count // 2:
                 break
@@ -574,7 +580,9 @@ def get_synonyms_for_action(action_key: str, count: int = 10) -> List[str]:
     except ImportError:
         logging.info(f"[synonyms] NLTK not available, using fallback dictionary")
     except Exception as e:
-        logging.warning(f"[synonyms] WordNet error for '{action_key}': {e}, using fallback")
+        logging.warning(
+            f"[synonyms] WordNet error for '{action_key}': {e}, using fallback"
+        )
 
     # Fallback or supplement with predefined synonyms
     if not synonyms or len(synonyms) < count:
@@ -987,7 +995,12 @@ def load_overlay_config() -> None:
     NOTE: YAML no longer needs (or uses) 'project_name'.
           Only 'games' is required.
     """
-    global GAMES_CONFIG, GAME_EMOJI_MAP, ALL_ACTION_KEYS, GLOBAL_SYSTEM_ACTIONS, DEFAULT_PROJECT_NAME
+    global \
+        GAMES_CONFIG, \
+        GAME_EMOJI_MAP, \
+        ALL_ACTION_KEYS, \
+        GLOBAL_SYSTEM_ACTIONS, \
+        DEFAULT_PROJECT_NAME
 
     if not CONFIG_PATH.exists():
         logging.error(
@@ -1012,7 +1025,9 @@ def load_overlay_config() -> None:
     # Load global system actions (available across all games)
     GLOBAL_SYSTEM_ACTIONS = cfg.get("global_system_actions", {}) or {}
     if GLOBAL_SYSTEM_ACTIONS:
-        logging.info(f"🌐 Loaded {len(GLOBAL_SYSTEM_ACTIONS)} global system actions: {list(GLOBAL_SYSTEM_ACTIONS.keys())}")
+        logging.info(
+            f"🌐 Loaded {len(GLOBAL_SYSTEM_ACTIONS)} global system actions: {list(GLOBAL_SYSTEM_ACTIONS.keys())}"
+        )
 
     # Build emoji map per game
     GAME_EMOJI_MAP = {}
@@ -1036,7 +1051,7 @@ def load_overlay_config() -> None:
     # Add special system actions that are always available
     ALL_ACTION_KEYS.add("undo")
     ALL_ACTION_KEYS.add("clear")
-    
+
     # Add overlay notification actions
     ALL_ACTION_KEYS.add("show_subscribe_cta")
     ALL_ACTION_KEYS.add("show_merch_cta")
@@ -4375,7 +4390,8 @@ async def end_run_for_project(project_key: str) -> None:
     # Optional: also write a nice line to chapters
     try:
         await append_chapter_line(
-            f"Run {run_num} end (K={kills}, D={deaths}, HS={headshots}, Downs={downs})", project_key
+            f"Run {run_num} end (K={kills}, D={deaths}, HS={headshots}, Downs={downs})",
+            project_key,
         )
     except Exception:
         # don't explode here if chapter write fails
@@ -4692,13 +4708,21 @@ async def display_achievement_percentages(achievement_data: Dict[str, Any]) -> N
         # Log what we're displaying with full details
         game_name = achievement_data.get("game_name", "Unknown")
         achievements_list = achievement_data.get("achievements", [])
-        
-        logging.info(f"🏆 [achievement_percentages] Displaying {len(achievements_list)} achievements for {game_name}")
+
+        logging.info(
+            f"🏆 [achievement_percentages] Displaying {len(achievements_list)} achievements for {game_name}"
+        )
         for i, achievement in enumerate(achievements_list):
-            name = achievement.get("display_name") or achievement.get("name") or "Unknown Achievement"
+            name = (
+                achievement.get("display_name")
+                or achievement.get("name")
+                or "Unknown Achievement"
+            )
             percent = achievement.get("percent", 0)
             desc = achievement.get("description", "No description")
-            logging.info(f"   {i+1}. {name} - {percent}% - {desc[:50]}{'...' if len(desc) > 50 else ''}")
+            logging.info(
+                f"   {i + 1}. {name} - {percent}% - {desc[:50]}{'...' if len(desc) > 50 else ''}"
+            )
 
         # Auto-clear after duration
         asyncio.create_task(_auto_clear_achievement_percentages())
@@ -4996,16 +5020,12 @@ async def trigger_intro() -> None:
     Trigger the Three.js intro animation.
     """
     global current_intro, intro_display_until
-    
+
     async with state_lock:
         now = time.time()
-        current_intro = {
-            "trigger": True,
-            "text": "The Cam Bros",
-            "timestamp": now
-        }
+        current_intro = {"trigger": True, "text": "BanditHak", "timestamp": now}
         intro_display_until = now + INTRO_DISPLAY_DURATION
-    
+
     logging.info(f"🎬 [intro] Three.js intro triggered for {INTRO_DISPLAY_DURATION}s")
 
 
@@ -5016,8 +5036,16 @@ async def handle_action(action: str, project: Optional[str]) -> None:
     """
     Handle a single parsed 'action' from TCP, with an optional game/project.
     """
-    global last_overlay_output, last_action, last_project, last_sound, last_meme_url, last_video_url, last_video_duration, last_audio_duration
-    
+    global \
+        last_overlay_output, \
+        last_action, \
+        last_project, \
+        last_sound, \
+        last_meme_url, \
+        last_video_url, \
+        last_video_duration, \
+        last_audio_duration
+
     action = action.strip()
     if not action:
         logging.info("⚠️ [handler] Ignoring empty action.")
@@ -5042,7 +5070,7 @@ async def handle_action(action: str, project: Optional[str]) -> None:
     if lower.startswith(("scene_", "transition_", "obs_")):
         try:
             from obs_controller import get_obs_controller, handle_obs_action
-            
+
             obs_ctrl = await get_obs_controller()
             if obs_ctrl and obs_ctrl.connected:
                 success = await handle_obs_action(lower, obs_ctrl)
@@ -5064,7 +5092,10 @@ async def handle_action(action: str, project: Optional[str]) -> None:
 
     # ---- Overlay Notification Actions ----
     if lower == "show_subscribe_cta":
-        global current_subscribe_cta, subscribe_cta_display_until, last_subscribe_cta_time
+        global \
+            current_subscribe_cta, \
+            subscribe_cta_display_until, \
+            last_subscribe_cta_time
         async with state_lock:
             now = time.time()
             current_subscribe_cta = {"trigger": True}
@@ -5082,7 +5113,7 @@ async def handle_action(action: str, project: Optional[str]) -> None:
             last_merch_cta_time = now
         logging.info(f"[cta] 🛍️ Merch CTA triggered via UI button")
         return
-        
+
     if lower == "show_intro":
         await trigger_intro()
         return
@@ -5303,32 +5334,37 @@ async def handle_client(
 # HTTP SERVER
 # -----------------------------
 
-async def handle_voice_websocket(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
+
+async def handle_voice_websocket(
+    reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+):
     """
     Handle WebSocket frames for continuous voice audio streaming
     WebSocket protocol: https://tools.ietf.org/html/rfc6455
     """
     import struct
-    
+
     try:
         while True:
             # Read WebSocket frame header (2 bytes minimum)
             try:
-                header_bytes = await asyncio.wait_for(reader.readexactly(2), timeout=60.0)
+                header_bytes = await asyncio.wait_for(
+                    reader.readexactly(2), timeout=60.0
+                )
             except asyncio.TimeoutError:
                 logging.warning("[voice-ws] Connection timeout, closing")
                 break
             except asyncio.IncompleteReadError:
                 logging.info("[voice-ws] Client disconnected")
                 break
-            
+
             # Parse frame header
             byte1, byte2 = header_bytes[0], header_bytes[1]
             fin = (byte1 & 0x80) != 0
             opcode = byte1 & 0x0F
             masked = (byte2 & 0x80) != 0
             payload_length = byte2 & 0x7F
-            
+
             # Extended payload length
             if payload_length == 126:
                 length_bytes = await reader.readexactly(2)
@@ -5336,16 +5372,16 @@ async def handle_voice_websocket(reader: asyncio.StreamReader, writer: asyncio.S
             elif payload_length == 127:
                 length_bytes = await reader.readexactly(8)
                 payload_length = struct.unpack(">Q", length_bytes)[0]
-            
+
             # Read masking key if present
             masking_key = None
             if masked:
                 masking_key = await reader.readexactly(4)
-            
+
             # Read payload data
             if payload_length > 0:
                 payload = await reader.readexactly(payload_length)
-                
+
                 # Unmask data if needed
                 if masked and masking_key:
                     unmasked = bytearray(payload)
@@ -5354,12 +5390,12 @@ async def handle_voice_websocket(reader: asyncio.StreamReader, writer: asyncio.S
                     payload = bytes(unmasked)
             else:
                 payload = b""
-            
+
             # Handle different opcodes
             if opcode == 0x1:  # Text frame
-                text = payload.decode('utf-8')
+                text = payload.decode("utf-8")
                 logging.debug(f"[voice-ws] Received text: {text[:100]}")
-                
+
             elif opcode == 0x2:  # Binary frame (audio data)
                 # Process audio chunk
                 if len(payload) > 0:
@@ -5369,7 +5405,7 @@ async def handle_voice_websocket(reader: asyncio.StreamReader, writer: asyncio.S
                         await process_browser_audio_chunk(payload)
                     except Exception as e:
                         logging.error(f"[voice-ws] Error processing audio: {e}")
-                
+
             elif opcode == 0x8:  # Close frame
                 logging.info("[voice-ws] Received close frame")
                 # Send close frame back
@@ -5377,20 +5413,21 @@ async def handle_voice_websocket(reader: asyncio.StreamReader, writer: asyncio.S
                 writer.write(close_frame)
                 await writer.drain()
                 break
-                
+
             elif opcode == 0x9:  # Ping frame
                 # Respond with pong
                 pong_frame = bytes([0x8A, len(payload)]) + payload  # FIN + Pong opcode
                 writer.write(pong_frame)
                 await writer.drain()
                 logging.debug("[voice-ws] Sent pong")
-                
+
             elif opcode == 0xA:  # Pong frame
                 logging.debug("[voice-ws] Received pong")
-                
+
     except Exception as e:
         logging.error(f"[voice-ws] WebSocket handler error: {e}")
         import traceback
+
         traceback.print_exc()
     finally:
         try:
@@ -5480,10 +5517,11 @@ async def handle_http(
             # Special handling for /voice/ws - check query param for token
             if path == "/voice/ws":
                 from urllib.parse import urlparse, parse_qs
+
                 parsed_url = urlparse(raw_path)
                 query_params = parse_qs(parsed_url.query)
-                token_from_query = query_params.get('token', [None])[0]
-                
+                token_from_query = query_params.get("token", [None])[0]
+
                 is_authenticated = False
                 if token_from_query and SS_TOKEN and token_from_query == SS_TOKEN:
                     is_authenticated = True
@@ -5491,7 +5529,7 @@ async def handle_http(
                 elif check_auth_header(req_text):
                     is_authenticated = True
                     logging.debug(f"[voice-ws] Auth via header: ✅")
-                
+
                 if not is_authenticated:
                     logging.warning(
                         f"🚫 [http] Unauthorized WebSocket attempt from {addr} to {method} {path}"
@@ -5682,41 +5720,65 @@ async def handle_http(
                 # Validate each achievement in the array - support multiple formats
                 achievements_list = achievement_data["achievements"]
                 normalized_achievements = []
-                
-                logging.info(f"[achievement_percentages] Normalizing {len(achievements_list)} achievements")
-                
+
+                logging.info(
+                    f"[achievement_percentages] Normalizing {len(achievements_list)} achievements"
+                )
+
                 for i, achievement in enumerate(achievements_list):
                     # Normalize the achievement data to standard format
                     normalized = {}
-                    
+
                     # Handle different field names
                     # New format: achievement_title
                     # Old format: display_name or name
-                    normalized["name"] = achievement.get("name") or achievement.get("achievement_title") or f"achievement_{i}"
-                    normalized["display_name"] = achievement.get("display_name") or achievement.get("achievement_title") or achievement.get("name") or "Unknown Achievement"
+                    normalized["name"] = (
+                        achievement.get("name")
+                        or achievement.get("achievement_title")
+                        or f"achievement_{i}"
+                    )
+                    normalized["display_name"] = (
+                        achievement.get("display_name")
+                        or achievement.get("achievement_title")
+                        or achievement.get("name")
+                        or "Unknown Achievement"
+                    )
                     normalized["description"] = achievement.get("description", "")
                     normalized["icon"] = achievement.get("icon", "")
-                    
+
                     # Handle progress percentage
                     # New format: player_progress.progress_percent
                     # Old format: percent
-                    if "player_progress" in achievement and achievement["player_progress"]:
+                    if (
+                        "player_progress" in achievement
+                        and achievement["player_progress"]
+                    ):
                         progress = achievement["player_progress"]
                         normalized["percent"] = progress.get("progress_percent", 0)
-                        logging.info(f"   [{i}] Using player_progress: {normalized['display_name']} = {normalized['percent']}%")
+                        logging.info(
+                            f"   [{i}] Using player_progress: {normalized['display_name']} = {normalized['percent']}%"
+                        )
                     elif "percent" in achievement:
                         normalized["percent"] = achievement["percent"]
-                        logging.info(f"   [{i}] Using percent field: {normalized['display_name']} = {normalized['percent']}%")
+                        logging.info(
+                            f"   [{i}] Using percent field: {normalized['display_name']} = {normalized['percent']}%"
+                        )
                     else:
                         # If no progress, treat as 0% or unlocked (100%)
-                        normalized["percent"] = 100.0 if achievement.get("unlock_time") else 0.0
-                        logging.info(f"   [{i}] No progress data, defaulting: {normalized['display_name']} = {normalized['percent']}%")
-                    
+                        normalized["percent"] = (
+                            100.0 if achievement.get("unlock_time") else 0.0
+                        )
+                        logging.info(
+                            f"   [{i}] No progress data, defaulting: {normalized['display_name']} = {normalized['percent']}%"
+                        )
+
                     normalized_achievements.append(normalized)
-                
+
                 # Replace original achievements with normalized ones
                 achievement_data["achievements"] = normalized_achievements
-                logging.info(f"[achievement_percentages] Normalization complete, displaying {len(normalized_achievements)} achievements")
+                logging.info(
+                    f"[achievement_percentages] Normalization complete, displaying {len(normalized_achievements)} achievements"
+                )
 
                 # Display the achievement percentages notification
                 await display_achievement_percentages(achievement_data)
@@ -5759,7 +5821,9 @@ async def handle_http(
 
         # Handle POST /closest-achievements endpoint (alias for /global-achievement-percentages)
         if method == "POST" and path == "/closest-achievements":
-            logging.info("[achievement_percentages] /closest-achievements endpoint hit (routing to global-achievement-percentages logic)")
+            logging.info(
+                "[achievement_percentages] /closest-achievements endpoint hit (routing to global-achievement-percentages logic)"
+            )
             # Reuse the same logic as /global-achievement-percentages
             try:
                 if not body_data:
@@ -5771,7 +5835,9 @@ async def handle_http(
                 achievement_data = json.loads(body_data.decode("utf-8"))
                 await display_achievement_percentages(achievement_data)
 
-                response_body = json.dumps({"status": "success", "message": "Closest achievements displayed"}).encode("utf-8")
+                response_body = json.dumps(
+                    {"status": "success", "message": "Closest achievements displayed"}
+                ).encode("utf-8")
                 headers = (
                     "HTTP/1.1 200 OK\r\n"
                     "Content-Type: application/json\r\n"
@@ -5784,7 +5850,10 @@ async def handle_http(
                 return
 
             except Exception as e:
-                logging.error(f"❗ [achievement_percentages] Error processing closest achievements: {e}", exc_info=True)
+                logging.error(
+                    f"❗ [achievement_percentages] Error processing closest achievements: {e}",
+                    exc_info=True,
+                )
                 resp = b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
                 writer.write(resp)
                 await writer.drain()
@@ -5792,7 +5861,9 @@ async def handle_http(
 
         # Handle POST /achievement-progress endpoint (alias for /global-achievement-percentages)
         if method == "POST" and path == "/achievement-progress":
-            logging.info("[achievement_percentages] /achievement-progress endpoint hit (routing to global-achievement-percentages logic)")
+            logging.info(
+                "[achievement_percentages] /achievement-progress endpoint hit (routing to global-achievement-percentages logic)"
+            )
             # Reuse the same logic as /global-achievement-percentages
             try:
                 if not body_data:
@@ -5804,7 +5875,9 @@ async def handle_http(
                 achievement_data = json.loads(body_data.decode("utf-8"))
                 await display_achievement_percentages(achievement_data)
 
-                response_body = json.dumps({"status": "success", "message": "Achievement progress displayed"}).encode("utf-8")
+                response_body = json.dumps(
+                    {"status": "success", "message": "Achievement progress displayed"}
+                ).encode("utf-8")
                 headers = (
                     "HTTP/1.1 200 OK\r\n"
                     "Content-Type: application/json\r\n"
@@ -5817,7 +5890,10 @@ async def handle_http(
                 return
 
             except Exception as e:
-                logging.error(f"❗ [achievement_percentages] Error processing achievement progress: {e}", exc_info=True)
+                logging.error(
+                    f"❗ [achievement_percentages] Error processing achievement progress: {e}",
+                    exc_info=True,
+                )
                 resp = b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
                 writer.write(resp)
                 await writer.drain()
@@ -5828,13 +5904,19 @@ async def handle_http(
             logging.info("[achievement_percentages] Manual clear endpoint hit")
             try:
                 async with state_lock:
-                    global current_achievement_percentages, achievement_percentages_display_until
+                    global \
+                        current_achievement_percentages, \
+                        achievement_percentages_display_until
                     current_achievement_percentages = None
                     achievement_percentages_display_until = None
-                
-                logging.info("🧽 [achievement_percentages] Manually cleared via /clear-achievements endpoint")
-                
-                response_body = json.dumps({"status": "success", "message": "Achievement percentages cleared"}).encode("utf-8")
+
+                logging.info(
+                    "🧽 [achievement_percentages] Manually cleared via /clear-achievements endpoint"
+                )
+
+                response_body = json.dumps(
+                    {"status": "success", "message": "Achievement percentages cleared"}
+                ).encode("utf-8")
                 headers = (
                     "HTTP/1.1 200 OK\r\n"
                     "Content-Type: application/json\r\n"
@@ -5847,7 +5929,10 @@ async def handle_http(
                 return
 
             except Exception as e:
-                logging.error(f"❗ [achievement_percentages] Error clearing achievements: {e}", exc_info=True)
+                logging.error(
+                    f"❗ [achievement_percentages] Error clearing achievements: {e}",
+                    exc_info=True,
+                )
                 resp = b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
                 writer.write(resp)
                 await writer.drain()
@@ -5992,7 +6077,10 @@ async def handle_http(
 
         # Handle POST /subscribe-cta endpoint
         if method == "POST" and path == "/subscribe-cta":
-            global current_subscribe_cta, subscribe_cta_display_until, last_subscribe_cta_time
+            global \
+                current_subscribe_cta, \
+                subscribe_cta_display_until, \
+                last_subscribe_cta_time
             try:
                 # Trigger subscribe CTA
                 async with state_lock:
@@ -6000,9 +6088,9 @@ async def handle_http(
                     current_subscribe_cta = {"trigger": True}
                     subscribe_cta_display_until = now + SUBSCRIBE_CTA_DURATION
                     last_subscribe_cta_time = now
-                
+
                 logging.info(f"[cta] 🔔 Subscribe CTA triggered via POST endpoint")
-                
+
                 # Send success response
                 response_body = json.dumps(
                     {"status": "success", "message": "Subscribe CTA triggered"}
@@ -6018,7 +6106,9 @@ async def handle_http(
                 await writer.drain()
                 return
             except Exception as e:
-                logging.error(f"❗ [cta] Error triggering subscribe CTA: {e}", exc_info=True)
+                logging.error(
+                    f"❗ [cta] Error triggering subscribe CTA: {e}", exc_info=True
+                )
                 resp = b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
                 writer.write(resp)
                 await writer.drain()
@@ -6034,9 +6124,9 @@ async def handle_http(
                     current_merch_cta = {"trigger": True}
                     merch_cta_display_until = now + MERCH_CTA_DURATION
                     last_merch_cta_time = now
-                
+
                 logging.info(f"[cta] 🛍️ Merch CTA triggered via POST endpoint")
-                
+
                 # Send success response
                 response_body = json.dumps(
                     {"status": "success", "message": "Merch CTA triggered"}
@@ -6052,7 +6142,9 @@ async def handle_http(
                 await writer.drain()
                 return
             except Exception as e:
-                logging.error(f"❗ [cta] Error triggering merch CTA: {e}", exc_info=True)
+                logging.error(
+                    f"❗ [cta] Error triggering merch CTA: {e}", exc_info=True
+                )
                 resp = b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
                 writer.write(resp)
                 await writer.drain()
@@ -6278,9 +6370,14 @@ async def handle_http(
 
                 # Validate action exists in config (allow OBS actions dynamically)
                 action_lower = action.lower()
-                is_obs_action = action_lower.startswith(("scene_", "transition_", "obs_"))
-                is_valid_action = action_lower in {a.lower() for a in ALL_ACTION_KEYS} or is_obs_action
-                
+                is_obs_action = action_lower.startswith(
+                    ("scene_", "transition_", "obs_")
+                )
+                is_valid_action = (
+                    action_lower in {a.lower() for a in ALL_ACTION_KEYS}
+                    or is_obs_action
+                )
+
                 if not is_valid_action:
                     logging.warning(f"❌ [action] Unknown action: {action}")
                     error_msg = f"Unknown action: {action}. Valid actions: {', '.join(sorted(ALL_ACTION_KEYS))}"
@@ -6310,7 +6407,7 @@ async def handle_http(
                 # Check if this was a clear or undo action - need to send all counts
                 action_lower = action.lower()
                 all_counts = None
-                if action_lower in ('clear', 'undo'):
+                if action_lower in ("clear", "undo"):
                     # Return all current counts so UI can update everything
                     all_counts = {}
                     async with state_lock:
@@ -6327,11 +6424,11 @@ async def handle_http(
                     "action": action,
                     "new_count": current_count,
                 }
-                
+
                 # Include all counts if this was clear/undo
                 if all_counts is not None:
                     response_data["all_counts"] = all_counts
-                
+
                 response_body = json.dumps(response_data).encode("utf-8")
 
                 headers = (
@@ -6375,14 +6472,16 @@ async def handle_http(
                 )
                 project = last_project or ""
                 synonyms = last_synonyms or []
-                
+
                 # Live captions from voice recognition
                 caption = last_caption or ""
-                caption_age = time.time() - last_caption_time if last_caption_time else 999
+                caption_age = (
+                    time.time() - last_caption_time if last_caption_time else 999
+                )
                 # Clear caption after 5 seconds
                 if caption_age > 5.0:
                     caption = ""
-                
+
                 # Thank you animation data
                 thanks_name = last_thanks_name or ""
                 thanks_age = time.time() - last_thanks_time if last_thanks_time else 999
@@ -6587,13 +6686,13 @@ async def handle_http(
             # Return dynamic OBS actions
             try:
                 from obs_controller import get_obs_controller
-                
+
                 obs_ctrl = await get_obs_controller()
                 if obs_ctrl and obs_ctrl.connected:
                     # Refresh OBS state
                     await obs_ctrl.refresh_state()
                     obs_actions = obs_ctrl.get_dynamic_actions()
-                    
+
                     response_body = json.dumps(obs_actions, indent=2).encode("utf-8")
                     resp_headers = (
                         "HTTP/1.1 200 OK\r\n"
@@ -6657,45 +6756,58 @@ async def handle_http(
                 obs_actions = {}
                 try:
                     from obs_controller import get_obs_controller
+
                     obs_ctrl = await get_obs_controller()
                     if obs_ctrl and obs_ctrl.connected:
                         await obs_ctrl.refresh_state()
                         obs_actions = obs_ctrl.get_dynamic_actions()
-                        total_actions = sum(len(group) for group in obs_actions.values() if isinstance(group, dict))
-                        logging.info(f"[ui] Loaded {total_actions} OBS actions in {len(obs_actions)} groups: {list(obs_actions.keys())}")
-                        logging.info(f"[ui] OBS scenes: {len(obs_ctrl.scenes)}, transitions: {len(obs_ctrl.transitions)}")
+                        total_actions = sum(
+                            len(group)
+                            for group in obs_actions.values()
+                            if isinstance(group, dict)
+                        )
+                        logging.info(
+                            f"[ui] Loaded {total_actions} OBS actions in {len(obs_actions)} groups: {list(obs_actions.keys())}"
+                        )
+                        logging.info(
+                            f"[ui] OBS scenes: {len(obs_ctrl.scenes)}, transitions: {len(obs_ctrl.transitions)}"
+                        )
                     else:
                         logging.info("[ui] OBS not connected")
                 except ImportError:
                     logging.debug("[ui] obs_controller module not available")
                 except Exception as e:
                     logging.warning(f"[ui] OBS connection failed: {e}", exc_info=True)
-                
+
                 # Get current game - try to detect from OBS scene if not set
                 current_game = last_project
                 if not current_game and obs_actions:
                     # Try to detect game from current scene name
-                    current_scene = obs_actions.get('current_scene', {}).get('display', '')
+                    current_scene = obs_actions.get("current_scene", {}).get(
+                        "display", ""
+                    )
                     for game_key in GAMES_CONFIG.keys():
                         if game_key.lower() in current_scene.lower():
                             current_game = game_key
                             last_project = game_key  # Set it globally so it persists
-                            logging.info(f"[ui] Auto-detected game '{current_game}' from scene '{current_scene}'")
+                            logging.info(
+                                f"[ui] Auto-detected game '{current_game}' from scene '{current_scene}'"
+                            )
                             break
-                
+
                 # Embed the full games config so UI can access all game actions
                 games_config_for_ui = {}
                 for game_key, game_data in GAMES_CONFIG.items():
                     games_config_for_ui[game_key] = {
                         "emoji": game_data.get("emoji", "🎮"),
-                        "actions": game_data.get("actions", {})
+                        "actions": game_data.get("actions", {}),
                     }
-                
+
                 # Load UI template
                 template_path = "/app/ui_driver_template.html"
                 with open(template_path, "r", encoding="utf-8") as f:
                     body_str = f.read()
-                
+
                 # Get action counts and run stats for display
                 action_counts_for_ui = {}
                 run_stats_for_ui = None
@@ -6703,7 +6815,7 @@ async def handle_http(
                     for (game, action), count in action_counts.items():
                         key = f"{game}::{action}"
                         action_counts_for_ui[key] = count
-                    
+
                     # Get current run stats if available
                     if current_game and current_run_by_project.get(current_game):
                         run_num = current_run_by_project[current_game]
@@ -6713,9 +6825,9 @@ async def handle_http(
                                 "run_number": run_num,
                                 "kills": stats.get("kills", 0),
                                 "deaths": stats.get("deaths", 0),
-                                "headshots": stats.get("headshots", 0)
+                                "headshots": stats.get("headshots", 0),
                             }
-                
+
                 # Embed all data as JSON in the HTML
                 obs_actions_json = json.dumps(obs_actions)
                 games_config_json = json.dumps(games_config_for_ui)
@@ -6723,34 +6835,36 @@ async def handle_http(
                 action_counts_json = json.dumps(action_counts_for_ui)
                 run_stats_json = json.dumps(run_stats_for_ui)
                 voice_ws_host_json = json.dumps(VOICE_WS_HOST)
-                
+
                 # Replace placeholder data in the template
                 body_str = body_str.replace(
-                    'window.EMBEDDED_OBS_ACTIONS = {};',
-                    f'window.EMBEDDED_OBS_ACTIONS = {obs_actions_json};'
+                    "window.EMBEDDED_OBS_ACTIONS = {};",
+                    f"window.EMBEDDED_OBS_ACTIONS = {obs_actions_json};",
                 )
                 body_str = body_str.replace(
-                    'window.EMBEDDED_GAMES_CONFIG = {};',
-                    f'window.EMBEDDED_GAMES_CONFIG = {games_config_json};'
+                    "window.EMBEDDED_GAMES_CONFIG = {};",
+                    f"window.EMBEDDED_GAMES_CONFIG = {games_config_json};",
                 )
                 body_str = body_str.replace(
                     'window.EMBEDDED_CURRENT_GAME = "";',
-                    f'window.EMBEDDED_CURRENT_GAME = {current_game_json};'
+                    f"window.EMBEDDED_CURRENT_GAME = {current_game_json};",
                 )
                 body_str = body_str.replace(
-                    'window.EMBEDDED_ACTION_COUNTS = {};',
-                    f'window.EMBEDDED_ACTION_COUNTS = {action_counts_json};'
+                    "window.EMBEDDED_ACTION_COUNTS = {};",
+                    f"window.EMBEDDED_ACTION_COUNTS = {action_counts_json};",
                 )
                 body_str = body_str.replace(
-                    'window.EMBEDDED_RUN_STATS = null;',
-                    f'window.EMBEDDED_RUN_STATS = {run_stats_json};'
+                    "window.EMBEDDED_RUN_STATS = null;",
+                    f"window.EMBEDDED_RUN_STATS = {run_stats_json};",
                 )
                 body_str = body_str.replace(
                     'window.VOICE_WS_HOST = "";',
-                    f'window.VOICE_WS_HOST = {voice_ws_host_json};'
+                    f"window.VOICE_WS_HOST = {voice_ws_host_json};",
                 )
-                
-                logging.info(f"[ui] Loaded UI - game={current_game}, {len(games_config_for_ui)} games, {len(action_counts_for_ui)} action counts, run_stats={run_stats_for_ui is not None}")
+
+                logging.info(
+                    f"[ui] Loaded UI - game={current_game}, {len(games_config_for_ui)} games, {len(action_counts_for_ui)} action counts, run_stats={run_stats_for_ui is not None}"
+                )
             except Exception as e:
                 logging.error(f"❗ [http] Failed to load UI: {e}", exc_info=True)
                 body_str = f"<!DOCTYPE html><html><body><h1>Error loading UI</h1><p>{e}</p></body></html>"
@@ -6775,7 +6889,9 @@ async def handle_http(
                 # Check authentication
                 is_authenticated = check_auth_header(req_text)
                 if not is_authenticated:
-                    body_bytes = json.dumps({"error": "Authentication required"}).encode("utf-8")
+                    body_bytes = json.dumps(
+                        {"error": "Authentication required"}
+                    ).encode("utf-8")
                     headers_str = (
                         "HTTP/1.1 401 Unauthorized\r\n"
                         "Content-Type: application/json\r\n"
@@ -6786,7 +6902,7 @@ async def handle_http(
                     writer.write(headers_str.encode("ascii") + body_bytes)
                     await writer.drain()
                     return
-                
+
                 # Get fresh OBS state
                 obs_actions = {}
                 current_scene = ""
@@ -6795,6 +6911,7 @@ async def handle_http(
                 is_streaming = False
                 try:
                     from obs_controller import get_obs_controller
+
                     obs_ctrl = await get_obs_controller()
                     if obs_ctrl and obs_ctrl.connected:
                         await obs_ctrl.refresh_state()
@@ -6805,14 +6922,16 @@ async def handle_http(
                         is_streaming = obs_ctrl.is_streaming
                 except Exception as e:
                     logging.debug(f"[obs_state] Could not fetch OBS state: {e}")
-                
-                body_bytes = json.dumps({
-                    "obs_actions": obs_actions,
-                    "current_scene": current_scene,
-                    "current_transition": current_transition,
-                    "is_recording": is_recording,
-                    "is_streaming": is_streaming
-                }).encode("utf-8")
+
+                body_bytes = json.dumps(
+                    {
+                        "obs_actions": obs_actions,
+                        "current_scene": current_scene,
+                        "current_transition": current_transition,
+                        "is_recording": is_recording,
+                        "is_streaming": is_streaming,
+                    }
+                ).encode("utf-8")
                 headers_str = (
                     "HTTP/1.1 200 OK\r\n"
                     "Content-Type: application/json\r\n"
@@ -6915,7 +7034,10 @@ async def handle_http(
                 # Check authentication
                 is_authenticated = check_auth_header(req_text)
                 if not is_authenticated:
-                    response_data = {"success": False, "error": "Authentication required"}
+                    response_data = {
+                        "success": False,
+                        "error": "Authentication required",
+                    }
                     body_bytes = json.dumps(response_data).encode("utf-8")
                     headers_str = (
                         "HTTP/1.1 401 Unauthorized\r\n"
@@ -6936,7 +7058,10 @@ async def handle_http(
                         break
 
                 if content_length == 0:
-                    response_data = {"success": False, "error": "No audio data provided"}
+                    response_data = {
+                        "success": False,
+                        "error": "No audio data provided",
+                    }
                     body_bytes = json.dumps(response_data).encode("utf-8")
                     headers_str = (
                         "HTTP/1.1 400 Bad Request\r\n"
@@ -6951,70 +7076,81 @@ async def handle_http(
 
                 # Read audio data
                 audio_data = await reader.read(content_length)
-                
+
                 # Save audio temporarily
                 temp_audio_path = f"/tmp/voice_{int(time.time())}.webm"
                 with open(temp_audio_path, "wb") as f:
                     f.write(audio_data)
-                
+
                 try:
                     # Use local Whisper for transcription with GPU
-                    logging.info("[voice] 🎤 Starting local Whisper transcription on GPU...")
-                    
+                    logging.info(
+                        "[voice] 🎤 Starting local Whisper transcription on GPU..."
+                    )
+
                     # Import faster-whisper for local transcription
                     from faster_whisper import WhisperModel
-                    
+
                     # Try GPU first, fall back to CPU if needed
                     try:
-                        model = WhisperModel("base", device="cuda", compute_type="float16")
+                        model = WhisperModel(
+                            "base", device="cuda", compute_type="float16"
+                        )
                         logging.info("[voice] Using GPU (CUDA) for transcription")
                     except Exception as gpu_error:
-                        logging.warning(f"[voice] GPU not available, using CPU: {gpu_error}")
+                        logging.warning(
+                            f"[voice] GPU not available, using CPU: {gpu_error}"
+                        )
                         model = WhisperModel("base", device="cpu", compute_type="int8")
-                    
+
                     # Transcribe
                     segments, info = model.transcribe(temp_audio_path, language="en")
-                    
+
                     # Extract text from segments
-                    transcribed_text = " ".join([segment.text for segment in segments]).strip()
-                    
+                    transcribed_text = " ".join(
+                        [segment.text for segment in segments]
+                    ).strip()
+
                     logging.info(f"[voice] 🎤 Transcribed: '{transcribed_text}'")
-                    
+
                     # Parse command
                     from voice_commands import VoiceCommandParser
+
                     parser = VoiceCommandParser(GAMES_CONFIG)
-                    
+
                     result = parser.parse_command(transcribed_text, last_project)
-                    
+
                     if result:
                         game, action = result
                         logging.info(f"[voice] ✅ Triggering action: {game}/{action}")
-                        
+
                         # Trigger the action using existing action handler
                         await handle_action(action, game)
-                        
+
                         response_data = {
                             "success": True,
                             "transcription": transcribed_text,
                             "game": game,
                             "action": action,
-                            "message": f"Triggered {action} for {game}"
+                            "message": f"Triggered {action} for {game}",
                         }
                     else:
-                        logging.warning(f"[voice] ❌ Could not parse command: '{transcribed_text}'")
+                        logging.warning(
+                            f"[voice] ❌ Could not parse command: '{transcribed_text}'"
+                        )
                         response_data = {
                             "success": False,
                             "transcription": transcribed_text,
-                            "error": "Could not match command to any action"
+                            "error": "Could not match command to any action",
                         }
-                    
+
                 finally:
                     # Clean up temp file
                     try:
                         os.unlink(temp_audio_path)
                     except:
                         pass
-                
+
                 body_bytes = json.dumps(response_data).encode("utf-8")
                 headers_str = (
                     "HTTP/1.1 200 OK\r\n"
@@ -7106,14 +7242,16 @@ async def handle_http(
                     return
 
                 # Simple status check without async complexity
-                voice_enabled = os.getenv("VOICE_LISTENER_ENABLED", "false").lower() == "true"
-                
+                voice_enabled = (
+                    os.getenv("VOICE_LISTENER_ENABLED", "false").lower() == "true"
+                )
+
                 status = {
                     "enabled": voice_enabled,
                     "audio_streaming": False,  # Simplified for now
-                    "last_transcription": None
+                    "last_transcription": None,
                 }
-                
+
                 body_bytes = json.dumps(status).encode("utf-8")
                 headers_str = (
                     "HTTP/1.1 200 OK\r\n"
@@ -7167,7 +7305,8 @@ async def handle_http(
                 response_data = {
                     "success": False,
                     "message": "To toggle voice listener, edit .env file and restart container",
-                    "enabled": os.getenv("VOICE_LISTENER_ENABLED", "false").lower() == "true"
+                    "enabled": os.getenv("VOICE_LISTENER_ENABLED", "false").lower()
+                    == "true",
                 }
 
                 body_bytes = json.dumps(response_data).encode("utf-8")
@@ -7184,7 +7323,9 @@ async def handle_http(
 
             except Exception as e:
                 logging.error(f"[voice] Error toggling listener: {e}")
-                error_body = json.dumps({"error": str(e), "success": False}).encode("utf-8")
+                error_body = json.dumps({"error": str(e), "success": False}).encode(
+                    "utf-8"
+                )
                 headers_str = (
                     "HTTP/1.1 500 Internal Server Error\r\n"
                     "Content-Type: application/json\r\n"
@@ -7201,20 +7342,22 @@ async def handle_http(
             # Auth is already validated above in the early auth check
             try:
                 logging.info(f"[voice-ws] ✅ WebSocket upgrade request authenticated")
-                
+
                 # Check for WebSocket upgrade headers
                 is_websocket = False
                 websocket_key = None
-                
-                for line in req_text.split('\r\n'):
+
+                for line in req_text.split("\r\n"):
                     line_lower = line.lower()
-                    if 'upgrade: websocket' in line_lower:
+                    if "upgrade: websocket" in line_lower:
                         is_websocket = True
-                    if line_lower.startswith('sec-websocket-key:'):
-                        websocket_key = line.split(':', 1)[1].strip()
-                
+                    if line_lower.startswith("sec-websocket-key:"):
+                        websocket_key = line.split(":", 1)[1].strip()
+
                 if not is_websocket or not websocket_key:
-                    error_body = json.dumps({"error": "WebSocket upgrade required"}).encode("utf-8")
+                    error_body = json.dumps(
+                        {"error": "WebSocket upgrade required"}
+                    ).encode("utf-8")
                     headers_str = (
                         "HTTP/1.1 400 Bad Request\r\n"
                         "Content-Type: application/json\r\n"
@@ -7225,16 +7368,16 @@ async def handle_http(
                     writer.write(headers_str.encode("ascii") + error_body)
                     await writer.drain()
                     return
-                
+
                 # Perform WebSocket handshake
                 import base64
                 import hashlib
-                
+
                 magic_string = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
                 accept_key = base64.b64encode(
                     hashlib.sha1((websocket_key + magic_string).encode()).digest()
                 ).decode()
-                
+
                 handshake_response = (
                     "HTTP/1.1 101 Switching Protocols\r\n"
                     "Upgrade: websocket\r\n"
@@ -7242,19 +7385,20 @@ async def handle_http(
                     f"Sec-WebSocket-Accept: {accept_key}\r\n"
                     "\r\n"
                 )
-                
+
                 writer.write(handshake_response.encode())
                 await writer.drain()
-                
+
                 logging.info("[voice-ws] WebSocket connection established")
-                
+
                 # Handle WebSocket frames
                 await handle_voice_websocket(reader, writer)
                 return
-                
+
             except Exception as e:
                 logging.error(f"[voice-ws] WebSocket error: {e}")
                 import traceback
+
                 traceback.print_exc()
                 try:
                     writer.close()
@@ -7285,28 +7429,31 @@ async def handle_http(
                 if body_data:
                     # Extract sample rate from header
                     sample_rate_header = None
-                    for line in req_text.split('\r\n'):
-                        if line.lower().startswith('x-sample-rate:'):
+                    for line in req_text.split("\r\n"):
+                        if line.lower().startswith("x-sample-rate:"):
                             try:
-                                sample_rate_header = int(line.split(':', 1)[1].strip())
+                                sample_rate_header = int(line.split(":", 1)[1].strip())
                             except:
                                 pass
                             break
-                    
+
                     if sample_rate_header:
                         global browser_audio_sample_rate
                         browser_audio_sample_rate = sample_rate_header
-                        logging.info(f"[voice] 🎵 Received {len(body_data)} bytes PCM @ {sample_rate_header}Hz")
+                        logging.info(
+                            f"[voice] 🎵 Received {len(body_data)} bytes PCM @ {sample_rate_header}Hz"
+                        )
                     else:
                         logging.info(f"[voice] 🎵 Received {len(body_data)} bytes PCM")
-                    
+
                     # Queue audio for processing
                     try:
                         import asyncio
+
                         asyncio.create_task(process_browser_audio_chunk(body_data))
                     except Exception as process_error:
                         logging.error(f"[voice] Error queueing audio: {process_error}")
-                    
+
                     response_data = {"success": True, "bytes_received": len(body_data)}
                 else:
                     logging.warning(f"[voice] No audio data in request")
@@ -7696,15 +7843,16 @@ async def handle_http(
         elif path == "/qr-code":
             # Serve QR code image for merch shop
             from pathlib import Path as PathLib
+
             qr_file = PathLib("/app/shop.nindevdo.com.jpeg")
-            
+
             if not qr_file.exists() or not qr_file.is_file():
                 logging.warning(f"❓ [http] QR code image not found: {qr_file}")
                 resp = b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
                 writer.write(resp)
                 await writer.drain()
                 return
-            
+
             try:
                 body_bytes = qr_file.read_bytes()
                 mime = "image/jpeg"
@@ -7714,7 +7862,7 @@ async def handle_http(
                 writer.write(resp)
                 await writer.drain()
                 return
-            
+
             headers = (
                 "HTTP/1.1 200 OK\r\n"
                 f"Content-Type: {mime}\r\n"
@@ -7729,8 +7877,9 @@ async def handle_http(
 
         elif path.startswith("/fonts/"):
             # Serve font files from _data/fonts/
-            rel = path[len("/fonts/"):].lstrip("/")
+            rel = path[len("/fonts/") :].lstrip("/")
             from pathlib import Path as PathLib
+
             fonts_dir = PathLib("/app/_data/fonts")
             fs_path = (fonts_dir / rel).resolve()
 
@@ -7766,7 +7915,9 @@ async def handle_http(
                 else:
                     mime = "application/octet-stream"
             except Exception as e:
-                logging.error(f"❗ [http] Failed to read font file {fs_path}: {e}", exc_info=True)
+                logging.error(
+                    f"❗ [http] Failed to read font file {fs_path}: {e}", exc_info=True
+                )
                 resp = b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
                 writer.write(resp)
                 await writer.drain()
@@ -7831,10 +7982,11 @@ async def obs_state_poller():
     """
     await asyncio.sleep(5)  # Wait for OBS to connect
     logging.info("[obs] OBS state poller started")
-    
+
     while True:
         try:
             from obs_controller import get_obs_controller
+
             obs_ctrl = await get_obs_controller()
             if obs_ctrl and obs_ctrl.connected:
                 await obs_ctrl.refresh_state()
@@ -7851,43 +8003,51 @@ async def cta_scheduler_task() -> None:
     """
     global current_subscribe_cta, subscribe_cta_display_until, last_subscribe_cta_time
     global current_merch_cta, merch_cta_display_until, last_merch_cta_time
-    
+
     # Wait a bit after startup before first CTA
     await asyncio.sleep(60)  # Wait 1 minute after startup
-    
-    logging.info("[cta] CTA scheduler started - Subscribe: every 15min, Merch: every 22min")
-    
+
+    logging.info(
+        "[cta] CTA scheduler started - Subscribe: every 15min, Merch: every 22min"
+    )
+
     while True:
         try:
             now = time.time()
-            
+
             # Check if we should trigger Subscribe CTA
             if now - last_subscribe_cta_time >= SUBSCRIBE_CTA_INTERVAL:
                 async with state_lock:
                     current_subscribe_cta = {"trigger": True}
                     subscribe_cta_display_until = now + SUBSCRIBE_CTA_DURATION
                     last_subscribe_cta_time = now
-                logging.info(f"[cta] 🔔 Triggered Subscribe CTA (will display for {SUBSCRIBE_CTA_DURATION}s)")
-            
+                logging.info(
+                    f"[cta] 🔔 Triggered Subscribe CTA (will display for {SUBSCRIBE_CTA_DURATION}s)"
+                )
+
             # Check if we should trigger Merch CTA
             # Add collision detection - don't show if subscribe CTA just triggered
             time_since_subscribe = now - last_subscribe_cta_time
             if now - last_merch_cta_time >= MERCH_CTA_INTERVAL:
                 # Avoid overlap: if subscribe CTA triggered in last 2 minutes, wait 3 more minutes
                 if time_since_subscribe < 120:  # Within 2 minutes
-                    logging.info(f"[cta] 🛍️ Merch CTA delayed to avoid overlap with Subscribe CTA")
+                    logging.info(
+                        f"[cta] 🛍️ Merch CTA delayed to avoid overlap with Subscribe CTA"
+                    )
                     await asyncio.sleep(180)  # Wait 3 more minutes
                     now = time.time()  # Update time after delay
-                
+
                 async with state_lock:
                     current_merch_cta = {"trigger": True}
                     merch_cta_display_until = now + MERCH_CTA_DURATION
                     last_merch_cta_time = now
-                logging.info(f"[cta] 🛍️ Triggered Merch CTA (will display for {MERCH_CTA_DURATION}s)")
-            
+                logging.info(
+                    f"[cta] 🛍️ Triggered Merch CTA (will display for {MERCH_CTA_DURATION}s)"
+                )
+
             # Sleep for 30 seconds before checking again
             await asyncio.sleep(30)
-            
+
         except Exception as e:
             logging.error(f"[cta] Error in CTA scheduler: {e}", exc_info=True)
             await asyncio.sleep(60)  # Wait a bit before retrying on error
@@ -7898,24 +8058,30 @@ async def process_browser_audio_chunk(pcm_data: bytes):
     Process audio chunk from browser with buffering for multi-word commands
     Buffers recent transcriptions to handle phrases split across chunks
     """
-    global browser_audio_sample_rate, transcription_buffer, last_caption, last_caption_time, last_project, GAMES_CONFIG
-    
+    global \
+        browser_audio_sample_rate, \
+        transcription_buffer, \
+        last_caption, \
+        last_caption_time, \
+        last_project, \
+        GAMES_CONFIG
+
     try:
         # Process immediately without buffering for lowest latency
         import numpy as np
-        
+
         # Convert PCM bytes to numpy array (int16)
         audio_np = np.frombuffer(pcm_data, dtype=np.int16)
-        
+
         # Convert to float32 and normalize to -1.0 to 1.0 range (Whisper expects this)
         audio_float = audio_np.astype(np.float32) / 32768.0
-        
+
         # Check if audio has sufficient amplitude (ignore very quiet audio/noise)
-        rms_amplitude = np.sqrt(np.mean(audio_float ** 2))
+        rms_amplitude = np.sqrt(np.mean(audio_float**2))
         if rms_amplitude < 0.01:  # Threshold for silence (adjust as needed)
             logging.debug(f"[voice] Ignoring quiet audio (RMS: {rms_amplitude:.4f})")
             return
-        
+
         # Resample from browser sample rate (usually 48kHz) to 16kHz for Whisper
         # Use simple decimation for speed (take every Nth sample)
         decimation_factor = browser_audio_sample_rate // 16000
@@ -7923,11 +8089,14 @@ async def process_browser_audio_chunk(pcm_data: bytes):
             audio_resampled = audio_float[::decimation_factor]
         else:
             audio_resampled = audio_float
-        
+
         # Get Whisper model from voice_listener module
         try:
             from voice_listener import whisper_model
-            if whisper_model and len(audio_resampled) > 1600:  # At least 0.1 seconds of audio
+
+            if (
+                whisper_model and len(audio_resampled) > 1600
+            ):  # At least 0.1 seconds of audio
                 logging.info(f"[voice] 🎤 Transcribing audio...")
                 segments, info = whisper_model.transcribe(
                     audio_resampled,
@@ -7936,31 +8105,41 @@ async def process_browser_audio_chunk(pcm_data: bytes):
                     vad_parameters={
                         "threshold": 0.5,  # Higher = more strict (0.0-1.0)
                         "min_speech_duration_ms": 250,  # Minimum speech duration
-                        "min_silence_duration_ms": 500   # Minimum silence to split
-                    }
+                        "min_silence_duration_ms": 500,  # Minimum silence to split
+                    },
                 )
-                
+
                 # Collect all segments
                 all_segments = list(segments)
                 transcribed_text = " ".join([seg.text for seg in all_segments]).strip()
-                
-                logging.info(f"[voice] 🔍 Detected {len(all_segments)} segments, text: '{transcribed_text}'")
-                
+
+                logging.info(
+                    f"[voice] 🔍 Detected {len(all_segments)} segments, text: '{transcribed_text}'"
+                )
+
                 if transcribed_text:
                     # Filter out common game audio false positives
                     ignore_patterns = [
-                        "thank you", "bye", "goodbye", "see you", "later",  # NPC dialogue
-                        "music", "sound", "noise",  # Background sounds
+                        "thank you",
+                        "bye",
+                        "goodbye",
+                        "see you",
+                        "later",  # NPC dialogue
+                        "music",
+                        "sound",
+                        "noise",  # Background sounds
                         "...",  # Trailing dots indicate unclear audio
                     ]
-                    
+
                     text_lower = transcribed_text.lower().strip()
-                    
+
                     # Ignore very short transcriptions (likely noise)
                     if len(text_lower) < 3:
-                        logging.debug(f"[voice] Ignoring too short: '{transcribed_text}'")
+                        logging.debug(
+                            f"[voice] Ignoring too short: '{transcribed_text}'"
+                        )
                         return
-                    
+
                     # Check if it's just game audio (only if it's ONLY these words)
                     words = text_lower.split()
                     if len(words) <= 3:  # Only check short phrases
@@ -7969,38 +8148,42 @@ async def process_browser_audio_chunk(pcm_data: bytes):
                             for word in words
                         )
                         if is_game_audio:
-                            logging.debug(f"[voice] Ignoring game audio: '{transcribed_text}'")
+                            logging.debug(
+                                f"[voice] Ignoring game audio: '{transcribed_text}'"
+                            )
                             return
-                    
+
                     logging.info(f"[voice] 📝 Transcribed: '{transcribed_text}'")
-                    
+
                     # Add to transcription buffer with timestamp
                     current_time = time.time()
                     transcription_buffer.append((transcribed_text, current_time))
-                    
+
                     # Clean old entries from buffer (keep only last TRANSCRIPTION_BUFFER_SECONDS)
                     transcription_buffer[:] = [
-                        (text, ts) for text, ts in transcription_buffer
+                        (text, ts)
+                        for text, ts in transcription_buffer
                         if current_time - ts <= TRANSCRIPTION_BUFFER_SECONDS
                     ]
-                    
+
                     # Build combined text from buffer for multi-word command matching
                     buffered_text = " ".join([text for text, _ in transcription_buffer])
-                    
-                    logging.debug(f"[voice] Buffer ({len(transcription_buffer)} chunks): '{buffered_text}'")
-                    
+
+                    logging.debug(
+                        f"[voice] Buffer ({len(transcription_buffer)} chunks): '{buffered_text}'"
+                    )
+
                     # Update live captions with latest transcription only
                     async with state_lock:
                         last_caption = transcribed_text
                         last_caption_time = current_time
-                    
+
                     # Process buffered text first (handles multi-word commands)
                     await voice_command_handler(buffered_text)
-                    
+
                     # If buffered text didn't match, also try just the current chunk
                     if len(transcription_buffer) > 1:
                         await voice_command_handler(transcribed_text)
-
 
                 else:
                     logging.debug("[voice] No speech detected in audio")
@@ -8009,7 +8192,7 @@ async def process_browser_audio_chunk(pcm_data: bytes):
                     logging.warning("[voice] Whisper model not available")
         except Exception as transcribe_error:
             logging.error(f"[voice] Transcription error: {transcribe_error}")
-                
+
     except Exception as e:
         logging.error(f"[voice] Error processing browser audio: {e}", exc_info=True)
 
@@ -8020,49 +8203,76 @@ async def voice_command_handler(transcribed_text: str):
     Called when audio is transcribed
     """
     # Declare all globals FIRST, before any other code
-    global obs_client, last_project, last_thanks_name, last_thanks_time, last_thanks_style, state_lock, last_caption, last_caption_time, transcription_buffer
-    
+    global \
+        obs_client, \
+        last_project, \
+        last_thanks_name, \
+        last_thanks_time, \
+        last_thanks_style, \
+        state_lock, \
+        last_caption, \
+        last_caption_time, \
+        transcription_buffer
+
     try:
         from voice_commands import VoiceCommandParser
         from obs_controller import get_obs_controller
-        
+
         parser = VoiceCommandParser(GAMES_CONFIG)
-        
+
         # Update parser with current scenes from OBS controller
         try:
             from obs_controller import get_obs_controller
+
             obs_ctrl = await get_obs_controller()
-            logging.info(f"[voice] 🔍 OBS controller check: exists={obs_ctrl is not None}, connected={obs_ctrl.connected if obs_ctrl else None}, scenes_count={len(obs_ctrl.scenes) if obs_ctrl and hasattr(obs_ctrl, 'scenes') else 0}")
-            if obs_ctrl and obs_ctrl.connected and hasattr(obs_ctrl, 'scenes') and obs_ctrl.scenes:
+            logging.info(
+                f"[voice] 🔍 OBS controller check: exists={obs_ctrl is not None}, connected={obs_ctrl.connected if obs_ctrl else None}, scenes_count={len(obs_ctrl.scenes) if obs_ctrl and hasattr(obs_ctrl, 'scenes') else 0}"
+            )
+            if (
+                obs_ctrl
+                and obs_ctrl.connected
+                and hasattr(obs_ctrl, "scenes")
+                and obs_ctrl.scenes
+            ):
                 scenes_count = len(obs_ctrl.scenes)
                 parser.update_scenes(obs_ctrl.scenes)
-                logging.info(f"[voice] 🎬 Loaded {scenes_count} scenes into voice parser")
+                logging.info(
+                    f"[voice] 🎬 Loaded {scenes_count} scenes into voice parser"
+                )
                 # Log first few scene names for debugging
                 if scenes_count > 0:
-                    scene_names = [s.get('sceneName', '') for s in obs_ctrl.scenes[:5]]
+                    scene_names = [s.get("sceneName", "") for s in obs_ctrl.scenes[:5]]
                     logging.info(f"[voice] 🎬 Example scenes: {scene_names}")
             else:
-                logging.warning(f"[voice] ⚠️ OBS not ready (connected={obs_ctrl.connected if obs_ctrl else False}, scenes={len(obs_ctrl.scenes) if obs_ctrl and hasattr(obs_ctrl, 'scenes') else 0})")
+                logging.warning(
+                    f"[voice] ⚠️ OBS not ready (connected={obs_ctrl.connected if obs_ctrl else False}, scenes={len(obs_ctrl.scenes) if obs_ctrl and hasattr(obs_ctrl, 'scenes') else 0})"
+                )
         except Exception as obs_error:
-            logging.warning(f"[voice] Could not get OBS scenes: {obs_error}", exc_info=True)
-        
+            logging.warning(
+                f"[voice] Could not get OBS scenes: {obs_error}", exc_info=True
+            )
+
         result = parser.parse_command(transcribed_text, last_project)
-        
+
         if not result and not last_project:
             # No game context set, provide helpful debug
-            logging.warning(f"[voice] ⚠️ No game context (last_project={repr(last_project)}). Commands won't match without game context.")
-        
+            logging.warning(
+                f"[voice] ⚠️ No game context (last_project={repr(last_project)}). Commands won't match without game context."
+            )
+
         if result:
             # Clear buffer on successful command match
             transcription_buffer.clear()
-            
+
             target, identifier = result
-            
-            if target == 'thanks':
+
+            if target == "thanks":
                 # Thank you animation command - DISABLED
-                logging.info(f"[voice] 🙏 Thanks command detected but feature is disabled: '{identifier if identifier else 'generic'}'")
+                logging.info(
+                    f"[voice] 🙏 Thanks command detected but feature is disabled: '{identifier if identifier else 'generic'}'"
+                )
                 # name = identifier
-                # 
+                #
                 # # Check cooldown to prevent spam (minimum 10 seconds between thanks)
                 # current_time = time.time()
                 # if current_time - last_thanks_time < 10:
@@ -8075,7 +8285,7 @@ async def voice_command_handler(transcribed_text: str):
                 #         # Rotate through animation styles (0-3)
                 #         last_thanks_style = (last_thanks_style + 1) % 4
                 #     logging.info(f"[voice] ✅ Thank you animation triggered for: {last_thanks_name}")
-                
+
             elif target == 'scene':
                 # Scene switching command
                 logging.info(f"[voice] 🎬 Switching to scene: '{identifier}'")
@@ -8089,6 +8299,24 @@ async def voice_command_handler(transcribed_text: str):
                         logging.error(f"[voice] ❌ OBS not connected, cannot switch scene")
                 except Exception as scene_error:
                     logging.error(f"[voice] ❌ Failed to switch scene: {scene_error}")
+            
+            elif target == 'obs':
+                # OBS control command (markers, etc.)
+                logging.info(f"[voice] 🎛️ OBS action: '{identifier}'")
+                try:
+                    from obs_controller import get_obs_controller, handle_obs_action
+                    obs_ctrl = await get_obs_controller()
+                    if obs_ctrl and obs_ctrl.connected:
+                        success = await handle_obs_action(identifier, obs_ctrl)
+                        if success:
+                            logging.info(f"[voice] ✅ OBS action '{identifier}' executed")
+                        else:
+                            logging.warning(f"[voice] ⚠️ OBS action '{identifier}' failed")
+                    else:
+                        logging.error(f"[voice] ❌ OBS not connected, cannot execute action")
+                except Exception as obs_error:
+                    logging.error(f"[voice] ❌ Failed to execute OBS action: {obs_error}")
+            
             else:
                 # Game action command
                 game = target
@@ -8097,9 +8325,10 @@ async def voice_command_handler(transcribed_text: str):
                 await handle_action(action, game)
         else:
             logging.debug(f"[voice] No command matched in: '{transcribed_text}'")
-            
+
     except Exception as e:
         import traceback
+
         logging.error(f"[voice] Error handling voice command: {e}")
         logging.error(f"[voice] Traceback: {traceback.format_exc()}")
 
@@ -8109,32 +8338,34 @@ async def start_voice_listener_task():
     try:
         # Check if voice listening is enabled
         voice_enabled = os.getenv("VOICE_LISTENER_ENABLED", "false").lower() == "true"
-        
+
         if not voice_enabled:
-            logging.info("[voice] Continuous voice listener disabled (set VOICE_LISTENER_ENABLED=true to enable)")
+            logging.info(
+                "[voice] Continuous voice listener disabled (set VOICE_LISTENER_ENABLED=true to enable)"
+            )
             return
-        
+
         from voice_listener import ContinuousVoiceListener, set_voice_listener
-        
+
         # Create and register listener
         audio_port = int(os.getenv("VOICE_AUDIO_PORT", "5555"))
         listener = ContinuousVoiceListener(audio_port=audio_port)
         listener.set_command_callback(voice_command_handler)
         set_voice_listener(listener)
-        
+
         logging.info("[voice] 🎤 Starting continuous voice listener...")
         await listener.start_listening()
-        
+
     except Exception as e:
         logging.error(f"[voice] Failed to start voice listener: {e}", exc_info=True)
 
 
 async def main() -> None:
     global last_project
-    
+
     # Load YAML config (required) before anything else
     load_overlay_config()
-    
+
     # Initialize last_project with DEFAULT_PROJECT_NAME so UI shows game on first load
     last_project = DEFAULT_PROJECT_NAME
     logging.info(f"🎮 Initial game set to: {last_project}")
@@ -8174,15 +8405,15 @@ async def main() -> None:
         logging.info(
             "[discord] Bot token or channel id missing; meme/sound cache disabled."
         )
-    
+
     # ---- Start CTA scheduler ----
     logging.info("[cta] Starting CTA scheduler task...")
     asyncio.create_task(cta_scheduler_task())
-    
+
     # ---- Start OBS state poller ----
     logging.info("[obs] Starting OBS state poller task...")
     asyncio.create_task(obs_state_poller())
-    
+
     # ---- Start continuous voice listener ----
     asyncio.create_task(start_voice_listener_task())
 

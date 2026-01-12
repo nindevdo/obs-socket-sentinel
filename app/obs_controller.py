@@ -243,6 +243,92 @@ class OBSController:
             logger.error(f"Failed to stop recording: {e}")
             return False
     
+    async def start_replay_buffer(self) -> bool:
+        """Start replay buffer"""
+        if not self.connected or not self.client:
+            return False
+            
+        try:
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(None, self.client.start_replay_buffer)
+            logger.info("▶️ Started replay buffer")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to start replay buffer: {e}")
+            return False
+    
+    async def stop_replay_buffer(self) -> bool:
+        """Stop replay buffer"""
+        if not self.connected or not self.client:
+            return False
+            
+        try:
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(None, self.client.stop_replay_buffer)
+            logger.info("⏹️ Stopped replay buffer")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to stop replay buffer: {e}")
+            return False
+    
+    async def save_replay_buffer(self) -> bool:
+        """Save replay buffer"""
+        if not self.connected or not self.client:
+            return False
+            
+        try:
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(None, self.client.save_replay_buffer)
+            logger.info("💾 Saved replay buffer")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to save replay buffer: {e}")
+            return False
+    
+    async def create_stream_marker(self, description: str = "Highlight") -> bool:
+        """Create a stream marker (bookmark) and save replay buffer if available"""
+        if not self.connected or not self.client:
+            return False
+            
+        try:
+            import time
+            timestamp = time.strftime("%H:%M:%S")
+            
+            # Try to save replay buffer if it's running
+            replay_saved = False
+            try:
+                replay_status = self.client.get_replay_buffer_status()
+                if replay_status and replay_status.output_active:
+                    # Replay buffer is active, save it
+                    loop = asyncio.get_event_loop()
+                    await loop.run_in_executor(None, self.client.save_replay_buffer)
+                    logger.info(f"💾 Replay buffer saved at [{timestamp}]")
+                    replay_saved = True
+                else:
+                    logger.debug("Replay buffer not active, skipping save")
+            except Exception as replay_error:
+                logger.debug(f"Replay buffer not available: {replay_error}")
+            
+            # Check if streaming is active and log marker
+            stream_status = self.client.get_stream_status()
+            if stream_status and stream_status.output_active:
+                logger.info(f"🔖 Stream Marker: [{timestamp}] {description}")
+                
+                # In the future, this could integrate with Twitch/YouTube APIs for actual markers
+                # For now, we're logging the marker with timestamp
+                return True
+            elif replay_saved:
+                # Even if not streaming, if we saved replay, consider it a success
+                logger.info(f"🔖 Highlight saved: [{timestamp}] {description}")
+                return True
+            else:
+                logger.warning("Not streaming and replay buffer not active")
+                return False
+                
+        except Exception as e:
+            logger.error(f"Failed to create stream marker: {e}")
+            return False
+    
     def _get_scene_item_id(self, scene_name: str, source_name: str) -> int:
         """Get scene item ID for a source in a scene"""
         try:
@@ -307,6 +393,21 @@ class OBSController:
             'label': f"{'⏹️ Stop' if is_recording else '🔴 Start'} Record",
             'active': is_recording,
             'recording': is_recording
+        }
+        
+        # Replay buffer controls
+        # Note: We can't easily check replay buffer status without async, so these are always available
+        actions['controls']['obs_start_replay_buffer'] = {
+            'label': '▶️ Start Buffer',
+            'active': False
+        }
+        actions['controls']['obs_stop_replay_buffer'] = {
+            'label': '⏹️ Stop Buffer',
+            'active': False
+        }
+        actions['controls']['obs_save_replay'] = {
+            'label': '💾 Save Replay',
+            'active': False
         }
         
         return actions
@@ -391,5 +492,17 @@ async def handle_obs_action(action: str, obs_ctrl: OBSController) -> bool:
         return await obs_ctrl.start_recording()
     elif action == "obs_stop_record":
         return await obs_ctrl.stop_recording()
+    
+    # Replay buffer controls
+    elif action == "obs_start_replay_buffer":
+        return await obs_ctrl.start_replay_buffer()
+    elif action == "obs_stop_replay_buffer":
+        return await obs_ctrl.stop_replay_buffer()
+    elif action == "obs_save_replay":
+        return await obs_ctrl.save_replay_buffer()
+    
+    # Stream markers
+    elif action == "obs_mark_stream" or action == "obs_clip_that":
+        return await obs_ctrl.create_stream_marker("Highlight")
     
     return False

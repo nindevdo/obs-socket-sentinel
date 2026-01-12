@@ -17,6 +17,16 @@ class VoiceCommandParser:
         self.games_config = games_config
         self.scenes_list = []  # Will be updated dynamically from OBS
         
+        # OBS action shortcuts - map phrases to OBS commands
+        self.obs_shortcuts = {
+            "clip that": "obs_clip_that",
+            "clip this": "obs_clip_that",
+            "mark this": "obs_mark_stream",
+            "mark that": "obs_mark_stream",
+            "bookmark": "obs_mark_stream",
+            "highlight": "obs_mark_stream",
+        }
+        
         # Scene shortcuts - map common phrases to scene names to look for
         self.scene_shortcuts = {
             # BRB / Away
@@ -253,6 +263,7 @@ class VoiceCommandParser:
         Returns:
             (game, action) tuple for game actions
             ('scene', scene_name) tuple for scene switching
+            ('obs', action_name) tuple for OBS control actions
             ('thanks', name) tuple for thank you animations
             None if no match
         """
@@ -264,7 +275,13 @@ class VoiceCommandParser:
         if thanks_match is not None:
             return ('thanks', thanks_match)
         
-        # Check for scene shortcuts first (before full scene matching)
+        # Check for OBS action shortcuts (clip that, mark this, etc.)
+        for shortcut_phrase, obs_action in self.obs_shortcuts.items():
+            if shortcut_phrase in text:
+                logger.info(f"[voice] 🎬 OBS shortcut '{shortcut_phrase}' -> '{obs_action}'")
+                return ('obs', obs_action)
+        
+        # Check for scene shortcuts (before full scene matching)
         for shortcut_phrase, target_scenes in self.scene_shortcuts.items():
             if shortcut_phrase in text:
                 # Find the first matching scene from target_scenes
