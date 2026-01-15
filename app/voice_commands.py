@@ -25,6 +25,15 @@ class VoiceCommandParser:
             "mark that": "obs_mark_stream",
             "bookmark": "obs_mark_stream",
             "highlight": "obs_mark_stream",
+            
+            # Camera visibility controls
+            "camera on": "obs_camera_on",
+            "camera off": "obs_camera_off",
+            "toggle camera": "obs_camera_toggle",
+            "show camera": "obs_camera_on",
+            "hide camera": "obs_camera_off",
+            "cam on": "obs_camera_on",
+            "cam off": "obs_camera_off",
         }
         
         # Color filter shortcuts - phrases that trigger color filter switching

@@ -23,6 +23,8 @@ class OBSController:
         self.password = password
         self.client: Optional[ReqClient] = None
         self.connected = False
+        self._reconnect_task = None
+        self._should_reconnect = True
         
         # Cached OBS state
         self.scenes: List[Dict] = []
@@ -30,7 +32,7 @@ class OBSController:
         self.transitions: List[str] = []
         self.current_transition: str = ""
         self.sources: List[Dict] = []
-        
+    
     async def connect(self):
         """Connect to OBS WebSocket"""
         try:
@@ -40,6 +42,10 @@ class OBSController:
             
             # Fetch initial state
             await self.refresh_state()
+            
+            # Start auto-reconnect task if not already running
+            if not self._reconnect_task or self._reconnect_task.done():
+                self._reconnect_task = asyncio.create_task(self._auto_reconnect_loop())
             
         except Exception as e:
             logger.error(f"❌ Failed to connect to OBS: {e}")
@@ -52,6 +58,10 @@ class OBSController:
             
     async def disconnect(self):
         """Disconnect from OBS WebSocket"""
+        self._should_reconnect = False  # Stop auto-reconnect
+        if self._reconnect_task:
+            self._reconnect_task.cancel()
+        
         if self.client:
             try:
                 loop = asyncio.get_event_loop()
@@ -66,6 +76,55 @@ class OBSController:
             self.client.disconnect()
             self.client = None
             self.connected = False
+    
+    def _is_connection_alive(self) -> bool:
+        """Check if the connection is actually alive by testing it"""
+        if not self.client or not self.connected:
+            return False
+        
+        try:
+            # Try a simple request to check if connection is alive
+            self.client.get_version()
+            return True
+        except Exception as e:
+            logger.debug(f"Connection check failed: {e}")
+            return False
+    
+    async def _auto_reconnect_loop(self):
+        """Background task that monitors connection and reconnects if needed"""
+        logger.info("🔄 Auto-reconnect monitoring started")
+        
+        while self._should_reconnect:
+            try:
+                await asyncio.sleep(10)  # Check every 10 seconds
+                
+                if self.connected and not self._is_connection_alive():
+                    logger.warning("⚠️ OBS connection lost, attempting to reconnect...")
+                    self.connected = False
+                    
+                    # Clean up dead connection
+                    try:
+                        if self.client:
+                            self.client = None
+                    except:
+                        pass
+                    
+                    # Try to reconnect
+                    try:
+                        loop = asyncio.get_event_loop()
+                        await loop.run_in_executor(None, self._connect_sync)
+                        await self.refresh_state()
+                        logger.info(f"✅ Reconnected to OBS at {self.host}:{self.port}")
+                    except Exception as e:
+                        logger.error(f"❌ Reconnection failed: {e}")
+                        await asyncio.sleep(5)  # Wait before next retry
+                        
+            except asyncio.CancelledError:
+                logger.info("Auto-reconnect task cancelled")
+                break
+            except Exception as e:
+                logger.error(f"Error in auto-reconnect loop: {e}")
+                await asyncio.sleep(5)
     
     async def refresh_state(self):
         """Refresh cached OBS state (scenes, sources, transitions)"""
@@ -184,6 +243,50 @@ class OBSController:
             return True
         except Exception as e:
             logger.error(f"Failed to toggle source {source_name}: {e}")
+            return False
+    
+    async def enable_source(self, scene_name: str, source_name: str) -> bool:
+        """Enable (show) a source in a scene"""
+        if not self.connected or not self.client:
+            logger.error("OBS not connected")
+            return False
+            
+        try:
+            loop = asyncio.get_event_loop()
+            item_id = await loop.run_in_executor(None, self._get_scene_item_id, scene_name, source_name)
+            if item_id == 0:
+                return False
+            
+            await loop.run_in_executor(None, lambda: self.client.set_scene_item_enabled(
+                scene_name, item_id, True
+            ))
+            
+            logger.info(f"👁️ Enabled {source_name} in {scene_name}")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to enable source {source_name}: {e}")
+            return False
+    
+    async def disable_source(self, scene_name: str, source_name: str) -> bool:
+        """Disable (hide) a source in a scene"""
+        if not self.connected or not self.client:
+            logger.error("OBS not connected")
+            return False
+            
+        try:
+            loop = asyncio.get_event_loop()
+            item_id = await loop.run_in_executor(None, self._get_scene_item_id, scene_name, source_name)
+            if item_id == 0:
+                return False
+            
+            await loop.run_in_executor(None, lambda: self.client.set_scene_item_enabled(
+                scene_name, item_id, False
+            ))
+            
+            logger.info(f"👁️ Disabled {source_name} in {scene_name}")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to disable source {source_name}: {e}")
             return False
     
     async def start_streaming(self) -> bool:
@@ -580,7 +683,7 @@ class OBSController:
             
             success = False
             
-            # Try to save replay buffer if it's running
+            # ALWAYS try to save replay buffer if it's running (regardless of streaming)
             replay_saved = False
             try:
                 replay_status = self.client.get_replay_buffer_status()
@@ -596,12 +699,18 @@ class OBSController:
             except Exception as replay_error:
                 logger.debug(f"Replay buffer not available: {replay_error}")
             
-            # Check if streaming is active
-            stream_status = self.client.get_stream_status()
-            if stream_status and stream_status.output_active:
+            # Check if streaming is active for Twitch actions
+            is_streaming = False
+            try:
+                stream_status = self.client.get_stream_status()
+                is_streaming = stream_status and stream_status.output_active
+            except Exception as stream_error:
+                logger.debug(f"Could not check stream status: {stream_error}")
+            
+            if is_streaming:
                 logger.info(f"🔖 Stream Marker: [{timestamp}] {description}")
                 
-                # Create Twitch stream marker
+                # Try Twitch stream marker
                 try:
                     marker_result = await create_twitch_stream_marker(description)
                     if marker_result:
@@ -612,7 +721,7 @@ class OBSController:
                 except Exception as twitch_error:
                     logger.error(f"Failed to create Twitch marker: {twitch_error}")
                 
-                # Create Twitch clip
+                # Try Twitch clip
                 try:
                     clip_result = await create_twitch_clip(description)
                     if clip_result and "edit_url" in clip_result:
@@ -623,14 +732,15 @@ class OBSController:
                 except Exception as clip_error:
                     logger.error(f"Failed to create Twitch clip: {clip_error}")
                 
-                return success
-            elif replay_saved:
-                # Even if not streaming, if we saved replay, consider it a success
-                logger.info(f"🔖 Highlight saved: [{timestamp}] {description}")
-                return True
-            else:
-                logger.warning("Not streaming and replay buffer not active")
-                return False
+                # TODO: Add YouTube clip/marker support here when available
+            
+            # Report result
+            if replay_saved and not is_streaming:
+                logger.info(f"🔖 Highlight saved to replay buffer: [{timestamp}] {description}")
+            elif not success:
+                logger.warning("❌ No actions succeeded (not streaming, no replay buffer)")
+            
+            return success
                 
         except Exception as e:
             logger.error(f"Failed to create stream marker: {e}")
@@ -811,5 +921,36 @@ async def handle_obs_action(action: str, obs_ctrl: OBSController, description: s
     # Stream markers - now with custom description
     elif action == "obs_mark_stream" or action == "obs_clip_that":
         return await obs_ctrl.create_stream_marker(description)
+    
+    # Camera visibility controls
+    elif action == "obs_camera_on":
+        camera_source = os.getenv("OBS_CAMERA_SOURCE", "videocamera")
+        current_scene = obs_ctrl.current_scene
+        if current_scene:
+            result = await obs_ctrl.enable_source(current_scene, camera_source)
+            if result:
+                logger.info(f"📹 Camera turned ON")
+            return result
+        return False
+    
+    elif action == "obs_camera_off":
+        camera_source = os.getenv("OBS_CAMERA_SOURCE", "videocamera")
+        current_scene = obs_ctrl.current_scene
+        if current_scene:
+            result = await obs_ctrl.disable_source(current_scene, camera_source)
+            if result:
+                logger.info(f"📹 Camera turned OFF")
+            return result
+        return False
+    
+    elif action == "obs_camera_toggle":
+        camera_source = os.getenv("OBS_CAMERA_SOURCE", "videocamera")
+        current_scene = obs_ctrl.current_scene
+        if current_scene:
+            result = await obs_ctrl.toggle_source_visibility(current_scene, camera_source)
+            if result:
+                logger.info(f"📹 Camera toggled")
+            return result
+        return False
     
     return False

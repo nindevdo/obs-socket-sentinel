@@ -3677,28 +3677,24 @@ async def video_has_audio(video_path: str) -> bool:
     Returns True if audio is present, False otherwise.
     """
     try:
-        import subprocess
-
-        result = subprocess.run(
-            [
-                "ffprobe",
-                "-v",
-                "quiet",
-                "-select_streams",
-                "a",
-                "-show_entries",
-                "stream=codec_type",
-                "-of",
-                "csv=p=0",
-                video_path,
-            ],
-            capture_output=True,
-            text=True,
-            timeout=30,
+        proc = await asyncio.create_subprocess_exec(
+            "ffprobe",
+            "-v",
+            "quiet",
+            "-select_streams",
+            "a",
+            "-show_entries",
+            "stream=codec_type",
+            "-of",
+            "csv=p=0",
+            video_path,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
         )
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
 
         # If ffprobe finds audio streams, it will output "audio"
-        return "audio" in result.stdout
+        return b"audio" in stdout
     except Exception as e:
         logging.warning(f"❗ [audio_detect] Error checking audio in {video_path}: {e}")
         return False  # Assume no audio if detection fails
@@ -3720,30 +3716,27 @@ async def get_video_duration_from_file(file_path: str) -> Optional[float]:
     logging.debug(f"🔍 [video_duration] Checking duration for file: {file_path}")
     try:
         # Try ffprobe first (more reliable for local files)
-        import subprocess
-
-        result = subprocess.run(
-            [
-                "ffprobe",
-                "-v",
-                "quiet",
-                "-show_entries",
-                "format=duration",
-                "-of",
-                "default=noprint_wrappers=1:nokey=1",
-                file_path,
-            ],
-            capture_output=True,
-            text=True,
-            timeout=10,
+        proc = await asyncio.create_subprocess_exec(
+            "ffprobe",
+            "-v",
+            "quiet",
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "default=noprint_wrappers=1:nokey=1",
+            file_path,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
         )
+        
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=10)
 
         logging.debug(
-            f"🔍 [video_duration] ffprobe result for {file_path}: ReturnCode={result.returncode}, Stdout='{result.stdout.strip()}', Stderr='{result.stderr.strip()}'"
+            f"🔍 [video_duration] ffprobe result for {file_path}: ReturnCode={proc.returncode}, Stdout='{stdout.decode().strip()}', Stderr='{stderr.decode().strip()}'"
         )
 
-        if result.returncode == 0:
-            duration_str = result.stdout.strip()
+        if proc.returncode == 0:
+            duration_str = stdout.decode().strip()
             if duration_str:
                 duration = float(duration_str)
                 if duration > 0:
@@ -8079,10 +8072,14 @@ async def process_browser_audio_chunk(pcm_data: bytes):
 
         # Check if audio has sufficient amplitude (ignore very quiet audio/noise)
         rms_amplitude = np.sqrt(np.mean(audio_float**2))
-        logging.debug(f"[voice] Audio RMS amplitude: {rms_amplitude:.4f}")
-        if rms_amplitude < 0.01:  # Threshold for silence (adjust as needed)
-            logging.debug(f"[voice] Ignoring quiet audio (RMS: {rms_amplitude:.4f})")
+        
+        # Always log amplitude to diagnose threshold issues
+        logging.info(f"[voice] 🔊 Audio RMS: {rms_amplitude:.6f} (threshold: 0.002)")
+        
+        if rms_amplitude < 0.002:  # Lower threshold for quieter microphones
             return
+        
+        logging.info(f"[voice] ✅ Audio passed threshold, queuing for transcription")
 
         # Resample from browser sample rate (usually 48kHz) to 16kHz for Whisper
         # Use simple decimation for speed (take every Nth sample)
