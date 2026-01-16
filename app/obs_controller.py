@@ -577,22 +577,19 @@ class OBSController:
             logger.error(f"Failed to get hotkey list: {e}")
             return []
     
+    @handle_obs_disconnect
     async def trigger_hotkey(self, hotkey_name: str) -> bool:
         """Trigger an OBS hotkey by name"""
         if not self.connected or not self.client:
             return False
         
-        try:
-            loop = asyncio.get_event_loop()
-            await loop.run_in_executor(
-                None,
-                lambda: self.client.trigger_hotkey_by_name(hotkey_name)
-            )
-            logger.info(f"⌨️ Triggered hotkey: '{hotkey_name}'")
-            return True
-        except Exception as e:
-            logger.error(f"Failed to trigger hotkey '{hotkey_name}': {e}")
-            return False
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(
+            None,
+            lambda: self.client.trigger_hotkey_by_name(hotkey_name)
+        )
+        logger.info(f"⌨️ Triggered hotkey: '{hotkey_name}'")
+        return True
     
     async def find_hotkey_fuzzy(self, search_term: str) -> str:
         """Find hotkey name using fuzzy matching"""

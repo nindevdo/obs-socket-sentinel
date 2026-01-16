@@ -879,10 +879,16 @@
                 <h2>🔐 Authentication Required</h2>
                 <p>Please enter your access token to use the Action UI</p>
             </div>
-            <div class="auth-form">
-                <input type="password" id="tokenInput" placeholder="Enter your SS_TOKEN" autocomplete="off">
-                <button id="authSubmit" class="auth-btn">Access UI</button>
-            </div>
+            <form class="auth-form" id="authForm" autocomplete="on">
+                <input 
+                    type="password" 
+                    id="tokenInput" 
+                    name="password"
+                    placeholder="Enter your SS_TOKEN" 
+                    autocomplete="current-password"
+                    required>
+                <button type="submit" id="authSubmit" class="auth-btn">Access UI</button>
+            </form>
             <div id="authError" class="auth-error" style="display: none;">
                 ❌ Invalid token. Please try again.
             </div>
@@ -1021,9 +1027,22 @@
                     }
                 };
                 
-                authSubmit.addEventListener('click', attemptAuth);
+                // Handle form submit (for password manager support)
+                const authForm = document.getElementById('authForm');
+                authForm.addEventListener('submit', (e) => {
+                    e.preventDefault();
+                    attemptAuth();
+                });
+                
+                // Deprecated: Keep for backwards compatibility but form submit is preferred
+                authSubmit.addEventListener('click', (e) => {
+                    e.preventDefault();
+                    attemptAuth();
+                });
+                
                 tokenInput.addEventListener('keypress', (e) => {
                     if (e.key === 'Enter') {
+                        e.preventDefault();
                         attemptAuth();
                     }
                 });
