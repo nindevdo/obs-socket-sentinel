@@ -280,6 +280,13 @@ last_project: str = ""  # last project/game key used for overlay
 video_duration_cache: Dict[str, float] = {}  # file_path -> duration in seconds
 audio_duration_cache: Dict[str, float] = {}  # file_path -> duration in seconds
 
+# Voice command rate limiting and deduplication
+last_obs_command_time: float = 0.0
+last_command_text: str = ""
+last_command_time: float = 0.0
+OBS_COMMAND_COOLDOWN: float = 0.5  # Minimum 500ms between OBS commands
+COMMAND_DEDUP_WINDOW: float = 3.0  # Ignore duplicate commands within 3 seconds
+
 # Action history for undo functionality
 action_history: List[Dict[str, Any]] = []  # List of action records for undo
 MAX_UNDO_HISTORY = 50  # Maximum number of actions to keep in undo history
@@ -7975,6 +7982,18 @@ async def obs_state_poller():
     """
     await asyncio.sleep(5)  # Wait for OBS to connect
     logging.info("[obs] OBS state poller started")
+    
+    # Initialize OBS controller on startup
+    try:
+        from obs_controller import get_obs_controller
+        logging.info("[obs] Initializing OBS controller...")
+        obs_ctrl = await get_obs_controller()
+        if obs_ctrl:
+            logging.info(f"[obs] OBS controller initialized: connected={obs_ctrl.connected}")
+        else:
+            logging.error("[obs] Failed to create OBS controller")
+    except Exception as init_error:
+        logging.error(f"[obs] Failed to initialize OBS controller: {init_error}", exc_info=True)
 
     while True:
         try:
@@ -7983,7 +8002,9 @@ async def obs_state_poller():
             obs_ctrl = await get_obs_controller()
             if obs_ctrl and obs_ctrl.connected:
                 await obs_ctrl.refresh_state()
-            await asyncio.sleep(2)  # Poll every 2 seconds
+            elif obs_ctrl and not obs_ctrl.connected:
+                logging.debug("[obs] OBS disconnected, auto-reconnect will handle it")
+            await asyncio.sleep(10)  # Poll every 10 seconds (reduced load)
         except Exception as e:
             logging.debug(f"[obs] State poll error: {e}")
             await asyncio.sleep(5)
@@ -8074,9 +8095,9 @@ async def process_browser_audio_chunk(pcm_data: bytes):
         rms_amplitude = np.sqrt(np.mean(audio_float**2))
         
         # Always log amplitude to diagnose threshold issues
-        logging.info(f"[voice] 🔊 Audio RMS: {rms_amplitude:.6f} (threshold: 0.002)")
+        logging.info(f"[voice] 🔊 Audio RMS: {rms_amplitude:.6f} (threshold: 0.01)")
         
-        if rms_amplitude < 0.002:  # Lower threshold for quieter microphones
+        if rms_amplitude < 0.01:  # Increased from 0.002 to reduce false positives
             return
         
         logging.info(f"[voice] ✅ Audio passed threshold, queuing for transcription")
@@ -8102,9 +8123,9 @@ async def process_browser_audio_chunk(pcm_data: bytes):
                     language="en",
                     vad_filter=True,  # Enable VAD to filter out non-speech audio
                     vad_parameters={
-                        "threshold": 0.5,  # Higher = more strict (0.0-1.0)
-                        "min_speech_duration_ms": 250,  # Minimum speech duration
-                        "min_silence_duration_ms": 500,  # Minimum silence to split
+                        "threshold": 0.5,  # Increased from 0.3 to be less sensitive
+                        "min_speech_duration_ms": 250,  # Increased from 100 to require more speech
+                        "min_silence_duration_ms": 500,  # Increased from 300 for better separation
                     },
                 )
 
@@ -8261,9 +8282,24 @@ async def voice_command_handler(transcribed_text: str):
         state_lock, \
         last_caption, \
         last_caption_time, \
-        transcription_buffer
+        transcription_buffer, \
+        last_command_text, \
+        last_command_time
 
     try:
+        import time
+        
+        # Deduplication: ignore duplicate commands within 3 seconds
+        now = time.time()
+        if transcribed_text.strip().lower() == last_command_text.strip().lower():
+            if now - last_command_time < COMMAND_DEDUP_WINDOW:
+                logging.debug(f"[voice] 🔇 Ignoring duplicate command within {COMMAND_DEDUP_WINDOW}s: '{transcribed_text}'")
+                return
+        
+        # Update last command tracking
+        last_command_text = transcribed_text
+        last_command_time = now
+        
         from voice_commands import VoiceCommandParser
         from obs_controller import get_obs_controller
 
@@ -8352,6 +8388,16 @@ async def voice_command_handler(transcribed_text: str):
             elif target == 'obs':
                 # OBS control command (markers, etc.)
                 logging.info(f"[voice] 🎛️ OBS action: '{identifier}'")
+                
+                # Rate limiting to prevent OBS crashes
+                global last_obs_command_time
+                import time
+                now = time.time()
+                if now - last_obs_command_time < OBS_COMMAND_COOLDOWN:
+                    cooldown_remaining = OBS_COMMAND_COOLDOWN - (now - last_obs_command_time)
+                    logging.debug(f"[voice] ⏱️ Rate limited, waiting {cooldown_remaining:.2f}s")
+                    await asyncio.sleep(cooldown_remaining)
+                
                 try:
                     from obs_controller import get_obs_controller, handle_obs_action
                     obs_ctrl = await get_obs_controller()
@@ -8363,6 +8409,8 @@ async def voice_command_handler(transcribed_text: str):
                             logging.info(f"[voice] 📝 Extracted context: '{description}'")
                         
                         success = await handle_obs_action(identifier, obs_ctrl, description)
+                        last_obs_command_time = time.time()  # Update after execution
+                        
                         if success:
                             logging.info(f"[voice] ✅ OBS action '{identifier}' executed")
                         else:
@@ -8371,6 +8419,33 @@ async def voice_command_handler(transcribed_text: str):
                         logging.error(f"[voice] ❌ OBS not connected, cannot execute action")
                 except Exception as obs_error:
                     logging.error(f"[voice] ❌ Failed to execute OBS action: {obs_error}")
+            
+            elif target == 'hotkey':
+                # OBS hotkey triggering
+                hotkey_name = identifier
+                logging.info(f"[voice] ⌨️ Triggering hotkey: '{hotkey_name}'")
+                try:
+                    from obs_controller import get_obs_controller
+                    obs_ctrl = await get_obs_controller()
+                    if obs_ctrl and obs_ctrl.connected:
+                        # First try exact hotkey name
+                        success = await obs_ctrl.trigger_hotkey(hotkey_name)
+                        
+                        # If that failed, try fuzzy matching
+                        if not success:
+                            matched_hotkey = await obs_ctrl.find_hotkey_fuzzy(hotkey_name)
+                            if matched_hotkey:
+                                logging.info(f"[voice] 🔍 Found hotkey match: '{matched_hotkey}'")
+                                success = await obs_ctrl.trigger_hotkey(matched_hotkey)
+                        
+                        if success:
+                            logging.info(f"[voice] ✅ Hotkey triggered")
+                        else:
+                            logging.warning(f"[voice] ⚠️ Hotkey '{hotkey_name}' not found or failed")
+                    else:
+                        logging.error(f"[voice] ❌ OBS not connected, cannot trigger hotkey")
+                except Exception as hotkey_error:
+                    logging.error(f"[voice] ❌ Failed to trigger hotkey: {hotkey_error}")
             
             elif target == 'color':
                 # Color filter switching command

@@ -29,16 +29,21 @@ services:
       - OBS_PASSWORD=${OBS_PASSWORD}
       - OBS_CAMERA_SOURCE=${OBS_CAMERA_SOURCE:-videocamera}
       - OBS_COLOR_FILTER=${OBS_COLOR_FILTER:-gb-color}
+      - OBS_MIC_SOURCE=${OBS_MIC_SOURCE:-Mic/Aux}
+      - OBS_DESKTOP_SOURCE=${OBS_DESKTOP_SOURCE:-Desktop Audio}
       - VOICE_LISTENER_ENABLED=${VOICE_LISTENER_ENABLED:-false}
       - VOICE_AUDIO_PORT=${VOICE_AUDIO_PORT:-5555}
       - VOICE_WS_HOST=${VOICE_WS_HOST:-}
       - TWITCH_API_CLIENT_ID=${TWITCH_API_CLIENT_ID}
       - TWITCH_API_CLIENT_SECRET=${TWITCH_API_CLIENT_SECRET}
       - TWITCH_BROADCASTER_ID=${TWITCH_BROADCASTER_ID}
+      - HF_HOME=/models/huggingface
+      - XDG_CACHE_HOME=/models/cache
     volumes:
       - ./_data/markers:/markers:rw
       - ./_data/discord:/discord:rw
       - ./_data/sounds:/sounds:ro
+      - ./_data/whisper-models:/models:rw
     ports:
       - ${SOCKET_SENTINEL_PORT:-8088}:8088
       - ${VOICE_AUDIO_PORT:-5555}:5555/udp

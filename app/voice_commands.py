@@ -34,6 +34,73 @@ class VoiceCommandParser:
             "hide camera": "obs_camera_off",
             "cam on": "obs_camera_on",
             "cam off": "obs_camera_off",
+            
+            # Virtual camera controls
+            "virtual camera on": "obs_vcam_start",
+            "virtual camera off": "obs_vcam_stop",
+            "virtual cam on": "obs_vcam_start",
+            "virtual cam off": "obs_vcam_stop",
+            "start virtual camera": "obs_vcam_start",
+            "stop virtual camera": "obs_vcam_stop",
+            "toggle virtual camera": "obs_vcam_toggle",
+            "toggle virtual cam": "obs_vcam_toggle",
+            
+            # Audio controls - microphone
+            "mute mic": "obs_mute_mic",
+            "unmute mic": "obs_unmute_mic",
+            "mute microphone": "obs_mute_mic",
+            "unmute microphone": "obs_unmute_mic",
+            "toggle mic": "obs_toggle_mic",
+            "toggle microphone": "obs_toggle_mic",
+            
+            # Audio controls - desktop
+            "mute desktop": "obs_mute_desktop",
+            "unmute desktop": "obs_unmute_desktop",
+            "mute desktop audio": "obs_mute_desktop",
+            "unmute desktop audio": "obs_unmute_desktop",
+            "toggle desktop": "obs_toggle_desktop",
+            "toggle desktop audio": "obs_toggle_desktop",
+            
+            # Replay buffer controls
+            "start replay buffer": "obs_start_replay_buffer",
+            "start replay": "obs_start_replay_buffer",
+            "stop replay buffer": "obs_stop_replay_buffer",
+            "stop replay": "obs_stop_replay_buffer",
+            "save replay": "obs_save_replay",
+            "save replay buffer": "obs_save_replay",
+            
+            # Streaming controls
+            "start stream": "obs_start_stream",
+            "start streaming": "obs_start_stream",
+            "stop stream": "obs_stop_stream",
+            "stop streaming": "obs_stop_stream",
+            "go live": "obs_start_stream",
+            "end stream": "obs_stop_stream",
+            
+            # Recording controls
+            "start recording": "obs_start_record",
+            "start record": "obs_start_record",
+            "stop recording": "obs_stop_record",
+            "stop record": "obs_stop_record",
+            
+            # Common OBS hotkeys - these map to common hotkey names
+            "push to talk": "obs_hotkey_push_to_talk",
+            "push to mute": "obs_hotkey_push_to_mute",
+            "screenshot": "obs_hotkey_screenshot",
+            "take screenshot": "obs_hotkey_screenshot",
+        }
+        
+        # Hotkey mappings - common phrases to OBS hotkey names
+        # These are typical OBS hotkey names; actual names may vary per setup
+        self.hotkey_mappings = {
+            "push to talk": "OBSBasic.PushToTalk",
+            "push to mute": "OBSBasic.PushToMute", 
+            "screenshot": "OBSBasic.Screenshot",
+            "studio mode": "OBSBasic.TogglePreviewProgram",
+            "fullscreen": "OBSBasic.Fullscreen",
+            "always on top": "OBSBasic.AlwaysOnTop",
+            "projector": "OBSBasic.OpenProjector",
+            # Add more as needed
         }
         
         # Color filter shortcuts - phrases that trigger color filter switching
@@ -332,6 +399,8 @@ class VoiceCommandParser:
             (game, action) tuple for game actions
             ('scene', scene_name) tuple for scene switching
             ('obs', action_name) tuple for OBS control actions
+            ('hotkey', hotkey_name) tuple for OBS hotkey triggering
+            ('color', color_name) tuple for color filter switching
             ('thanks', name) tuple for thank you animations
             None if no match
         """
@@ -343,10 +412,32 @@ class VoiceCommandParser:
         if thanks_match is not None:
             return ('thanks', thanks_match)
         
+        # Check for "trigger [hotkey]" or "press [hotkey]" pattern
+        import re
+        trigger_patterns = [
+            r'\btrigger\s+(.+)',
+            r'\bpress\s+(.+)',
+            r'\bactivate\s+(.+)',
+            r'\bhit\s+(.+)',
+        ]
+        
+        for pattern in trigger_patterns:
+            match = re.search(pattern, text)
+            if match:
+                hotkey_phrase = match.group(1).strip()
+                # Check if it's in our known mappings
+                if hotkey_phrase in self.hotkey_mappings:
+                    hotkey_name = self.hotkey_mappings[hotkey_phrase]
+                    logger.info(f"[voice] ⌨️ Hotkey command 'trigger {hotkey_phrase}' -> '{hotkey_name}'")
+                    return ('hotkey', hotkey_name)
+                else:
+                    # Use fuzzy matching to find the hotkey
+                    logger.info(f"[voice] ⌨️ Hotkey command 'trigger {hotkey_phrase}' (will fuzzy match)")
+                    return ('hotkey', hotkey_phrase)
+        
         # Check for color filter commands (before OBS actions)
         # Use word boundaries to avoid false matches (e.g., "red" in "tired")
         # Sort by length (longest first) to prioritize specific phrases over single words
-        import re
         sorted_color_shortcuts = sorted(self.color_shortcuts.items(), key=lambda x: len(x[0]), reverse=True)
         for color_phrase, color_name in sorted_color_shortcuts:
             # Create pattern with word boundaries
@@ -357,7 +448,9 @@ class VoiceCommandParser:
                 return ('color', color_name)
         
         # Check for OBS action shortcuts (clip that, mark this, etc.)
-        for shortcut_phrase, obs_action in self.obs_shortcuts.items():
+        # Sort by length (longest first) to prioritize multi-word commands
+        sorted_obs_shortcuts = sorted(self.obs_shortcuts.items(), key=lambda x: len(x[0]), reverse=True)
+        for shortcut_phrase, obs_action in sorted_obs_shortcuts:
             if shortcut_phrase in text:
                 logger.info(f"[voice] 🎬 OBS shortcut '{shortcut_phrase}' -> '{obs_action}'")
                 return ('obs', obs_action)

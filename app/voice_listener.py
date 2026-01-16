@@ -56,16 +56,23 @@ class ContinuousVoiceListener:
         """Initialize Whisper model with GPU support"""
         global whisper_model
         from faster_whisper import WhisperModel
+        import os
         
         # Use small model for better accuracy (still fast on GPU)
         # base = fastest but least accurate
         # small = good balance of speed/accuracy
         # medium/large = most accurate but slower
-        logger.info("[voice] Initializing Whisper model on GPU...")
+        
+        # Set cache directory to persistent volume
+        cache_dir = os.getenv("HF_HOME", "/models/huggingface")
+        os.makedirs(cache_dir, exist_ok=True)
+        
+        logger.info(f"[voice] Initializing Whisper model on GPU (cache: {cache_dir})...")
         whisper_model = WhisperModel(
             "small",
             device="cuda",
-            compute_type="float16"
+            compute_type="float16",
+            download_root=cache_dir  # Cache models here
         )
         self.whisper_model = whisper_model
         logger.info("[voice] ✅ Whisper model loaded on GPU")

@@ -8,11 +8,33 @@ import asyncio
 import logging
 import os
 from typing import Dict, List, Optional, Any
+from functools import wraps
 from obsws_python import ReqClient
 from obsws_python.error import OBSSDKError
 from twitch_api import create_twitch_stream_marker, create_twitch_clip
 
 logger = logging.getLogger(__name__)
+
+def handle_obs_disconnect(func):
+    """Decorator to handle OBS disconnections gracefully"""
+    @wraps(func)
+    async def wrapper(self, *args, **kwargs):
+        try:
+            return await func(self, *args, **kwargs)
+        except Exception as e:
+            error_msg = str(e).lower()
+            # Check for connection errors
+            if any(err in error_msg for err in ['broken pipe', 'connection refused', 'connection reset', 
+                                                  'connection lost', 'errno 32', 'errno 104', 'errno 111']):
+                logger.warning(f"⚠️ OBS connection lost during {func.__name__}: {e}")
+                self.connected = False
+                self.client = None
+                return False
+            else:
+                # Log other errors but don't crash
+                logger.error(f"❌ Error in {func.__name__}: {e}")
+                return False
+    return wrapper
 
 class OBSController:
     """Manages connection to OBS WebSocket and provides control methods"""
@@ -37,24 +59,38 @@ class OBSController:
         """Connect to OBS WebSocket"""
         try:
             loop = asyncio.get_event_loop()
-            await loop.run_in_executor(None, self._connect_sync)
+            # Add 5 second timeout to prevent hanging
+            await asyncio.wait_for(
+                loop.run_in_executor(None, self._connect_sync),
+                timeout=5.0
+            )
             logger.info(f"✅ Connected to OBS WebSocket at {self.host}:{self.port}")
             
             # Fetch initial state
             await self.refresh_state()
             
-            # Start auto-reconnect task if not already running
-            if not self._reconnect_task or self._reconnect_task.done():
-                self._reconnect_task = asyncio.create_task(self._auto_reconnect_loop())
-            
+        except asyncio.TimeoutError:
+            logger.error(f"❌ Connection to OBS timed out after 5 seconds ({self.host}:{self.port})")
+            self.connected = False
         except Exception as e:
             logger.error(f"❌ Failed to connect to OBS: {e}")
             self.connected = False
+        
+        # ALWAYS start auto-reconnect task (even if initial connection failed)
+        if not self._reconnect_task or self._reconnect_task.done():
+            self._reconnect_task = asyncio.create_task(self._auto_reconnect_loop())
+            logger.info("🔄 Auto-reconnect task started")
     
     def _connect_sync(self):
         """Synchronous connect for obsws-python"""
-        self.client = ReqClient(host=self.host, port=self.port, password=self.password)
-        self.connected = True
+        try:
+            logger.info(f"🔌 Attempting ReqClient connection to {self.host}:{self.port}...")
+            self.client = ReqClient(host=self.host, port=self.port, password=self.password, timeout=3)
+            self.connected = True
+            logger.info(f"✅ ReqClient connected successfully")
+        except Exception as e:
+            logger.error(f"❌ ReqClient connection failed: {e}", exc_info=True)
+            raise
             
     async def disconnect(self):
         """Disconnect from OBS WebSocket"""
@@ -98,6 +134,20 @@ class OBSController:
             try:
                 await asyncio.sleep(10)  # Check every 10 seconds
                 
+                # If never connected, try initial connection
+                if not self.connected and not self.client:
+                    logger.info("⚠️ OBS not yet connected, attempting initial connection...")
+                    try:
+                        loop = asyncio.get_event_loop()
+                        await loop.run_in_executor(None, self._connect_sync)
+                        await self.refresh_state()
+                        logger.info(f"✅ Connected to OBS at {self.host}:{self.port}")
+                    except Exception as e:
+                        logger.debug(f"❌ Connection attempt failed: {e}")
+                        await asyncio.sleep(5)
+                        continue
+                
+                # If was connected but lost connection, reconnect
                 if self.connected and not self._is_connection_alive():
                     logger.warning("⚠️ OBS connection lost, attempting to reconnect...")
                     self.connected = False
@@ -140,6 +190,18 @@ class OBSController:
             self.current_transition = state['current_transition']
             self.sources = state['sources']
             logger.info(f"📡 OBS State: {len(self.scenes)} scenes, {len(self.transitions)} transitions, {len(self.sources)} sources")
+            
+            # Log available hotkeys on first connection (for debugging/setup)
+            if not hasattr(self, '_hotkeys_logged'):
+                hotkeys = await self.get_hotkey_list()
+                if hotkeys:
+                    logger.info(f"⌨️ Available OBS hotkeys ({len(hotkeys)} total):")
+                    # Log first 20 for reference
+                    for i, hotkey in enumerate(hotkeys[:20]):
+                        logger.info(f"  - {hotkey}")
+                    if len(hotkeys) > 20:
+                        logger.info(f"  ... and {len(hotkeys) - 20} more")
+                self._hotkeys_logged = True
             
         except Exception as e:
             # Check if it's a broken pipe error - attempt reconnection
@@ -186,36 +248,30 @@ class OBSController:
             'sources': sources
         }
     
+    @handle_obs_disconnect
     async def switch_scene(self, scene_name: str) -> bool:
         """Switch to a specific scene"""
         if not self.connected or not self.client:
             logger.error("OBS not connected")
             return False
             
-        try:
-            loop = asyncio.get_event_loop()
-            await loop.run_in_executor(None, lambda: self.client.set_current_program_scene(scene_name))
-            self.current_scene = scene_name
-            logger.info(f"🎬 Switched to scene: {scene_name}")
-            return True
-        except Exception as e:
-            logger.error(f"Failed to switch scene to {scene_name}: {e}")
-            return False
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, lambda: self.client.set_current_program_scene(scene_name))
+        self.current_scene = scene_name
+        logger.info(f"🎬 Switched to scene: {scene_name}")
+        return True
     
+    @handle_obs_disconnect
     async def set_transition(self, transition_name: str) -> bool:
         """Set the current scene transition"""
         if not self.connected or not self.client:
             logger.error("OBS not connected")
             return False
             
-        try:
-            loop = asyncio.get_event_loop()
-            await loop.run_in_executor(None, lambda: self.client.set_current_scene_transition(transition_name))
-            logger.info(f"✨ Set transition: {transition_name}")
-            return True
-        except Exception as e:
-            logger.error(f"Failed to set transition to {transition_name}: {e}")
-            return False
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, lambda: self.client.set_current_scene_transition(transition_name))
+        logger.info(f"✨ Set transition: {transition_name}")
+        return True
     
     async def toggle_source_visibility(self, scene_name: str, source_name: str) -> bool:
         """Toggle visibility of a source in a scene"""
@@ -289,35 +345,29 @@ class OBSController:
             logger.error(f"Failed to disable source {source_name}: {e}")
             return False
     
+    @handle_obs_disconnect
     async def start_streaming(self) -> bool:
         """Start streaming"""
         if not self.connected or not self.client:
             return False
             
-        try:
-            loop = asyncio.get_event_loop()
-            await loop.run_in_executor(None, self.client.start_stream)
-            logger.info("🔴 Started streaming")
-            await self.refresh_state()
-            return True
-        except Exception as e:
-            logger.error(f"Failed to start streaming: {e}")
-            return False
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, self.client.start_stream)
+        logger.info("🔴 Started streaming")
+        await self.refresh_state()
+        return True
     
+    @handle_obs_disconnect
     async def stop_streaming(self) -> bool:
         """Stop streaming"""
         if not self.connected or not self.client:
             return False
             
-        try:
-            loop = asyncio.get_event_loop()
-            await loop.run_in_executor(None, self.client.stop_stream)
-            logger.info("⏹️ Stopped streaming")
-            await self.refresh_state()
-            return True
-        except Exception as e:
-            logger.error(f"Failed to stop streaming: {e}")
-            return False
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, self.client.stop_stream)
+        logger.info("⏹️ Stopped streaming")
+        await self.refresh_state()
+        return True
     
     async def start_recording(self) -> bool:
         """Start recording"""
@@ -347,47 +397,243 @@ class OBSController:
             logger.error(f"Failed to stop recording: {e}")
             return False
     
+    @handle_obs_disconnect
     async def start_replay_buffer(self) -> bool:
         """Start replay buffer"""
         if not self.connected or not self.client:
             return False
             
-        try:
-            loop = asyncio.get_event_loop()
-            await loop.run_in_executor(None, self.client.start_replay_buffer)
-            logger.info("▶️ Started replay buffer")
-            return True
-        except Exception as e:
-            logger.error(f"Failed to start replay buffer: {e}")
-            return False
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, self.client.start_replay_buffer)
+        logger.info("▶️ Started replay buffer")
+        return True
     
+    @handle_obs_disconnect
     async def stop_replay_buffer(self) -> bool:
         """Stop replay buffer"""
         if not self.connected or not self.client:
             return False
             
-        try:
-            loop = asyncio.get_event_loop()
-            await loop.run_in_executor(None, self.client.stop_replay_buffer)
-            logger.info("⏹️ Stopped replay buffer")
-            return True
-        except Exception as e:
-            logger.error(f"Failed to stop replay buffer: {e}")
-            return False
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, self.client.stop_replay_buffer)
+        logger.info("⏹️ Stopped replay buffer")
+        return True
     
+    @handle_obs_disconnect
     async def save_replay_buffer(self) -> bool:
         """Save replay buffer"""
         if not self.connected or not self.client:
             return False
             
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, self.client.save_replay_buffer)
+        logger.info("💾 Saved replay buffer")
+        return True
+    
+    # ==================== VIRTUAL CAMERA ====================
+    
+    async def start_virtual_camera(self) -> bool:
+        """Start virtual camera"""
+        if not self.connected or not self.client:
+            return False
+        
         try:
             loop = asyncio.get_event_loop()
-            await loop.run_in_executor(None, self.client.save_replay_buffer)
-            logger.info("💾 Saved replay buffer")
+            await loop.run_in_executor(None, self.client.start_virtual_cam)
+            logger.info("📹 Started virtual camera")
             return True
         except Exception as e:
-            logger.error(f"Failed to save replay buffer: {e}")
+            logger.error(f"Failed to start virtual camera: {e}")
             return False
+    
+    async def stop_virtual_camera(self) -> bool:
+        """Stop virtual camera"""
+        if not self.connected or not self.client:
+            return False
+        
+        try:
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(None, self.client.stop_virtual_cam)
+            logger.info("📹 Stopped virtual camera")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to stop virtual camera: {e}")
+            return False
+    
+    async def toggle_virtual_camera(self) -> bool:
+        """Toggle virtual camera on/off"""
+        if not self.connected or not self.client:
+            return False
+        
+        try:
+            loop = asyncio.get_event_loop()
+            status = await loop.run_in_executor(None, self.client.get_virtual_cam_status)
+            is_active = status.output_active if hasattr(status, 'output_active') else False
+            
+            if is_active:
+                return await self.stop_virtual_camera()
+            else:
+                return await self.start_virtual_camera()
+        except Exception as e:
+            logger.error(f"Failed to toggle virtual camera: {e}")
+            return False
+    
+    # ==================== AUDIO / INPUT CONTROLS ====================
+    
+    async def mute_input(self, input_name: str) -> bool:
+        """Mute an audio input"""
+        if not self.connected or not self.client:
+            return False
+        
+        try:
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(None, lambda: self.client.set_input_mute(input_name, True))
+            logger.info(f"🔇 Muted '{input_name}'")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to mute '{input_name}': {e}")
+            return False
+    
+    async def unmute_input(self, input_name: str) -> bool:
+        """Unmute an audio input"""
+        if not self.connected or not self.client:
+            return False
+        
+        try:
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(None, lambda: self.client.set_input_mute(input_name, False))
+            logger.info(f"🔊 Unmuted '{input_name}'")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to unmute '{input_name}': {e}")
+            return False
+    
+    async def toggle_input_mute(self, input_name: str) -> bool:
+        """Toggle input mute state"""
+        if not self.connected or not self.client:
+            return False
+        
+        try:
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(None, lambda: self.client.toggle_input_mute(input_name))
+            logger.info(f"🔈 Toggled mute for '{input_name}'")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to toggle mute '{input_name}': {e}")
+            return False
+    
+    async def set_input_volume(self, input_name: str, volume_db: float) -> bool:
+        """Set input volume in dB (-100 to 26)"""
+        if not self.connected or not self.client:
+            return False
+        
+        try:
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(None, lambda: self.client.set_input_volume(input_name, volume_db))
+            logger.info(f"🔊 Set '{input_name}' volume to {volume_db}dB")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to set volume for '{input_name}': {e}")
+            return False
+    
+    async def adjust_input_volume(self, input_name: str, percent: int) -> bool:
+        """Set input volume by percentage (0-100)"""
+        if not self.connected or not self.client:
+            return False
+        
+        try:
+            # Convert percentage to dB (rough approximation)
+            # 0% = -100dB (muted), 100% = 0dB (max), 50% ≈ -10dB
+            if percent <= 0:
+                volume_db = -100.0
+            elif percent >= 100:
+                volume_db = 0.0
+            else:
+                # Logarithmic scale approximation
+                volume_db = -40.0 + (percent / 100.0) * 40.0
+            
+            return await self.set_input_volume(input_name, volume_db)
+        except Exception as e:
+            logger.error(f"Failed to adjust volume for '{input_name}': {e}")
+            return False
+    
+    # ==================== HOTKEYS ====================
+    
+    async def get_hotkey_list(self) -> list:
+        """Get list of all available OBS hotkeys"""
+        if not self.connected or not self.client:
+            return []
+        
+        try:
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(None, self.client.get_hotkey_list)
+            
+            if hasattr(result, 'hotkeys'):
+                hotkeys = result.hotkeys
+                logger.info(f"📋 Retrieved {len(hotkeys)} OBS hotkeys")
+                return hotkeys
+            return []
+        except Exception as e:
+            logger.error(f"Failed to get hotkey list: {e}")
+            return []
+    
+    async def trigger_hotkey(self, hotkey_name: str) -> bool:
+        """Trigger an OBS hotkey by name"""
+        if not self.connected or not self.client:
+            return False
+        
+        try:
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(
+                None,
+                lambda: self.client.trigger_hotkey_by_name(hotkey_name)
+            )
+            logger.info(f"⌨️ Triggered hotkey: '{hotkey_name}'")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to trigger hotkey '{hotkey_name}': {e}")
+            return False
+    
+    async def find_hotkey_fuzzy(self, search_term: str) -> str:
+        """Find hotkey name using fuzzy matching"""
+        if not self.connected or not self.client:
+            return None
+        
+        hotkeys = await self.get_hotkey_list()
+        if not hotkeys:
+            return None
+        
+        search_lower = search_term.lower()
+        
+        # Try exact match first
+        for hotkey in hotkeys:
+            if hotkey.lower() == search_lower:
+                return hotkey
+        
+        # Try substring match
+        for hotkey in hotkeys:
+            if search_lower in hotkey.lower():
+                return hotkey
+        
+        # Try word matching
+        search_words = set(search_lower.split())
+        best_match = None
+        best_score = 0
+        
+        for hotkey in hotkeys:
+            hotkey_words = set(hotkey.lower().split())
+            common_words = search_words & hotkey_words
+            score = len(common_words)
+            
+            if score > best_score:
+                best_score = score
+                best_match = hotkey
+        
+        if best_match:
+            logger.info(f"🔍 Fuzzy matched '{search_term}' -> '{best_match}'")
+            return best_match
+        
+        return None
     
     async def toggle_source_filter(self, source_name: str, filter_name: str) -> bool:
         """Toggle a filter on a source on/off"""
@@ -952,5 +1198,35 @@ async def handle_obs_action(action: str, obs_ctrl: OBSController, description: s
                 logger.info(f"📹 Camera toggled")
             return result
         return False
+    
+    # Virtual camera controls
+    elif action == "obs_vcam_start":
+        return await obs_ctrl.start_virtual_camera()
+    elif action == "obs_vcam_stop":
+        return await obs_ctrl.stop_virtual_camera()
+    elif action == "obs_vcam_toggle":
+        return await obs_ctrl.toggle_virtual_camera()
+    
+    # Audio controls - microphone
+    elif action == "obs_mute_mic":
+        mic_source = os.getenv("OBS_MIC_SOURCE", "Mic/Aux")
+        return await obs_ctrl.mute_input(mic_source)
+    elif action == "obs_unmute_mic":
+        mic_source = os.getenv("OBS_MIC_SOURCE", "Mic/Aux")
+        return await obs_ctrl.unmute_input(mic_source)
+    elif action == "obs_toggle_mic":
+        mic_source = os.getenv("OBS_MIC_SOURCE", "Mic/Aux")
+        return await obs_ctrl.toggle_input_mute(mic_source)
+    
+    # Audio controls - desktop audio
+    elif action == "obs_mute_desktop":
+        desktop_source = os.getenv("OBS_DESKTOP_SOURCE", "Desktop Audio")
+        return await obs_ctrl.mute_input(desktop_source)
+    elif action == "obs_unmute_desktop":
+        desktop_source = os.getenv("OBS_DESKTOP_SOURCE", "Desktop Audio")
+        return await obs_ctrl.unmute_input(desktop_source)
+    elif action == "obs_toggle_desktop":
+        desktop_source = os.getenv("OBS_DESKTOP_SOURCE", "Desktop Audio")
+        return await obs_ctrl.toggle_input_mute(desktop_source)
     
     return False
