@@ -915,6 +915,130 @@ class OBSController:
             logger.error(f"Failed to switch color filter to '{color_name}': {e}")
             return False
     
+    # -------------------------------------------------------------------------
+    # Shader effects (obs-shaderfilter plugin)
+    # -------------------------------------------------------------------------
+
+    SHADERS_DIR = os.path.join(os.path.dirname(__file__), "shaders")
+
+    def get_available_shader_effects(self) -> List[str]:
+        """Return effect names (stems) from the shaders/ directory."""
+        if not os.path.isdir(self.SHADERS_DIR):
+            return []
+        return [
+            os.path.splitext(f)[0]
+            for f in sorted(os.listdir(self.SHADERS_DIR))
+            if f.endswith(".effect")
+        ]
+
+    async def apply_shader_effect(
+        self,
+        source_name: str,
+        effect_name: str,
+        filter_name: str = None,
+        settings: dict = None,
+    ) -> bool:
+        """
+        Inject an obs-shaderfilter effect onto a source.
+
+        Creates the filter if it doesn't exist; updates settings if it does.
+
+        Args:
+            source_name:  OBS source to attach the filter to.
+            effect_name:  Stem of a .effect file in app/shaders/ (e.g. "scanlines").
+            filter_name:  Name shown in OBS filter list; defaults to effect_name.
+            settings:     Optional dict of shader parameter overrides.
+
+        Returns:
+            True if successful, False otherwise.
+        """
+        if not self.connected or not self.client:
+            logger.error("OBS not connected")
+            return False
+
+        shader_path = os.path.join(self.SHADERS_DIR, f"{effect_name}.effect")
+        if not os.path.isfile(shader_path):
+            available = self.get_available_shader_effects()
+            logger.error(
+                f"Shader effect '{effect_name}' not found. Available: {available}"
+            )
+            return False
+
+        filter_name = filter_name or effect_name
+        filter_settings = {"shader_file_path": shader_path}
+        if settings:
+            filter_settings.update(settings)
+
+        try:
+            loop = asyncio.get_event_loop()
+
+            # Check if the filter already exists on this source
+            existing = await self.get_source_filters(source_name)
+            already_exists = any(
+                f.get("filterName") == filter_name for f in existing
+            )
+
+            if already_exists:
+                await loop.run_in_executor(
+                    None,
+                    lambda: self.client.set_source_filter_settings(
+                        source_name, filter_name, filter_settings, overlay=True
+                    ),
+                )
+                logger.info(
+                    f"🎨 Updated shader effect '{effect_name}' on '{source_name}'"
+                )
+            else:
+                await loop.run_in_executor(
+                    None,
+                    lambda: self.client.create_source_filter(
+                        source_name, filter_name, "obs_shader_filter", filter_settings
+                    ),
+                )
+                logger.info(
+                    f"✨ Injected shader effect '{effect_name}' onto '{source_name}'"
+                )
+
+            return True
+
+        except Exception as e:
+            logger.error(
+                f"Failed to apply shader effect '{effect_name}' on '{source_name}': {e}"
+            )
+            return False
+
+    async def remove_shader_effect(
+        self, source_name: str, filter_name: str
+    ) -> bool:
+        """
+        Remove a shader filter from a source.
+
+        Args:
+            source_name:  OBS source the filter is attached to.
+            filter_name:  Name of the filter to remove.
+
+        Returns:
+            True if successful, False otherwise.
+        """
+        if not self.connected or not self.client:
+            logger.error("OBS not connected")
+            return False
+
+        try:
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(
+                None,
+                lambda: self.client.remove_source_filter(source_name, filter_name),
+            )
+            logger.info(f"🗑️  Removed shader filter '{filter_name}' from '{source_name}'")
+            return True
+
+        except Exception as e:
+            logger.error(
+                f"Failed to remove shader filter '{filter_name}' from '{source_name}': {e}"
+            )
+            return False
+
     async def create_stream_marker(self, description: str = "Highlight") -> bool:
         """Create a stream marker (bookmark) and save replay buffer if available"""
         if not self.connected or not self.client:

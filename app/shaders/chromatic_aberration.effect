@@ -1,0 +1,32 @@
+// Chromatic Aberration Effect
+// Splits RGB channels apart to simulate lens/sensor distortion
+// Compatible with obs-shaderfilter plugin
+
+uniform float shift_amount<
+    string label = "Shift Amount";
+    string widget_type = "slider";
+    float minimum = 0.0;
+    float maximum = 0.05;
+    float step = 0.001;
+> = 0.005;
+
+uniform float angle<
+    string label = "Angle (degrees)";
+    string widget_type = "slider";
+    float minimum = 0.0;
+    float maximum = 360.0;
+    float step = 1.0;
+> = 0.0;
+
+float4 mainImage(VertData v_in) : TARGET
+{
+    float rad = angle * 3.14159 / 180.0;
+    float2 dir = float2(cos(rad), sin(rad)) * shift_amount;
+
+    float r = image.Sample(textureSampler, v_in.uv + dir).r;
+    float g = image.Sample(textureSampler, v_in.uv).g;
+    float b = image.Sample(textureSampler, v_in.uv - dir).b;
+    float a = image.Sample(textureSampler, v_in.uv).a;
+
+    return float4(r, g, b, a);
+}

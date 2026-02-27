@@ -3355,13 +3355,13 @@
 
         // Handle subscribe CTA notifications (backend-triggered)
         const subscribe_cta = data.subscribe_cta || null;
-        if (subscribe_cta && subscribe_cta.trigger) {
+        if (subscribe_cta && subscribe_cta.trigger && !subscribeCTA.classList.contains('visible')) {
           showSubscribeCTA();
         }
 
         // Handle merch CTA notifications (backend-triggered)
         const merch_cta = data.merch_cta || null;
-        if (merch_cta && merch_cta.trigger) {
+        if (merch_cta && merch_cta.trigger && !merchCTA.classList.contains('visible')) {
           showMerchCTA();
         }
 

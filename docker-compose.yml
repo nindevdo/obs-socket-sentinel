@@ -48,6 +48,43 @@ services:
       - ${SOCKET_SENTINEL_PORT:-8088}:8088
       - ${VOICE_AUDIO_PORT:-5555}:5555/udp
 
+#  mediamtx:
+#    image: bluenviron/mediamtx:latest
+#    container_name: mediamtx
+#    restart: unless-stopped
+#    ports:
+#      - "1935:1935"   # RTMP (Pocket 3 → MediaMTX)
+#      - "8554:8554"   # RTSP (optional, future use)
+#      - "8888:8888"   # Web UI
+#    environment:
+#      MTX_PROTOCOLS: tcp
+#      MTX_RTMP: "yes"
+#      MTX_WEB: "yes"
+#      MTX_LOGLEVEL: info
+#
+  restreamer:
+    image: datarhei/restreamer:cuda-latest
+    container_name: restreamer
+    restart: always
+    runtime: nvidia
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ['1']
+              capabilities: [gpu]
+    volumes:
+      - ./_data/restreamer/config:/core/config
+      - ./_data/restreamer/data:/core/data
+    ports:
+      - "${RESTREAMER_HTTP_PORT:-8080}:8080"
+      - "${RESTREAMER_HTTPS_PORT:-8181}:8181"
+      - "${RESTREAMER_RTMP_PORT:-1935}:1935"
+      - "${RESTREAMER_RTMPS_PORT:-1936}:1936"
+      - "${RESTREAMER_SRT_PORT:-6000}:6000/udp"
+      - "${RESTREAMER_RIST_PORT:-9000}:9000/udp"
+
   cloudflared:
     image: cloudflare/cloudflared:latest
     container_name: obs-socket-sentinel-cloudflared

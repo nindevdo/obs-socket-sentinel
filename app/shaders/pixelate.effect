@@ -1,0 +1,18 @@
+// Pixelate Effect
+// Reduces effective resolution by snapping UV coords to a grid
+// Compatible with obs-shaderfilter plugin
+
+uniform float pixel_size<
+    string label = "Pixel Size";
+    string widget_type = "slider";
+    float minimum = 1.0;
+    float maximum = 64.0;
+    float step = 1.0;
+> = 8.0;
+
+float4 mainImage(VertData v_in) : TARGET
+{
+    float2 texel = float2(1.0 / uv_size.x, 1.0 / uv_size.y);
+    float2 snapped = floor(v_in.uv / (texel * pixel_size)) * (texel * pixel_size);
+    return image.Sample(textureSampler, snapped);
+}
