@@ -854,11 +854,11 @@
         <div class="voice-section">
             <div class="voice-header">
                 <div class="voice-title">🎤 Voice Commands</div>
-                <button id="voiceToggle" class="voice-btn" title="Toggle listener on/off">
-                    <span id="voiceToggleText">Loading...</span>
+                <button id="voiceToggle" class="voice-btn" title="Start / stop browser microphone">
+                    <span id="voiceToggleText">🎤 Start Listening</span>
                 </button>
             </div>
-            <div id="voiceStatus" class="voice-status">Checking listener status...</div>
+            <div id="voiceStatus" class="voice-status">Microphone off</div>
             <div id="voiceTranscript" class="voice-transcript" style="display: none;"></div>
         </div>
 
@@ -1307,8 +1307,8 @@
                     voiceToggle.classList.add('listening');
                     voiceToggleText.textContent = '🔴 Stop Listening';
                     if (voiceStatus) {
-                        voiceStatus.textContent = '🎤 Listening via HTTP...';
-                        voiceStatus.classList.add('active');
+                        voiceStatus.textContent = '🎤 Microphone active — listening for commands';
+                        voiceStatus.className = 'voice-status active';
                     }
                     
                     console.log('[voice] ✅ Audio streaming started (HTTP POST mode)');
@@ -1318,9 +1318,13 @@
                     
                 } catch (error) {
                     console.error('[voice] Failed to start microphone:', error);
-                    alert('Failed to access microphone: ' + error.message);
+                    const voiceStatus = document.getElementById('voiceStatus');
                     const voiceToggleText = document.getElementById('voiceToggleText');
                     voiceToggleText.textContent = '🎤 Start Listening';
+                    if (voiceStatus) {
+                        voiceStatus.textContent = `⚠️ Mic error: ${error.message}`;
+                        voiceStatus.className = 'voice-status error';
+                    }
                 }
             }
             
@@ -1358,8 +1362,8 @@
                     voiceToggleText.textContent = '🎤 Start Listening';
                 }
                 if (voiceStatus) {
-                    voiceStatus.textContent = '⏸️ Stopped';
-                    voiceStatus.classList.remove('active', 'error');
+                    voiceStatus.textContent = 'Microphone off';
+                    voiceStatus.className = 'voice-status';
                 }
                 
                 console.log('[voice] ✅ Browser microphone stopped');
@@ -1400,69 +1404,42 @@
             }
 
             async checkVoiceListenerStatus() {
-                console.log('[voice] Checking listener status...');
-                const voiceToggle = document.getElementById('voiceToggle');
-                const voiceToggleText = document.getElementById('voiceToggleText');
                 const voiceStatus = document.getElementById('voiceStatus');
+                const voiceTranscript = document.getElementById('voiceTranscript');
 
-                if (!voiceToggle) {
-                    console.warn('[voice] Voice toggle not found during status check');
+                // Don't touch the button or status text while the browser mic is active —
+                // local state is authoritative when recording.
+                if (this.isRecording) {
+                    try {
+                        const response = await fetch(`${this.serverUrl}/voice/status`, {
+                            headers: { 'Authorization': `Bearer ${this.authToken}` }
+                        });
+                        if (response.ok) {
+                            const status = await response.json();
+                            if (status.last_transcription && voiceTranscript) {
+                                voiceTranscript.textContent = `Last: "${status.last_transcription}"`;
+                                voiceTranscript.style.display = 'block';
+                            }
+                        }
+                    } catch (_) { /* silent — don't disrupt active recording UI */ }
                     return;
                 }
-                
-                console.log('[voice] DOM elements found:', {
-                    toggle: !!voiceToggle,
-                    toggleText: !!voiceToggleText,
-                    status: !!voiceStatus
-                });
 
+                // Not recording — reflect a clean idle state; ignore server-side
+                // listener flags (they refer to a separate server process, not browser mic).
                 try {
-                    console.log('[voice] Fetching status from server...');
                     const response = await fetch(`${this.serverUrl}/voice/status`, {
-                        headers: {
-                            'Authorization': `Bearer ${this.authToken}`
-                        }
+                        headers: { 'Authorization': `Bearer ${this.authToken}` }
                     });
 
-                    console.log('[voice] Status response:', response.status);
-                    const status = await response.json();
-                    console.log('[voice] Status data:', status);
-                    this.voiceListenerEnabled = status.enabled;
-
-                    if (status.enabled) {
-                        console.log('[voice] Updating UI for enabled state');
-                        voiceToggle.classList.add('listening');
-                        voiceToggle.classList.remove('processing');
-                        voiceToggleText.textContent = '🎤 Listening';
-                        
-                        if (status.audio_streaming) {
-                            voiceStatus.textContent = '✅ Active - Receiving audio stream';
-                            voiceStatus.className = 'voice-status active';
-                            console.log('[voice] Set status: audio streaming');
-                        } else {
-                            voiceStatus.textContent = '⏳ Waiting for audio stream on port 5555...';
-                            voiceStatus.className = 'voice-status';
-                            console.log('[voice] Set status: waiting for audio');
+                    if (response.ok) {
+                        const status = await response.json();
+                        if (status.last_transcription && voiceTranscript) {
+                            voiceTranscript.textContent = `Last: "${status.last_transcription}"`;
+                            voiceTranscript.style.display = 'block';
                         }
-
-                        // Show recent transcription if available
-                        if (status.last_transcription) {
-                            const transcript = document.getElementById('voiceTranscript');
-                            transcript.textContent = `Last: "${status.last_transcription}"`;
-                            transcript.style.display = 'block';
-                        }
-                    } else {
-                        voiceToggle.classList.remove('listening', 'processing');
-                        voiceToggleText.textContent = 'Enable Listener';
-                        voiceStatus.textContent = 'Click to enable continuous voice monitoring';
-                        voiceStatus.className = 'voice-status';
                     }
-
-                } catch (error) {
-                    console.error('Failed to check voice status:', error);
-                    voiceToggleText.textContent = 'Status Unknown';
-                    voiceStatus.textContent = 'Failed to check listener status';
-                }
+                } catch (_) { /* best-effort */ }
             }
 
             async toggleVoiceListener() {
