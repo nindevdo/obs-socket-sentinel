@@ -2574,8 +2574,21 @@
       
       subscribeCTA.classList.add('visible');
       
+      // Set the hide timer FIRST — before anything that could throw — so it
+      // always fires even if Three.js or audio init fails.
+      if (subscribeCTAHideTimeoutId) {
+        clearTimeout(subscribeCTAHideTimeoutId);
+      }
+      subscribeCTAHideTimeoutId = setTimeout(() => {
+        hideSubscribeCTA();
+      }, SUBSCRIBE_CTA_DURATION);
+      
       // Initialize Three.js scene for subscribe CTA
-      initSubscribeThreeJS();
+      try {
+        initSubscribeThreeJS();
+      } catch (err) {
+        console.warn('[subscribe-cta] Three.js init failed (CTA will still hide):', err);
+      }
       
       // Play subscribe CTA sound
       const subscribeSound = new Audio('/sounds/subscribe-cta.mp3');
@@ -2583,15 +2596,6 @@
       subscribeSound.play().catch(err => {
         console.warn('[subscribe-cta] Sound play failed:', err);
       });
-      
-      // Auto-hide after duration
-      if (subscribeCTAHideTimeoutId) {
-        clearTimeout(subscribeCTAHideTimeoutId);
-      }
-      
-      subscribeCTAHideTimeoutId = setTimeout(() => {
-        hideSubscribeCTA();
-      }, SUBSCRIBE_CTA_DURATION);
     }
 
     function hideSubscribeCTA() {

@@ -7712,28 +7712,60 @@ async def handle_http(
                 return
 
             try:
-                body_bytes = fs_path.read_bytes()
                 mime, _ = mimetypes.guess_type(fs_path.name)
                 mime = mime or "video/mp4"
+                file_size = fs_path.stat().st_size
+
+                # Parse Range header — browsers require this for video seeking
+                range_header = None
+                for line in req_text.split("\r\n"):
+                    if line.lower().startswith("range:"):
+                        range_header = line.split(":", 1)[1].strip()
+                        break
+
+                if range_header and range_header.startswith("bytes="):
+                    byte_range = range_header[6:]
+                    start_str, _, end_str = byte_range.partition("-")
+                    start = int(start_str) if start_str else 0
+                    end = int(end_str) if end_str else file_size - 1
+                    end = min(end, file_size - 1)
+                    length = end - start + 1
+
+                    with open(fs_path, "rb") as f:
+                        f.seek(start)
+                        body_bytes = f.read(length)
+
+                    resp_headers = (
+                        "HTTP/1.1 206 Partial Content\r\n"
+                        f"Content-Type: {mime}\r\n"
+                        f"Content-Range: bytes {start}-{end}/{file_size}\r\n"
+                        f"Content-Length: {length}\r\n"
+                        "Accept-Ranges: bytes\r\n"
+                        "Connection: close\r\n"
+                        "\r\n"
+                    )
+                else:
+                    body_bytes = fs_path.read_bytes()
+                    resp_headers = (
+                        "HTTP/1.1 200 OK\r\n"
+                        f"Content-Type: {mime}\r\n"
+                        f"Content-Length: {file_size}\r\n"
+                        "Accept-Ranges: bytes\r\n"
+                        "Connection: close\r\n"
+                        "\r\n"
+                    )
+
+                writer.write(resp_headers.encode("ascii") + body_bytes)
+                await writer.drain()
+
             except Exception as e:
                 logging.error(
-                    f"❗ [http] Failed to read cached video file {fs_path}: {e}",
+                    f"❗ [http] Failed to serve video file {fs_path}: {e}",
                     exc_info=True,
                 )
                 resp = b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
                 writer.write(resp)
                 await writer.drain()
-                return
-
-            headers = (
-                "HTTP/1.1 200 OK\r\n"
-                f"Content-Type: {mime}\r\n"
-                f"Content-Length: {len(body_bytes)}\r\n"
-                "Connection: close\r\n"
-                "\r\n"
-            )
-            writer.write(headers.encode("ascii") + body_bytes)
-            await writer.drain()
 
         elif path.startswith("/dmemes/"):
             # Static served cached Discord memes
